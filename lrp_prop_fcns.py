@@ -343,9 +343,36 @@ class LRPPropFunctions:
 
     @classmethod
     def NativeLayerNormBackwardProp(cls, grad_fn, r):
+        mean = grad_fn._saved_result1
+        gamma = grad_fn._saved_weight
+        beta = grad_fn._saved_bias
+        rec_stddev = grad_fn._saved_result2
+
+        def layerNorm(x):
+            normalized = (x - mean) * rec_stddev
+            return normalized * gamma + beta
+
+        if isinstance(r, AddBackwardPromise):
+            # Identity for relevance going backwards, no need for bwd
+            r.nest_fwd(layerNorm)
+
         # next_functions will correspond to input, weights, bias
         # We only care about propagating through the input for LayerNorm.
         return r, 0.0, 0.0
+    
+    @classmethod
+    def GeluBackwardProp(cls, grad_fn, r):
+        if isinstance(r, AddBackwardPromise):
+            # Identity for relevance going backwards, no need for bwd
+            r.nest_fwd(torch.nn.GELU(approximate="none"))
+        return r
+    
+    @classmethod
+    def SoftmaxBackwardProp(cls, grad_fn, r):
+        if isinstance(r, AddBackwardPromise):
+            # Identity for relevance going backwards, no need for bwd
+            r.nest_fwd(lambda x: x.softmax(dim=-1))
+        return r
 
     @classmethod
     def IdentityProp(cls, grad_fn, r):

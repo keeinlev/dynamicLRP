@@ -40,11 +40,11 @@ class LRPPropFunctions:
             "rins": [None, None],
             "ready": False,
             "complete": False,
-            "parent": None,
+            "parents": [],
         }
         if isinstance(r, AddBackwardPromise):
-            promise["parent"] = r
-            promise["rout"] = torch.zeros(r.fwd_shape) # Placeholder for shape
+            promise["parents"] = [r]
+            promise["rout"] = torch.zeros_like(r.rout) # Placeholder for shape
 
         promise1 = AddBackwardPromise(promise, 0)
         promise2 = AddBackwardPromise(promise, 1)
@@ -64,25 +64,36 @@ class LRPPropFunctions:
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
             target_shape = r.fwd_shape
-            r.nest_fwd(lambda x: torch.view(x, target_shape))
-            r.nest_bwd(lambda x: torch.view(x, upstream_shape))
+            r.nest_fwd(lambda x: x.view(target_shape))
+            r.nest_bwd(lambda x: x.view(upstream_shape))
             r.fwd_shape = upstream_shape
             return r
-        return torch.view(r, upstream_shape)
+        return r.view(upstream_shape)
 
     @classmethod
     def UnsafeViewBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
             target_shape = r.fwd_shape
-            r.nest_fwd(lambda x: torch.view(x, target_shape))
-            r.nest_bwd(lambda x: torch.view(x, upstream_shape))
+            r.nest_fwd(lambda x: x.view(target_shape))
+            r.nest_bwd(lambda x: x.view(upstream_shape))
             r.fwd_shape = upstream_shape
             return r
-        return torch.view(r, upstream_shape)
+        return r.view(upstream_shape)
 
     @classmethod
     def ReshapeBackwardProp(cls, grad_fn, r):
+        upstream_shape = grad_fn._saved_self_sym_sizes
+        if isinstance(r, AddBackwardPromise):
+            target_shape = r.fwd_shape
+            r.nest_fwd(lambda x: torch.reshape(x, target_shape))
+            r.nest_bwd(lambda x: torch.reshape(x, upstream_shape))
+            r.fwd_shape = upstream_shape
+            return r
+        return torch.reshape(r, grad_fn._saved_self_sym_sizes)
+
+    @classmethod
+    def ReshapeAliasBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
             target_shape = r.fwd_shape
@@ -152,8 +163,7 @@ class LRPPropFunctions:
 
         def undoSelect(x):
             out = torch.zeros(upstream_shape, dtype=x.dtype, device=x.device)
-            x_expanded = torch.unsqueeze(x, dim)
-            out.select(dim, idx).copy_(x_expanded)
+            out.select(dim, idx).copy_(x)
             return out
 
         if isinstance(r, AddBackwardPromise):
@@ -168,7 +178,7 @@ class LRPPropFunctions:
     def TBackwardProp(cls, grad_fn, r):
         # Not sure why TBackward is different from TransposeBackward, but it seems like this is only
         # in Linear layer matmuls on W for xW^T before Mm and Addmm operations.
-        assert(len(r.shape) == 2, "Assumption was that matrix would be 2d Linear weights.") # For now assume that it is only 2d matmuls for Linear layers.
+        assert len(r.shape) == 2, "Assumption was that matrix would be 2d Linear weights." # For now assume that it is only 2d matmuls for Linear layers.
 
         transpose = lambda x: x.T
 
@@ -207,23 +217,25 @@ class LRPPropFunctions:
     @classmethod
     def PermuteBackwardProp(cls, grad_fn, r):
         dims = grad_fn._saved_dims
-        permute = lambda x: torch.permute(x, dims)
+
+        undo_dims = [0] * len(dims)
+        for old_dim, new_dim in enumerate(dims):
+            undo_dims[new_dim] = old_dim
+
+        upstream_shape = [ r.shape[i] for i in undo_dims ]
 
         if isinstance(r, AddBackwardPromise):
-            r.nest_fwd(permute)
-            r.nest_bwd(permute)
-            new_shape = list(r.fwd_shape)
-            for old_dim, new_dim in enumerate(dims):
-                new_shape[old_dim] = r.fwd_shape[new_dim]
-            r.fwd_shape = tuple(new_shape)
+            r.nest_fwd(lambda x: x.permute(dims))
+            r.nest_bwd(lambda x: x.permute(undo_dims))
+            r.fwd_shape = upstream_shape
             return r
-        return permute(r)
+        return r.permute(undo_dims)
 
     @classmethod
     def ExpandBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         downstream_shape = r.shape
-        assert(len(upstream_shape) == len(downstream_shape), "Expand should not increase number of dimensions.")
+        assert len(upstream_shape) == len(downstream_shape), "Expand should not increase number of dimensions."
 
         expand_input = [ dim2 if dim1 != dim2 else -1 for dim1, dim2 in zip(upstream_shape, downstream_shape) ]
 
@@ -252,11 +264,11 @@ class LRPPropFunctions:
             if arg1 is None:
                 r.nest_fwd(lambda x: x * arg2)
             else:
-                r.setarg(arg1 * arg2)
+                r.setarg(arg1 * arg2, grad_fn)
                 if r.complete:
                     r = r.rin
                 else:
-                    return None # Trigger requeue
+                    return r # We will check if the promise is complete in the graph traversal
 
         if arg1 is None:
             # Tensor-scalar product, disregard scalar
@@ -277,11 +289,11 @@ class LRPPropFunctions:
             if arg1 is None:
                 r.nest_fwd(lambda x: x / arg2)
             else:
-                r.setarg(arg1 / arg2)
+                r.setarg(arg1 / arg2, grad_fn)
                 if r.complete:
                     r = r.rin
                 else:
-                    return None # Trigger requeue
+                    return r # We will check if the promise is complete in the graph traversal
 
         if arg1 is None:
             # Tensor-scalar product, disregard scalar
@@ -295,54 +307,57 @@ class LRPPropFunctions:
 
     @classmethod
     def MmBackwardProp(cls, grad_fn, r):
-        x = grad_fn._saved_mat1 # i j
+        x = grad_fn._saved_self # i j
         weights = grad_fn._saved_mat2 # j k
         z = torch.matmul(x, weights)
+        z_stabilized = z + epsilon * z.sign()
+
         if isinstance(r, AddBackwardPromise):
-            r.setarg(z)
+            r.setarg(z, grad_fn)
             if r.complete:
                 r = r.rin
             else:
                 # If this is the first branch of the promise
-                return None # Make this trigger a requeue
+                return r # We will check if the promise is complete in the graph traversal
 
-        i, j = x.shape
-        k = weights.shape[1]
-        intermediates = torch.einsum("ij, jk -> ijk", x, weights)
+        contribs = x.unsqueeze(2) * weights.unsqueeze(0)
+        z_uns = z_stabilized.unsqueeze(2)
+        scores = contribs.swapaxes(1,2) / z_uns
 
-        z = z.unsqueeze(1).broadcast_to((i,j,k))
-
-        ratios = intermediates / z
+        r_in = r.unsqueeze(2) * scores
 
         # return relevance for input and relevance for weight
-        return ratios.sum(dim=2, keepdims=True) * r, ratios.sum(dim=0, keepdims=True) * r.T
+        return r_in.sum(dim=1), r_in.sum(dim=0)
 
     @classmethod
     def BmmBackwardProp(cls, grad_fn, r):
-        mat1 = grad_fn.saved_self
-        mat2 = grad_fn.saved_mat2
-        z = torch.matmul(mat1, mat2)
+        mat1 = grad_fn._saved_self
+        mat2 = grad_fn._saved_mat2
+        z = torch.bmm(mat1, mat2)
+
+        assert r.shape == z.shape, f"r shape {r.shape} must match z shape {z.shape}"
+
+        z_stabilized = z + epsilon * z.sign()
+
         if isinstance(r, AddBackwardPromise):
-            r.setarg(z)
+            r.setarg(z, grad_fn)
             if r.complete:
                 r = r.rin
             else:
                 # If this is the first branch of the promise
-                return None # Make this trigger a requeue
+                return r # We will check if the promise is complete in the graph traversal
 
-        b, i, j = mat1.shape
-        k = mat2.shape[-1]
-        intermediates = torch.einsum("bij, bjk -> bijk", mat1, mat2)
-
-        z = z.unsqueeze(2).broadcast_to((b,i,j,k))
-
-        ratios = intermediates / z
+        numerator = mat1.unsqueeze(-1) * mat2.unsqueeze(1)
+        denom = z_stabilized.unsqueeze(2)
+        ratio = numerator / denom
+        contrib = ratio * r.unsqueeze(2)
 
         # return relevance for mat1 and relevance for mat2
-        return ratios.sum(dim=2, keepdims=True) * r, ratios.sum(dim=1, keepdims=True) * r.T
+        return contrib.sum(-1), contrib.sum(1)
 
     @classmethod
     def NativeLayerNormBackwardProp(cls, grad_fn, r):
+        input_ = grad_fn._saved_input
         mean = grad_fn._saved_result1
         gamma = grad_fn._saved_weight
         beta = grad_fn._saved_bias
@@ -353,8 +368,12 @@ class LRPPropFunctions:
             return normalized * gamma + beta
 
         if isinstance(r, AddBackwardPromise):
-            # Identity for relevance going backwards, no need for bwd
-            r.nest_fwd(layerNorm)
+            r.setarg(layerNorm(input_), grad_fn)
+            if r.complete:
+                r = r.rin
+            else:
+                # If this is the first branch of the promise
+                return r # We will check if the promise is complete in the graph traversal
 
         # next_functions will correspond to input, weights, bias
         # We only care about propagating through the input for LayerNorm.
@@ -363,21 +382,33 @@ class LRPPropFunctions:
     @classmethod
     def GeluBackwardProp(cls, grad_fn, r):
         if isinstance(r, AddBackwardPromise):
-            # Identity for relevance going backwards, no need for bwd
-            r.nest_fwd(torch.nn.GELU(approximate="none"))
+            r.setarg(torch.nn.GELU(grad_fn._saved_self), grad_fn)
+            if r.complete:
+                r = r.rin
         return r
     
     @classmethod
     def SoftmaxBackwardProp(cls, grad_fn, r):
         if isinstance(r, AddBackwardPromise):
-            # Identity for relevance going backwards, no need for bwd
-            r.nest_fwd(lambda x: x.softmax(dim=-1))
+            r.setarg(grad_fn._saved_result, grad_fn)
+            if r.complete:
+                r = r.rin
         return r
 
     @classmethod
     def IdentityProp(cls, grad_fn, r):
         """Placeholder for any missed operations, or general use for identity-rule operations."""
         return r
+    
+    @classmethod
+    def IndexPutFirstAxisBackwardProp(cls, grad_fn, r):
+        """Identity but needs custom output count"""
+        return r, 0.0
+    
+    @classmethod
+    def IndexFirstAxisBackwardProp(cls, grad_fn, r):
+        """Identity but needs custom output count"""
+        return r, 0.0
     
     @classmethod
     def AccumulateGradProp(cls, grad_fn, r):
@@ -392,6 +423,29 @@ class LRPPropFunctions:
         else:
             grad_fn.metadata["checkpoint_relevance"] = r
         return r
+    
+    @classmethod
+    def EmbeddingBackwardProp(cls, grad_fn, r):
+        idxs : torch.Tensor = grad_fn._saved_indices
+        weights = grad_fn.next_functions[0][0].variable # BIG assumption here
+
+        def undoEmbedding(x):
+            out = torch.zeros_like(weights)
+            if idxs.dim() == 1:
+                out.index_add_(0, idxs, x)
+            else:
+                for inds in idxs:
+                    out.index_add_(0, inds, x)
+            return out
+
+        if isinstance(r, AddBackwardPromise):
+            target_shape = r.fwd_shape
+            r.nest_fwd(lambda x: x[idxs.flatten()].reshape(target_shape))
+            r.nest_bwd(undoEmbedding)
+            r.fwd_shape = weights.shape
+            return r
+
+        return undoEmbedding(r)
 
     @classmethod
     def generate_prop_fcn_map(cls, names: list[str]):
@@ -400,7 +454,7 @@ class LRPPropFunctions:
         fcn_map = {}
         for name in names:
             fcn_name = name + "Prop"
-            if name[0].isdigit():
+            if name[-1].isdigit():
                 fcn_name = name[:-1] + "Prop"
             if (hasattr(cls, fcn_name) and callable(fcn := getattr(cls, fcn_name))
                 and not fcn_name.startswith("_")):

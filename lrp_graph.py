@@ -23,7 +23,7 @@ def make_graph(hidden_states: torch.Tensor):
 
     # First pass will:
     # 1. Create in and out adjacency lists.
-    # 2. Decompose AddMmBackward0's with AddBackward0 leading back to MmBackward0.
+    # 2. Decompose AddmmBackward0's with AddBackward0 leading back to MmBackward0.
     while fcns:
         new_fcns = []
         for fcn_list in fcns:
@@ -32,7 +32,7 @@ def make_graph(hidden_states: torch.Tensor):
                 if fcn is None or fcn in visited:
                     continue
 
-                if fcn.name == "AddMmBackward0":
+                if type(fcn).__name__ == "AddmmBackward0":
                     # Decompose the function into an Add + Mm, then re-assign its adjacencies.
                     decomposed_add = decompose_addmmbackward(fcn)
                     # Assign new Add's in-neighbours to the AddMm's in-neighbours.
@@ -45,10 +45,23 @@ def make_graph(hidden_states: torch.Tensor):
                     fcn = decomposed_add
 
                 # Assign adjacencies
+                # NOTE: Out-adjacencies will account for None, but in-adjacencies will not.
+                # This is because we use out_adj for verifying number of expected fwd inputs 
+                # and relevance outputs, and in_adj for number of relevance inputs landed.
+                # None propagates no relevance, so it cannot possibly be an input. Adding it
+                # there would cause the logic to hang.
+                # However, it is a valid fwd input (or bwd output), so not adding it in out_adj
+                # would cause too much mismatch and confusion between number of outputs (prop
+                # fcns account for the None's) and expected number of children (which could be
+                # less without the None's)
                 if fcn not in out_adj:
                     out_adj[fcn] = []
                 for (child, _) in fcn.next_functions:
                     out_adj[fcn].append(child)
+
+                    # Crucial that this comes after setting out_adj[fcn]
+                    if child is None:
+                        continue
                     if child not in in_adj:
                         in_adj[child] = []
                     in_adj[child].append(fcn)

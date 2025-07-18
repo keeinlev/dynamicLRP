@@ -18,7 +18,7 @@ class AddBackwardPromise:
     fwd_shape: used as target shape for shape-modifying operations in fwd
     other_branch: the branch of the promise that searches for the other argument of the addition
     """
-    all_promises = []
+    # all_promises = []
     def __init__(self, promise, idx):
         self.promise = promise
         self.parents : list[AddBackwardPromise] = promise["parents"]
@@ -31,7 +31,7 @@ class AddBackwardPromise:
         # self.pending_parents = len(self.parents)
         self.promise["tail_nodes"] = set()
 
-        AddBackwardPromise.all_promises.append(self)
+        # AddBackwardPromise.all_promises.append(self) # For Debug
 
     def nest_fwd(self, next_f):
         """Nests a new operation for recovering the operand for the promise origin"""

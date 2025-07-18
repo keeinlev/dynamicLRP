@@ -1,0 +1,5 @@
+einops==0.8.1
+scikit_learn==1.7.0
+torch==2.7.1
+tqdm==4.66.4
+transformers==4.52.3

@@ -182,7 +182,7 @@ class AddBackwardPromise:
 
         self.promise["args"][self.idx] = self.fwd(value)
         if self.set_and_check_ready():
-            print(f"triggering promise {self}")
+            # print(f"triggering promise {self}")
             self.trigger_promise_completion()
 
 def compound_promises(promises: list[AddBackwardPromise], single_promise_override=False, parent_only_connection=False) -> AddBackwardPromise:

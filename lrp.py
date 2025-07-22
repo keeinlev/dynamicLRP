@@ -198,7 +198,6 @@ with torch.no_grad():
                 if isinstance(curnode_outputs[i], AddBackwardPromise):
                     # Manually set the arg to not trigger any additional side effects
                     curnode_outputs[i].promise["args"][curnode_outputs[i].idx] = 0.0
-                nodes_pending[child] -= 1 # Still need to do this to keep the traversal working
                 continue
             input_tracker[child].append(curnode_outputs[i])
             nodes_pending[child] -= 1

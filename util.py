@@ -9,6 +9,11 @@ def renormalize_epsilon(rz, rx, ry):
     scale = rz / (rx + ry)
     return torch.nan_to_num(rx * scale, nan=0.0), torch.nan_to_num(ry * scale, nan=0.0)
 
+def renormalize_epsilon_scalar(rz, rx, ry):
+    """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
+    scale = rz.sum() / (rx.sum() + ry.sum())
+    return rx * scale, ry * scale
+
 
 # Handling AddMmBackward0 is not the exact same as just AddBackward0. The calculation of the in-relevances
 # is slightly different because you need to consider the matmul after the addition is propagated.

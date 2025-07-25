@@ -1,16 +1,43 @@
 import torch
 import torch.nn.functional as F
 from add_backward_promise import AddBackwardPromise
-from util import epsilon, renormalize_epsilon
+from util import epsilon, renormalize_epsilon, renormalize_epsilon_scalar
 
 """
 For all these functions, grad_fn is the autograd Node returned from traversing the autograd graph.
 r is the relevance tensor of the output of the given Node.
 """
 
+
+def output_relevances(func):
+    def wrapper(*args, **kwargs):
+        res = func(*args, **kwargs)
+        grad_fn = args[1]
+        r = args[2]
+        if type(grad_fn).__name__ == "AddBackward0":
+            print(f"{grad_fn}:", end="") 
+            if isinstance(r, AddBackwardPromise):
+                print(r.rout.sum())
+            else:
+                print(r.sum())
+        if (not isinstance(r, AddBackwardPromise)) and \
+                not isinstance(res, AddBackwardPromise) \
+                and (not isinstance(res, tuple) or not isinstance(res[0], AddBackwardPromise)):
+            print(f"{grad_fn}: ", end="")
+            rout = r.sum()
+            rins = None
+            if isinstance(res, tuple):
+                rins = ((res[0].sum() if isinstance(res[0], torch.Tensor) else res[0]) +
+                        (res[1].sum() if isinstance(res[1], torch.Tensor) else res[1]))
+            else:
+                rins = res.sum()
+            print(rout, rins)
+        return res
+    return wrapper
 class LRPPropFunctions:
 
     @classmethod
+    @output_relevances
     def AddBackwardProp(cls, grad_fn, r):
         # IMPORTANT: AddBackward0 does not actually store any operands of the addition, so we have
         # to get a bit tricky.
@@ -60,28 +87,31 @@ class LRPPropFunctions:
         return promise1, promise2
 
     @classmethod
+    @output_relevances
     def ViewBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
             target_shape = r.fwd_shape
             r.nest_fwd(lambda x: x.view(target_shape))
-            r.nest_bwd(lambda x: x.view(upstream_shape))
+            r.nest_bwd(lambda x: x.view(upstream_shape).clone())
             r.fwd_shape = upstream_shape
             return r
-        return r.view(upstream_shape)
+        return r.view(upstream_shape).clone()
 
     @classmethod
+    @output_relevances
     def UnsafeViewBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
             target_shape = r.fwd_shape
             r.nest_fwd(lambda x: x.view(target_shape))
-            r.nest_bwd(lambda x: x.view(upstream_shape))
+            r.nest_bwd(lambda x: x.view(upstream_shape).clone())
             r.fwd_shape = upstream_shape
             return r
-        return r.view(upstream_shape)
+        return r.view(upstream_shape).clone()
 
     @classmethod
+    @output_relevances
     def ReshapeBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
@@ -90,9 +120,10 @@ class LRPPropFunctions:
             r.nest_bwd(lambda x: torch.reshape(x, upstream_shape))
             r.fwd_shape = upstream_shape
             return r
-        return torch.reshape(r, grad_fn._saved_self_sym_sizes)
+        return torch.reshape(r, upstream_shape)
 
     @classmethod
+    @output_relevances
     def ReshapeAliasBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, AddBackwardPromise):
@@ -101,9 +132,10 @@ class LRPPropFunctions:
             r.nest_bwd(lambda x: torch.reshape(x, upstream_shape))
             r.fwd_shape = upstream_shape
             return r
-        return torch.reshape(r, grad_fn._saved_self_sym_sizes)
+        return torch.reshape(r, upstream_shape)
 
     @classmethod
+    @output_relevances
     def SliceBackwardProp(cls, grad_fn, r):
         # Assumes the index corresponding to _saved_start in the forward pass is non-negative.
         # If it was negative-indexed, i.e. x[-i:] autograd saves the index as INT_MAX - i.
@@ -132,6 +164,7 @@ class LRPPropFunctions:
         return F.pad(r, pad)
 
     @classmethod
+    @output_relevances
     def IndexBackwardProp(cls, grad_fn, r):
         # An Index can be compound, unlike Slice, i.e. a[[0,1], [1,2]] is ONE Index op, whereas a[:,1:] is TWO Slice ops.
         # This is because (in this case) the second Slice depends on the first. It's saying that from the result of
@@ -156,6 +189,7 @@ class LRPPropFunctions:
         return undoIndex(r)
 
     @classmethod
+    @output_relevances
     def SelectBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         dim = grad_fn._saved_dim
@@ -175,6 +209,7 @@ class LRPPropFunctions:
         return undoSelect(r)
 
     @classmethod
+    @output_relevances
     def TBackwardProp(cls, grad_fn, r):
         # Not sure why TBackward is different from TransposeBackward, but it seems like this is only
         # in Linear layer matmuls on W for xW^T before Mm and Addmm operations.
@@ -193,6 +228,7 @@ class LRPPropFunctions:
         return transpose(r)
 
     @classmethod
+    @output_relevances
     def TransposeBackwardProp(cls, grad_fn, r):
         dim1 = grad_fn._saved_dim0
         dim2 = grad_fn._saved_dim1
@@ -215,6 +251,7 @@ class LRPPropFunctions:
         return swapaxes(r)
 
     @classmethod
+    @output_relevances
     def PermuteBackwardProp(cls, grad_fn, r):
         dims = grad_fn._saved_dims
 
@@ -226,12 +263,13 @@ class LRPPropFunctions:
 
         if isinstance(r, AddBackwardPromise):
             r.nest_fwd(lambda x: x.permute(dims))
-            r.nest_bwd(lambda x: x.permute(undo_dims))
+            r.nest_bwd(lambda x: x.permute(undo_dims).clone())
             r.fwd_shape = upstream_shape
             return r
-        return r.permute(undo_dims)
+        return r.permute(undo_dims).clone()
 
     @classmethod
+    @output_relevances
     def ExpandBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         downstream_shape = r.shape
@@ -242,7 +280,7 @@ class LRPPropFunctions:
         def undoExpand(x):
             for i, expand_dim in enumerate(expand_input):
                 if expand_dim != -1:
-                    x = x.select(i, 0).unsqueeze(i)
+                    x = x.select(i, 0).unsqueeze(i) * (upstream_shape[i] / downstream_shape[i])
             return x
 
         expand = lambda x: x.expand(*expand_input)
@@ -256,6 +294,7 @@ class LRPPropFunctions:
         return undoExpand(r)
 
     @classmethod
+    @output_relevances
     def MulBackwardProp(cls, grad_fn, r):
         arg1 = grad_fn._saved_self
         arg2 = grad_fn._saved_other
@@ -278,9 +317,13 @@ class LRPPropFunctions:
         r1 = (arg1.abs() / denom) * r
         r2 = (arg2.abs() / denom) * r
 
-        return renormalize_epsilon(r, r1, r2)
+        r1, r2 = renormalize_epsilon(r, r1, r2)
+        # print(f"MulBackward relevance sums: out {r.sum()}, in {(r1 + r2).sum()}")
+
+        return r1, r2
 
     @classmethod
+    @output_relevances
     def DivBackwardProp(cls, grad_fn, r):
         arg1 = grad_fn._saved_self
         arg2 = grad_fn._saved_other
@@ -303,13 +346,17 @@ class LRPPropFunctions:
         r1 = (arg1.abs() / denom) * r
         r2 = ((1 / arg2).abs() / denom) * r
 
-        return renormalize_epsilon(r, r1, r2)
+        r1, r2 = renormalize_epsilon(r, r1, r2)
+        # print(f"DivBackward relevance sums: out {r.sum()}, in {(r1 + r2).sum()}")
+
+        return r1, r2
 
     @classmethod
+    @output_relevances
     def MmBackwardProp(cls, grad_fn, r):
-        x = grad_fn._saved_self # i j
-        weights = grad_fn._saved_mat2 # j k
-        z = torch.matmul(x, weights)
+        x = grad_fn._saved_self # s d
+        weights = grad_fn._saved_mat2 # d o
+        z = torch.matmul(x, weights) # s o
         z_stabilized = z + epsilon * z.sign()
 
         if isinstance(r, AddBackwardPromise):
@@ -321,19 +368,28 @@ class LRPPropFunctions:
                 return r # We will check if the promise is complete in the graph traversal
 
         contribs = x.unsqueeze(2) * weights.unsqueeze(0)
-        z_uns = z_stabilized.unsqueeze(2)
-        scores = contribs.swapaxes(1,2) / z_uns
+        z_uns = z_stabilized.unsqueeze(2) # s o d
+        ratio = contribs.swapaxes(1,2) / z_uns
+        r_in = r.unsqueeze(2) * ratio
 
-        r_in = r.unsqueeze(2) * scores
-
-        # return relevance for input and relevance for weight
-        return r_in.sum(dim=1), r_in.sum(dim=0)
+        if type(grad_fn.next_functions[1][0]).__name__ != "AccumulateGrad":
+            # split relevance between input and weight
+            c1 = x.sum() ** 2
+            c2 = weights.sum() ** 2
+            denom = c1 + c2 + epsilon
+            r1 = (c1 / denom) * r_in.sum(dim=1)
+            r2 = (c2 / denom) * r_in.sum(dim=0).swapaxes(0,1)
+            return renormalize_epsilon_scalar(r_in, r1, r2)
+        else:
+            # propagate relevance in parallel for input and weight
+            return r_in.sum(dim=1), r_in.sum(dim=0).swapaxes(0,1)
 
     @classmethod
+    @output_relevances
     def BmmBackwardProp(cls, grad_fn, r):
-        mat1 = grad_fn._saved_self
-        mat2 = grad_fn._saved_mat2
-        z = torch.bmm(mat1, mat2)
+        mat1 = grad_fn._saved_self # b s d
+        mat2 = grad_fn._saved_mat2 # b d o
+        z = torch.bmm(mat1, mat2) # b s o
 
         assert r.shape == z.shape, f"r shape {r.shape} must match z shape {z.shape}"
 
@@ -347,15 +403,25 @@ class LRPPropFunctions:
                 # If this is the first branch of the promise
                 return r # We will check if the promise is complete in the graph traversal
 
-        numerator = mat1.unsqueeze(-1) * mat2.unsqueeze(1)
-        denom = z_stabilized.unsqueeze(2)
-        ratio = numerator / denom
-        contrib = ratio * r.unsqueeze(2)
+        contribs = mat1.unsqueeze(3) * mat2.unsqueeze(1) # b s d o
+        z_uns = z_stabilized.unsqueeze(2) # b s d o
+        ratio = contribs / z_uns
+        r_in = ratio * r.unsqueeze(2)
 
-        # return relevance for mat1 and relevance for mat2
-        return contrib.sum(-1), contrib.sum(1)
+        if type(grad_fn.next_functions[1][0]).__name__ != "AccumulateGrad":
+            # split relevance between mat1 and mat2
+            c1 = mat1.sum() ** 2
+            c2 = mat2.sum() ** 2
+            denom = c1 + c2 + epsilon
+            r1 = (c1 / denom) * r_in.sum(dim=3)
+            r2 = (c2 / denom) * r_in.sum(dim=1)
+            return renormalize_epsilon_scalar(r_in, r1, r2)
+        else:
+            # propagate relevance in parallel for mat1 and mat2
+            return r_in.sum(dim=3), r_in.sum(dim=1)
 
     @classmethod
+    @output_relevances
     def NativeLayerNormBackwardProp(cls, grad_fn, r):
         input_ = grad_fn._saved_input
         mean = grad_fn._saved_result1
@@ -380,6 +446,7 @@ class LRPPropFunctions:
         return r, 0.0, 0.0
     
     @classmethod
+    @output_relevances
     def GeluBackwardProp(cls, grad_fn, r):
         if isinstance(r, AddBackwardPromise):
             r.setarg(torch.nn.GELU(grad_fn._saved_self), grad_fn)
@@ -388,6 +455,7 @@ class LRPPropFunctions:
         return r
     
     @classmethod
+    @output_relevances
     def SoftmaxBackwardProp(cls, grad_fn, r):
         if isinstance(r, AddBackwardPromise):
             r.setarg(grad_fn._saved_result, grad_fn)
@@ -396,27 +464,32 @@ class LRPPropFunctions:
         return r
 
     @classmethod
+    @output_relevances
     def IdentityProp(cls, grad_fn, r):
         """Placeholder for any missed operations, or general use for identity-rule operations."""
         return r
     
     @classmethod
+    @output_relevances
     def IndexPutFirstAxisBackwardProp(cls, grad_fn, r):
         """Identity but needs custom output count"""
         return r, 0.0
     
     @classmethod
+    @output_relevances
     def IndexFirstAxisBackwardProp(cls, grad_fn, r):
         """Identity but needs custom output count"""
         return r, 0.0
     
     @classmethod
+    @output_relevances
     def AccumulateGradProp(cls, grad_fn, r):
         if isinstance(r, AddBackwardPromise):
             r.setarg(grad_fn.variable)
         return 0.0
 
     @classmethod
+    @output_relevances
     def LRPCheckpointBackwardProp(cls, grad_fn, r):
         if isinstance(r, AddBackwardPromise):
             r.checkpoint(grad_fn)
@@ -425,6 +498,7 @@ class LRPPropFunctions:
         return r
     
     @classmethod
+    @output_relevances
     def EmbeddingBackwardProp(cls, grad_fn, r):
         idxs : torch.Tensor = grad_fn._saved_indices
         weights = grad_fn.next_functions[0][0].variable # BIG assumption here

@@ -18,7 +18,7 @@ class AddBackwardPromise:
     fwd_shape: used as target shape for shape-modifying operations in fwd
     other_branch: the branch of the promise that searches for the other argument of the addition
     """
-    # all_promises = []
+    all_promises = []
     def __init__(self, promise, idx):
         self.promise = promise
         self.parents : list[AddBackwardPromise] = promise["parents"]
@@ -30,8 +30,11 @@ class AddBackwardPromise:
         self.other_branch : AddBackwardPromise = None
         # self.pending_parents = len(self.parents)
         self.promise["tail_nodes"] = set()
+        self.before_acc = None
+        self.after_acc = None
+        self.accumulate_calls = 0
 
-        # AddBackwardPromise.all_promises.append(self) # For Debug
+        AddBackwardPromise.all_promises.append(self) # For Debug
 
     def nest_fwd(self, next_f):
         """Nests a new operation for recovering the operand for the promise origin"""
@@ -104,13 +107,19 @@ class AddBackwardPromise:
 
     def accumulate_rout(self, new_rout):
         assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
+        self.accumulate_calls += 1
+        self.before_acc = self.rout
         self.promise["rout"] = self.rout + new_rout
+        self.after_acc = self.rout
 
     def exec_bwd(self) -> tuple[list, torch.Tensor]:
         """Perform each saved backward execution chain to propagate relevance back down the branch.
         Save values for any checkpoints marked along the path and return them with their respective checkpoints."""
         assert self.ready and self.pending_parents == 0, \
             "Promise backward execution was triggered before promise was ready or before parent promise was complete."
+        # assert not self.complete, "Promise is complete, exec_bwd was already called."
+        if self.complete:
+            return
         res = self.rin
         checkpoints = []
         for checkpoint, fcn in self.bwd:
@@ -135,6 +144,8 @@ class AddBackwardPromise:
     def trigger_promise_completion(self):
         # This is only called once a promise receives its second argument.
         assert self.ready, "Promise completion was triggered before promise was ready."
+        if self.complete:
+            return
         if self.pending_parents == 0:
             # Either reached root of a promise tree, or we are in the exec_bwd call of a child of a completed promise.
             self.compute_rins()
@@ -146,26 +157,30 @@ class AddBackwardPromise:
             # Save checkpoint relevances to their grad_fn metadatas to collect later.
             for checkpoint, val in checkpoints:
                 checkpoint.metadata["checkpoint_relevance"] = val
+            if self.parents:
+                assert (self.rout.sum() - sum([ float(r.sum()) for r in self.promise["rins"] ])) / self.rout.sum() < 0.0001, \
+                    f"Expected child promise to have rout {self.rout.sum()} equal to sum of rins {sum([ float(r.sum()) for r in self.promise['rins'] ])}"
             self.set_complete()
 
             # Now that we have calculated the end relevance_in of this branch, we can feed it to the children promises.
-            for child_promise in self.children:
+            # for child_promise in self.children:
                 # if child_promise.rout is None:
                 #     child_promise.set_rout(res1.clone())
                 # else:
                 # child_promise.pending_parents -= 1
-                child_promise.accumulate_rout(res1)
-                child_promise.trigger_promise_completion()
+            if self.children:
+                self.children[0].accumulate_rout(res1) # Promise can only have 1 or 2 children
+                self.children[0].trigger_promise_completion() # If 2, they are two branches of the same promise, only update once
 
-            if self.other_branch is not None:
+            if self.other_branch is not None and self.other_branch.children:
                 # Do the same for the other branch in this promise. (I should really make Promise and Branch two different classes...)
-                for child_promise in self.other_branch.children:
+                # for child_promise in self.other_branch.children:
                     # if child_promise.rout is None:
                     #     child_promise.set_rout(res2.clone())
                     # else:
                     # child_promise.pending_parents -= 1
-                    child_promise.accumulate_rout(res2)
-                    child_promise.trigger_promise_completion()
+                self.other_branch.children[0].accumulate_rout(res2)
+                self.other_branch.children[0].trigger_promise_completion()
 
         else:
             # If there is a parent promise, but it is not complete yet, we can now set its arg with this promise's result.

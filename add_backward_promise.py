@@ -1,5 +1,10 @@
 import torch
-from util import epsilon, renormalize_epsilon
+from util import (
+    epsilon,
+    renormalize_epsilon,
+    DEBUG,
+    LRPCheckpoint,
+)
 
 class AddBackwardPromise:
     """
@@ -28,13 +33,10 @@ class AddBackwardPromise:
         self.bwd = [ (None, lambda x: x) ] # This will chain in case we come across a Checkpoint partway through
         self.fwd_shape = promise["rout"].shape # This will update after a shape-modifying operation is added to fwd
         self.other_branch : AddBackwardPromise = None
-        # self.pending_parents = len(self.parents)
         self.promise["tail_nodes"] = set()
-        self.before_acc = None
-        self.after_acc = None
-        self.accumulate_calls = 0
 
-        AddBackwardPromise.all_promises.append(self) # For Debug
+        if DEBUG:
+            AddBackwardPromise.all_promises.append(self)
 
     def nest_fwd(self, next_f):
         """Nests a new operation for recovering the operand for the promise origin"""
@@ -58,6 +60,7 @@ class AddBackwardPromise:
 
     @property
     def pending_parents(self):
+        """Returns number of parents of promise which are not complete."""
         return len([ parent for parent in self.parents if not parent.complete ])
 
     @property
@@ -107,10 +110,7 @@ class AddBackwardPromise:
 
     def accumulate_rout(self, new_rout):
         assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
-        self.accumulate_calls += 1
-        self.before_acc = self.rout
         self.promise["rout"] = self.rout + new_rout
-        self.after_acc = self.rout
 
     def exec_bwd(self) -> tuple[list, torch.Tensor]:
         """Perform each saved backward execution chain to propagate relevance back down the branch.
@@ -156,7 +156,7 @@ class AddBackwardPromise:
                 checkpoints += checkpoints2
             # Save checkpoint relevances to their grad_fn metadatas to collect later.
             for checkpoint, val in checkpoints:
-                checkpoint.metadata["checkpoint_relevance"] = val
+                LRPCheckpoint.save_val(checkpoint, val)
             if self.parents:
                 assert (self.rout.sum() - sum([ float(r.sum()) for r in self.promise["rins"] ])) / self.rout.sum() < 0.0001, \
                     f"Expected child promise to have rout {self.rout.sum()} equal to sum of rins {sum([ float(r.sum()) for r in self.promise['rins'] ])}"

@@ -1,6 +1,8 @@
 from typing import Tuple
 import torch
 
+DEBUG = False
+
 # For denominator stability in relevance distribution
 epsilon = 10e-6
 
@@ -52,8 +54,11 @@ class MmBackward0:
     def _sequence_nr(self):
         return self.sequence_nr
 
+
 class LRPCheckpoint(torch.autograd.Function):
     """Identity autograd fcn for marking where to capture relevance."""
+    num_checkpoints_reached = 0
+
     @staticmethod
     def forward(ctx, input: torch.Tensor) -> torch.Tensor:
         return input
@@ -62,7 +67,14 @@ class LRPCheckpoint(torch.autograd.Function):
     def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
         return grad_output, None, None
 
+    @classmethod
+    def save_val(cls, grad_fn, val):
+        grad_fn.metadata["checkpoint_relevance"] = val
+        grad_fn.metadata["checkpoint_ind"] = 0
+        cls.num_checkpoints_reached += 1
+
 create_checkpoint = LRPCheckpoint.apply
+
 
 def decompose_addmmbackward(grad_fn):
     """Assuming grad_fn is an instance of AddMmBackward, returns an AddBackward0 instance that is the parent

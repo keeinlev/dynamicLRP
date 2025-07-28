@@ -1,7 +1,13 @@
 import torch
 import torch.nn.functional as F
 from add_backward_promise import AddBackwardPromise
-from util import epsilon, renormalize_epsilon, renormalize_epsilon_scalar
+from util import (
+    epsilon,
+    renormalize_epsilon,
+    renormalize_epsilon_scalar,
+    DEBUG,
+    LRPCheckpoint,
+)
 
 """
 For all these functions, grad_fn is the autograd Node returned from traversing the autograd graph.
@@ -10,6 +16,8 @@ r is the relevance tensor of the output of the given Node.
 
 
 def output_relevances(func):
+    if not DEBUG:
+        return func
     def wrapper(*args, **kwargs):
         res = func(*args, **kwargs)
         grad_fn = args[1]
@@ -494,7 +502,7 @@ class LRPPropFunctions:
         if isinstance(r, AddBackwardPromise):
             r.checkpoint(grad_fn)
         else:
-            grad_fn.metadata["checkpoint_relevance"] = r
+            LRPCheckpoint.save_val(grad_fn, r)
         return r
     
     @classmethod

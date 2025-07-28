@@ -1,10 +1,17 @@
 import torch
+import time
 from torch.autograd.graph import Node
 from lrp_graph import make_graph
 from lrp_prop_fcns import LRPPropFunctions
-from add_backward_promise import AddBackwardPromise, compound_promises
+from add_backward_promise import (
+    AddBackwardPromise,
+    compound_promises,
+)
 from util import create_checkpoint
-from transformers import AutoModel, AutoTokenizer
+from transformers import (
+    AutoModel,
+    AutoTokenizer
+)
 
 def checkpoint_hook(module, input, output):
     return create_checkpoint(output)
@@ -27,7 +34,8 @@ num_checkpoints_reached = 0
 
 fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
 
-# visited1 = set()
+start_time = time.time()
+visited1 = set()
 with torch.no_grad():
     # Create the first relevance layer via max logit.
     m = hidden_states.max(-1)
@@ -93,7 +101,7 @@ with torch.no_grad():
 
         curnode_inputs = input_tracker[curnode]
 
-        # visited1.add(curnode) # For debugging
+        visited1.add(curnode) # For debugging
 
         # According to next_functions
         children = out_adj_list[curnode]
@@ -130,6 +138,7 @@ with torch.no_grad():
                 else:
                     curnode_in_rel = agg_promises
         else:
+            # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
             curnode_in_rel = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
 
 
@@ -148,6 +157,7 @@ with torch.no_grad():
                     curnode_in_rel.children.append(pre_promise)
                     curnode_in_rel.setarg(pre_promise.arg1 + pre_promise.arg2)
                 else:
+                    # Manually set the rout and trigger the promise to finish the backward prop.
                     pre_promise.accumulate_rout(curnode_in_rel)
                     pre_promise.trigger_promise_completion()
 
@@ -182,9 +192,6 @@ with torch.no_grad():
         if len(children) == 0 or all(child is None for child in children):
             continue
         elif len(children) == 1:
-            # if isinstance(curnode_outputs, tuple):
-            #     curnode_outputs = [ curnode_outputs[0] ]
-            # else:
             curnode_outputs = [ curnode_outputs ]
             
         elif len(children) != len(curnode_outputs):
@@ -220,5 +227,6 @@ with torch.no_grad():
         stack = ready_children + stack
         num_checkpoints_reached = sum([ "checkpoint_relevance" in checkpoint.metadata for checkpoint in checkpoints])
 
-
+end_time = time.time()
+print(f"took {end_time - start_time} seconds")
 checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]

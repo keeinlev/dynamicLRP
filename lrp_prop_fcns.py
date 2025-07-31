@@ -475,7 +475,8 @@ class LRPPropFunctions:
     @output_relevances
     def IdentityProp(cls, grad_fn, r):
         """Placeholder for any missed operations, or general use for identity-rule operations."""
-        return r
+        num_rel_outs = len(grad_fn.next_functions)
+        return tuple([ r / num_rel_outs for _ in range(num_rel_outs) ])
     
     @classmethod
     @output_relevances

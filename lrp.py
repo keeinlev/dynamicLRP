@@ -1,5 +1,6 @@
 import torch
 import time
+from transformers.modeling_outputs import SequenceClassifierOutput
 from torch.autograd.graph import Node
 from lrp_graph import make_graph
 from lrp_prop_fcns import LRPPropFunctions
@@ -11,6 +12,27 @@ from util import create_checkpoint
 
 def checkpoint_hook(module, input, output):
     return create_checkpoint(output)
+
+def seq_class_lrp_hook(module, input, output, print_cond = False):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logits : torch.Tensor = None
+    
+    if isinstance(output, SequenceClassifierOutput):
+        logits = output.logits
+    elif isinstance(output, tuple[torch.Tensor]):
+        logits = output[1]
+    else:
+        raise ValueError("Expected a model output of type tuple[Tensor] or SequenceClassifierOutput for running LRP. Is the model being used a Sequence Classifier model?")
+    
+    lrp_checkpoints, _, _, visited = lrp_engine(logits.to(device))
+    with open("lrp_outputs.pt", "wb") as fileOut:
+        torch.save(lrp_checkpoints, fileOut)
+    
+    if print_cond:
+        print(list(visited))
+
+    return output
+
 
 def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None):
     if in_adj_list is None or out_adj_list is None or visited is None:
@@ -27,19 +49,25 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
             # Create the first relevance layer via max logit.
             m = hidden_states.max(-1)
             relevance = torch.zeros_like(hidden_states)
-            _, s, _ = hidden_states.shape
+            s = hidden_states.shape[-2]
+            dim = relevance.dim()
             for i, inds in enumerate(m.indices):
-                relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
+                if dim == 2:
+                    relevance[list(range(s)),inds] = torch.ones_like(m.values[0])
+                elif dim == 3:
+                    relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
+                else:
+                    raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
 
             # Setup the first iteration
             input_tracker[hidden_states.grad_fn] = [ relevance ]
-            stack = [hidden_states.grad_fn]
+            stack : list[Node] = [hidden_states.grad_fn]
             in_adj_list[hidden_states.grad_fn] = []
             nodes_pending = { k : len(v) for k, v in list(in_adj_list.items()) }
 
             promise_queue : list[Node] = []
 
-            promise_traversal_stack = []
+            promise_traversal_stack : list[Node] = []
             promise_traversal_mode = False
 
             promise_fulfillment_mode = False
@@ -47,6 +75,8 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
             while (stack or promise_traversal_stack or promise_queue) and num_checkpoints_reached < len(checkpoints):
                 
                 curnode = None
+
+                ####### RUN MODE DETERMINATION
                 
                 # Decide where we should take curnode from
                 if promise_queue and any(fcn.metadata["promise"]["complete"] for fcn in promise_queue):
@@ -85,6 +115,11 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                     stack = stack[1:]
                     promise_traversal_mode = False
                     promise_fulfillment_mode = False
+
+                ####### END RUN MODE DETERMINATION
+
+
+                ####### INPUT MERGING
 
                 curnode_inputs = input_tracker[curnode]
 
@@ -128,6 +163,10 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                     # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
                     curnode_in_rel = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
 
+                ####### END INPUT MERGING
+
+
+                ####### PRE-PROMISE RETRIEVAL
 
                 if not promise_traversal_mode and "pre_promise" in curnode.metadata:
                     # We have already traversed a promise tree, but have not calculated its bwd,
@@ -161,9 +200,15 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                         # just collect the computed rin and re-traverse this node with a tensor rin input like normal.
                         curnode_in_rel = pre_promise.rin
 
+                ####### END PRE-PROMISE RETRIEVAL
+
+
                 if promise_traversal_mode:
                     # We want to save this so later we'll know we've already traversed this node.
                     curnode.metadata["pre_promise"] = curnode_in_rel
+
+
+                ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
 
                 # Call the propagation function for the node
                 curnode_outputs = fcn_map[type(curnode).__name__](curnode, curnode_in_rel)
@@ -174,6 +219,17 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                     curnode.metadata["promise_idx"] = curnode_outputs.idx
                     promise_queue.append(curnode)
                     continue
+
+                ####### END PROPAGATION FCN AND PROMISE QUEUE HANDLING
+
+
+                ####### OUTPUT PROPAGATION TO CHILDREN
+
+                # 1  2  3
+                #    0
+
+                # curnode_outputs = prop_fcn(node_0, rel) -> rel_in_1, rel_in_2, rel_in_3
+
 
                 # Children may contain None, like grad_fn.next_functions, to keep integrity of input tracking
                 if len(children) == 0 or all(child is None for child in children):
@@ -199,9 +255,14 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                     assert len(input_tracker[child]) <= len(in_adj_list[child]), \
                         f"Too many inputs landed for {child}"
 
+                ####### END OUTPUT PROPAGATION TO CHILDREN
+
+
+                ####### SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
+
                 # Collect children who now have all their inputs or that have promise(s) depending on them.
-                ready_children = []
-                promise_depends_on = []
+                ready_children : list[Node] = [] # All children who have all their inputs landed
+                promise_depends_on : list[Node] = [] # All children who do not have all their inputs landed but have at least one incomplete promise input landed.
                 for i, child in enumerate(children):
                     if child is None:
                         continue
@@ -213,6 +274,8 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                 promise_traversal_stack = promise_depends_on + promise_traversal_stack
                 stack = ready_children + stack
                 num_checkpoints_reached = sum([ "checkpoint_relevance" in checkpoint.metadata for checkpoint in checkpoints])
+
+                ####### END SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
 
         end_time = time.time()
         print(f"took {end_time - start_time} seconds")

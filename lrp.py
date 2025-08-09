@@ -4,14 +4,16 @@ from transformers.modeling_outputs import SequenceClassifierOutput
 from torch.autograd.graph import Node
 from lrp_graph import make_graph
 from lrp_prop_fcns import LRPPropFunctions
-from add_backward_promise import (
-    AddBackwardPromise,
-    compound_promises,
-)
+from add_backward_promise import AddBackwardPromise
+from dummy_promise import compound_promises
+from promise import Promise
 from util import create_checkpoint
 
 def checkpoint_hook(module, input, output):
     return create_checkpoint(output)
+
+def checkpoint_pre_hook(module, input):
+    return tuple( create_checkpoint(x) for x in input )
 
 def seq_class_lrp_hook(module, input, output, print_cond = False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -34,7 +36,7 @@ def seq_class_lrp_hook(module, input, output, print_cond = False):
     return output
 
 
-def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None):
+def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None, visited=None):
     if in_adj_list is None or out_adj_list is None or visited is None:
         in_adj_list, out_adj_list, names = make_graph(hidden_states)
         input_tracker : dict[Node, list] = { k : [] for k in list(in_adj_list.keys()) }
@@ -49,15 +51,19 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
             # Create the first relevance layer via max logit.
             m = hidden_states.max(-1)
             relevance = torch.zeros_like(hidden_states)
-            s = hidden_states.shape[-2]
-            dim = relevance.dim()
-            for i, inds in enumerate(m.indices):
-                if dim == 2:
-                    relevance[list(range(s)),inds] = torch.ones_like(m.values[0])
-                elif dim == 3:
-                    relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
-                else:
-                    raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
+            if m.indices.dim() == 0:
+                relevance[0] = 1.0
+            else:
+                s = hidden_states.shape[-2]
+                dim = relevance.dim()
+                
+                for i, inds in enumerate(m.indices):
+                    if dim == 2:
+                        relevance[list(range(s)),inds] = torch.ones_like(m.values[0])
+                    elif dim == 3:
+                        relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
+                    else:
+                        raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
 
             # Setup the first iteration
             input_tracker[hidden_states.grad_fn] = [ relevance ]
@@ -137,20 +143,20 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                     for input_ in curnode_inputs:
                         if isinstance(input_, torch.Tensor):
                             tensor_inputs.append(input_)
-                        elif isinstance(input_, AddBackwardPromise) and input_.complete:
+                        elif isinstance(input_, Promise) and input_.complete:
                             complete_promise_inputs.append(input_)
-                        elif isinstance(input_, AddBackwardPromise):
+                        elif isinstance(input_, Promise):
                             pending_promise_inputs.append(input_)
                         elif input_ == 0.0:
                             continue
                         else:
                             print(input_)
-                            raise ValueError(f"Expected relevance input to Node {curnode} to be type AddBackwardPromise or Tensor, but got {type(input_)} instead.")
+                            raise ValueError(f"Expected relevance input to Node {curnode} to be type Promise or Tensor, but got {type(input_)} instead.")
             
                     if not complete_promise_inputs and not pending_promise_inputs and not tensor_inputs:
                         continue
             
-                    # Aggregate all inputs into one Tensor or AddBackwardPromise
+                    # Aggregate all inputs into one Tensor or Promise
                     curnode_in_rel = sum(tensor_inputs) + sum([ p.rin for p in complete_promise_inputs ])
                     if pending_promise_inputs:
                         # In promise traversal mode this will be True
@@ -172,12 +178,12 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                 if not promise_traversal_mode and "pre_promise" in curnode.metadata:
                     # We have already traversed a promise tree, but have not calculated its bwd,
                     # since it was done in promise traversal mode.
-                    pre_promise : AddBackwardPromise = curnode.metadata["pre_promise"]
+                    pre_promise : Promise = curnode.metadata["pre_promise"]
 
                     assert pre_promise.ready, f"Pre-promise at {curnode} was assumed to be ready but was not."
 
                     if not pre_promise.complete:
-                        if isinstance(curnode_in_rel, AddBackwardPromise):
+                        if isinstance(curnode_in_rel, Promise):
                             # If there is still pending promises at this node, try to complete them via the aggregate promise.
                             # In the case this completes and propagates relevance down, we will have to pick up from the tail nodes
                             # of the aggregate promise.
@@ -216,10 +222,10 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                 # Call the propagation function for the node
                 curnode_outputs = fcn_map[type(curnode).__name__](curnode, curnode_in_rel)
 
-                if isinstance(curnode_outputs, AddBackwardPromise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
+                if isinstance(curnode_outputs, Promise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
                     # Node is waiting on Promise to be completed, add to promise queue and come back later.
                     curnode.metadata["promise"] = curnode_outputs.promise
-                    curnode.metadata["promise_idx"] = curnode_outputs.idx
+                    curnode.metadata["promise_idx"] = 0 if not isinstance(curnode_outputs, AddBackwardPromise) else curnode_outputs.idx
                     promise_queue.append(curnode)
                     continue
 
@@ -248,7 +254,7 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                 for i, child in enumerate(children):
                     if child is None:
                         # Discard the input (it shouldn't have value anyway), if it's a promise make it a zero-promise
-                        if isinstance(curnode_outputs[i], AddBackwardPromise):
+                        if isinstance(curnode_outputs[i], Promise):
                             # Manually set the arg to not trigger any additional side effects
                             curnode_outputs[i].promise["args"][curnode_outputs[i].idx] = 0.0
                         continue
@@ -271,7 +277,7 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                         continue
                     if nodes_pending[child] == 0 and child not in promise_queue:
                         ready_children.append(child)
-                    elif isinstance(curnode_outputs[i], AddBackwardPromise) and not curnode_outputs[i].complete and "pre_promise" not in child.metadata:
+                    elif isinstance(curnode_outputs[i], Promise) and not curnode_outputs[i].complete and "pre_promise" not in child.metadata:
                         promise_depends_on.append(child)
 
                 promise_traversal_stack = promise_depends_on + promise_traversal_stack
@@ -285,5 +291,35 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
         # Sorted in desc because they are indexed in the order that we save them in (going backwards).
         checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
         checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
+
+
+        # Checking conservation holds across the entire propagation
+        # The frontier includes:
+        # a) true leaf nodes (no children)
+        # b) nodes which received inputs but were never traversed due to computation ending early
+
+        frontier = [ node 
+                    for node, out_nodes in list(out_adj_list.items())
+                    if len(out_nodes) == 0
+                  ]
+
+        frontier += [ node for node in stack if input_tracker[node] ]
+
+        frontier = list(set(frontier))
+
+        # Tally the total relevance at the frontier
+        total_frontier_in = 0.0
+        for node in frontier:
+            total_in = 0.0
+            for input_ in input_tracker[node]:
+                if isinstance(input_, AddBackwardPromise):
+                    if input_.complete:
+                        total_in += input_.rin.sum()
+                    else:
+                        continue
+                elif isinstance(input_, torch.Tensor):
+                    total_in += input_.sum()
+            total_frontier_in += total_in
+        print(total_frontier_in)
 
         return checkpoint_vals, in_adj_list, out_adj_list, visited

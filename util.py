@@ -1,7 +1,7 @@
 from typing import Tuple
 import torch
 
-DEBUG = False
+DEBUG = True
 
 # For denominator stability in relevance distribution
 epsilon = 10e-6

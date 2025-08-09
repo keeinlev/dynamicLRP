@@ -288,10 +288,6 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
 
         end_time = time.time()
         print(f"took {end_time - start_time} seconds")
-        # Sorted in desc because they are indexed in the order that we save them in (going backwards).
-        checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
-        checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
-
 
         # Checking conservation holds across the entire propagation
         # The frontier includes:
@@ -322,4 +318,7 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
             total_frontier_in += total_in
         print(total_frontier_in)
 
+        # Sorted in desc because they are indexed in the order that we save them in (going backwards).
+        checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
+        checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
         return checkpoint_vals, in_adj_list, out_adj_list, visited

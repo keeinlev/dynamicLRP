@@ -1,7 +1,7 @@
 from typing import Tuple
 import torch
 
-DEBUG = True
+DEBUG = False
 
 # For denominator stability in relevance distribution
 epsilon = 10e-6
@@ -15,6 +15,14 @@ def renormalize_epsilon_scalar(rz, rx, ry):
     """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
     scale = rz.nansum() / (rx.nansum() + ry.nansum())
     return rx * scale, ry * scale
+
+def shift_and_renormalize(rz, rx, alpha=0.5):
+    """Shifts rx by alpha in the positive direction, then renormalizes rx to rz via scalar sums"""
+    # if rx.max() - rx.min() <= rz.sum():
+    #   return rx
+    rx = rx + alpha
+    scale = rz.nansum() / rx.nansum()
+    return rx * scale
 
 
 # Handling AddMmBackward0 is not the exact same as just AddBackward0. The calculation of the in-relevances
@@ -70,7 +78,7 @@ class LRPCheckpoint(torch.autograd.Function):
     @classmethod
     def save_val(cls, grad_fn, val):
         grad_fn.metadata["checkpoint_relevance"] = val
-        grad_fn.metadata["checkpoint_ind"] = 0
+        grad_fn.metadata["checkpoint_ind"] = cls.num_checkpoints_reached
         cls.num_checkpoints_reached += 1
 
 create_checkpoint = LRPCheckpoint.apply

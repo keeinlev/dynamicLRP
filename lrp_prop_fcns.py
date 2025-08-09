@@ -7,6 +7,7 @@ from util import (
     epsilon,
     renormalize_epsilon,
     renormalize_epsilon_scalar,
+    shift_and_renormalize,
     DEBUG,
     LRPCheckpoint,
 )
@@ -451,7 +452,7 @@ class LRPPropFunctions:
             return renormalize_epsilon_scalar(r_in, r1, r2)
         else:
             # propagate relevance in parallel for input and weight
-            return r_in.nansum(dim=-1), r_in.nansum(dim=0)
+            return shift_and_renormalize(r, r_in.sum(dim=-1)), torch.zeros_like(weights)
 
     @classmethod
     @output_relevances
@@ -490,7 +491,7 @@ class LRPPropFunctions:
             return renormalize_epsilon_scalar(r_in, r1, r2)
         else:
             # propagate relevance in parallel for mat1 and mat2
-            return r_in.nansum(dim=3), r_in.nansum(dim=1)
+            return shift_and_renormalize(r, r_in.nansum(dim=3)), torch.zeros_like(mat2)
 
     @classmethod
     @output_relevances

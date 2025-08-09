@@ -162,6 +162,7 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                 else:
                     # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
                     curnode_in_rel = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
+                    del curnode.metadata["promise"], curnode.metadata["promise_idx"]
 
                 ####### END INPUT MERGING
 
@@ -186,6 +187,8 @@ def lrp_engine(hidden_states, in_adj_list=None, out_adj_list=None, visited=None)
                             # Manually set the rout and trigger the promise to finish the backward prop.
                             pre_promise.accumulate_rout(curnode_in_rel)
                             pre_promise.trigger_promise_completion()
+
+                    del curnode.metadata["pre_promise"]
 
                     tail_nodes = pre_promise.promise["tail_nodes"]
                     if curnode in tail_nodes:

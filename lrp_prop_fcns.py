@@ -25,18 +25,18 @@ def output_relevances(func):
         if type(grad_fn).__name__ == "AddBackward0":
             print(f"{grad_fn}:", end="") 
             if isinstance(r, AddBackwardPromise):
-                print(r.rout.sum())
+                print(r.rout.nansum())
             else:
-                print(r.sum())
+                print(r.nansum())
         if (not isinstance(r, AddBackwardPromise)) and \
                 not isinstance(res, AddBackwardPromise) \
                 and (not isinstance(res, tuple) or not isinstance(res[0], AddBackwardPromise)):
             print(f"{grad_fn}: ", end="")
-            rout = r.sum()
+            rout = r.nansum()
             rins = None
             if isinstance(res, tuple):
-                rins = ((res[0].sum() if isinstance(res[0], torch.Tensor) else res[0]) +
-                        (res[1].sum() if isinstance(res[1], torch.Tensor) else res[1]))
+                rins = ((res[0].nansum() if isinstance(res[0], torch.Tensor) else res[0]) +
+                        (res[1].nansum() if isinstance(res[1], torch.Tensor) else res[1]))
             else:
                 rins = res.sum()
             print(rout, rins)
@@ -116,7 +116,7 @@ class LRPPropFunctions:
             r.nest_bwd(lambda x: x.view(upstream_shape).clone())
             r.fwd_shape = upstream_shape
             return r
-        return r.view(upstream_shape).clone()
+        return r.reshape(upstream_shape)
 
     @classmethod
     @output_relevances
@@ -380,17 +380,17 @@ class LRPPropFunctions:
         ratio = contribs.swapaxes(1,2) / z_uns
         r_in = r.unsqueeze(2) * ratio
 
-        if type(grad_fn.next_functions[1][0]).__name__ != "AccumulateGrad":
+        if type(grad_fn.next_functions[1][0].next_functions[0][0]).__name__ != "AccumulateGrad":
             # split relevance between input and weight
-            c1 = x.sum() ** 2
-            c2 = weights.sum() ** 2
+            c1 = x.nansum() ** 2
+            c2 = weights.nansum() ** 2
             denom = c1 + c2 + epsilon
-            r1 = (c1 / denom) * r_in.sum(dim=1)
-            r2 = (c2 / denom) * r_in.sum(dim=0).swapaxes(0,1)
+            r1 = (c1 / denom) * r_in.nansum(dim=1)
+            r2 = (c2 / denom) * r_in.nansum(dim=0).swapaxes(0,1)
             return renormalize_epsilon_scalar(r_in, r1, r2)
         else:
             # propagate relevance in parallel for input and weight
-            return r_in.sum(dim=1), r_in.sum(dim=0).swapaxes(0,1)
+            return r_in.nansum(dim=1), r_in.nansum(dim=0).swapaxes(0,1)
 
     @classmethod
     @output_relevances
@@ -416,17 +416,17 @@ class LRPPropFunctions:
         ratio = contribs / z_uns
         r_in = ratio * r.unsqueeze(2)
 
-        if type(grad_fn.next_functions[1][0]).__name__ != "AccumulateGrad":
+        if type(grad_fn.next_functions[1][0].next_functions[0][0]).__name__ != "AccumulateGrad":
             # split relevance between mat1 and mat2
-            c1 = mat1.sum() ** 2
-            c2 = mat2.sum() ** 2
+            c1 = mat1.nansum() ** 2
+            c2 = mat2.nansum() ** 2
             denom = c1 + c2 + epsilon
-            r1 = (c1 / denom) * r_in.sum(dim=3)
-            r2 = (c2 / denom) * r_in.sum(dim=1)
+            r1 = (c1 / denom) * r_in.nansum(dim=3)
+            r2 = (c2 / denom) * r_in.nansum(dim=1)
             return renormalize_epsilon_scalar(r_in, r1, r2)
         else:
             # propagate relevance in parallel for mat1 and mat2
-            return r_in.sum(dim=3), r_in.sum(dim=1)
+            return r_in.nansum(dim=3), r_in.nansum(dim=1)
 
     @classmethod
     @output_relevances
@@ -476,6 +476,16 @@ class LRPPropFunctions:
     def IdentityProp(cls, grad_fn, r):
         """Placeholder for any missed operations, or general use for identity-rule operations."""
         num_rel_outs = len(grad_fn.next_functions)
+
+        if isinstance(r, AddBackwardPromise):
+            if hasattr(grad_fn, "_saved_result"):
+                r.setarg(grad_fn._saved_result)
+                if r.complete:
+                    return r.rin
+                return r
+            else:
+                raise ValueError(f"{grad_fn} promise handling is currently unsupported. Please open an Issue or PR for implementing the propagation function.")
+
         if num_rel_outs == 1:
             return r
         return tuple([ r / num_rel_outs for _ in range(num_rel_outs) ])
@@ -483,13 +493,13 @@ class LRPPropFunctions:
     @classmethod
     @output_relevances
     def IndexPutFirstAxisBackwardProp(cls, grad_fn, r):
-        """Identity but needs custom output count"""
+        """Identity but needs custom output"""
         return r, 0.0
     
     @classmethod
     @output_relevances
     def IndexFirstAxisBackwardProp(cls, grad_fn, r):
-        """Identity but needs custom output count"""
+        """Identity but needs custom output"""
         return r, 0.0
     
     @classmethod

@@ -13,7 +13,7 @@ def renormalize_epsilon(rz, rx, ry):
 
 def renormalize_epsilon_scalar(rz, rx, ry):
     """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
-    scale = rz.sum() / (rx.sum() + ry.sum())
+    scale = rz.nansum() / (rx.nansum() + ry.nansum())
     return rx * scale, ry * scale
 
 

@@ -158,8 +158,8 @@ class AddBackwardPromise:
             for checkpoint, val in checkpoints:
                 LRPCheckpoint.save_val(checkpoint, val)
             if self.parents:
-                assert (self.rout.sum() - sum([ float(r.sum()) for r in self.promise["rins"] ])) / self.rout.sum() < 0.0001, \
-                    f"Expected child promise to have rout {self.rout.sum()} equal to sum of rins {sum([ float(r.sum()) for r in self.promise['rins'] ])}"
+                assert (self.rout.nansum() - sum([ float(r.nansum()) for r in self.promise["rins"] ])) / self.rout.nansum() < 0.0001, \
+                    f"Expected child promise to have rout {self.rout.nansum()} equal to sum of rins {sum([ float(r.nansum()) for r in self.promise['rins'] ])}"
             self.set_complete()
 
             # Now that we have calculated the end relevance_in of this branch, we can feed it to the children promises.

@@ -69,6 +69,7 @@ class LRPCheckpoint(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(input)
         return input
 
     @staticmethod

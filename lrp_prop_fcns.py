@@ -45,10 +45,20 @@ def output_relevances(func):
             print(rout, rins)
         return res
     return wrapper
+
+def add_node_to_promise_path(func):
+    def wrapper(*args, **kwargs):
+        r = args[2]
+        grad_fn = args[1]
+        if isinstance(r, Promise):
+            r.add_to_path(grad_fn.metadata["topo_ind"])
+        return func(*args, **kwargs)
+    return wrapper
 class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def AddBackwardProp(cls, grad_fn, r):
         # IMPORTANT: AddBackward0 does not actually store any operands of the addition, so we have
         # to get a bit tricky.
@@ -84,8 +94,10 @@ class LRPPropFunctions:
             promise["parents"] = [r]
             promise["rout"] = torch.zeros_like(r.rout) # Placeholder for shape
 
-        promise1 = AddBackwardPromise(promise, 0)
-        promise2 = AddBackwardPromise(promise, 1)
+        traversal_ind = grad_fn.metadata["topo_ind"]
+
+        promise1 = AddBackwardPromise(promise, traversal_ind, 0)
+        promise2 = AddBackwardPromise(promise, traversal_ind, 1)
 
         promise1.other_branch = promise2
         promise2.other_branch = promise1
@@ -98,6 +110,8 @@ class LRPPropFunctions:
         return promise1, promise2
     
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def SumBackwardProp(cls, grad_fn, r):
         """Uses Promise structure to correctly propagate relevance back through
         a Sum operation.
@@ -118,8 +132,10 @@ class LRPPropFunctions:
         if isinstance(r, Promise):
             promise["parents"] = [r]
             promise["rout"] = torch.zeros_like(r.rout) # Placeholder for shape
+        
+        traversal_ind = grad_fn.metadata["topo_ind"]
 
-        promise = SumBackwardPromise(promise, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"))
+        promise = SumBackwardPromise(promise, traversal_ind, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"))
 
         if isinstance(r, Promise):
             r.children = [promise]
@@ -129,6 +145,8 @@ class LRPPropFunctions:
         return promise
     
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def MeanBackwardProp(cls, grad_fn, r):
         """Mean is just a scaled sum by 1/n, so the ratios of all elements
         and their contributions should still be the same as if they were a normal
@@ -136,6 +154,8 @@ class LRPPropFunctions:
         return cls.SumBackwardProp(grad_fn, r)
 
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def MaxBackwardProp(cls, grad_fn, r):
         max_type = 0 if hasattr(grad_fn, "_saved_dim") else 1
 
@@ -155,6 +175,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def ViewBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, Promise):
@@ -167,6 +188,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def UnsafeViewBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, Promise):
@@ -179,6 +201,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def ReshapeBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, Promise):
@@ -191,6 +214,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def ReshapeAliasBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, Promise):
@@ -203,6 +227,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def SliceBackwardProp(cls, grad_fn, r):
         # Assumes the index corresponding to _saved_start in the forward pass is non-negative.
         # If it was negative-indexed, i.e. x[-i:] autograd saves the index as INT_MAX - i.
@@ -232,6 +257,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def IndexBackwardProp(cls, grad_fn, r):
         # An Index can be compound, unlike Slice, i.e. a[[0,1], [1,2]] is ONE Index op, whereas a[:,1:] is TWO Slice ops.
         # This is because (in this case) the second Slice depends on the first. It's saying that from the result of
@@ -257,6 +283,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def SelectBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         dim = grad_fn._saved_dim
@@ -277,6 +304,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def TBackwardProp(cls, grad_fn, r):
         # Not sure why TBackward is different from TransposeBackward, but it seems like this is only
         # in Linear layer matmuls on W for xW^T before Mm and Addmm operations.
@@ -296,6 +324,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def TransposeBackwardProp(cls, grad_fn, r):
         dim1 = grad_fn._saved_dim0
         dim2 = grad_fn._saved_dim1
@@ -319,6 +348,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def PermuteBackwardProp(cls, grad_fn, r):
         dims = grad_fn._saved_dims
 
@@ -337,6 +367,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def ExpandBackwardProp(cls, grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         downstream_shape = r.shape
@@ -362,6 +393,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def MulBackwardProp(cls, grad_fn, r):
         arg1 = grad_fn._saved_self
         arg2 = grad_fn._saved_other
@@ -391,6 +423,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def DivBackwardProp(cls, grad_fn, r):
         arg1 = grad_fn._saved_self
         arg2 = grad_fn._saved_other
@@ -420,6 +453,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def MmBackwardProp(cls, grad_fn, r):
         x = grad_fn._saved_self # s d
         weights = grad_fn._saved_mat2 # d o
@@ -456,6 +490,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def BmmBackwardProp(cls, grad_fn, r):
         mat1 = grad_fn._saved_self # b s d
         mat2 = grad_fn._saved_mat2 # b d o
@@ -495,6 +530,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def NativeLayerNormBackwardProp(cls, grad_fn, r):
         input_ = grad_fn._saved_input
         mean = grad_fn._saved_result1
@@ -520,6 +556,7 @@ class LRPPropFunctions:
     
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def GeluBackwardProp(cls, grad_fn, r):
         if isinstance(r, Promise):
             r.setarg(torch.nn.GELU(grad_fn._saved_self), grad_fn)
@@ -529,6 +566,7 @@ class LRPPropFunctions:
     
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def SoftmaxBackwardProp(cls, grad_fn, r):
         if isinstance(r, Promise):
             r.setarg(grad_fn._saved_result, grad_fn)
@@ -538,6 +576,7 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def IdentityProp(cls, grad_fn, r):
         """Placeholder for any missed operations, or general use for identity-rule operations."""
         num_rel_outs = len(grad_fn.next_functions)
@@ -557,18 +596,21 @@ class LRPPropFunctions:
     
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def IndexPutFirstAxisBackwardProp(cls, grad_fn, r):
         """Identity but needs custom output"""
         return r, 0.0
     
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def IndexFirstAxisBackwardProp(cls, grad_fn, r):
         """Identity but needs custom output"""
         return r, 0.0
     
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def AccumulateGradProp(cls, grad_fn, r):
         if isinstance(r, Promise):
             r.setarg(grad_fn.variable)
@@ -576,15 +618,22 @@ class LRPPropFunctions:
 
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def LRPCheckpointBackwardProp(cls, grad_fn, r):
+        saved_input = grad_fn._saved_tensors[0]
         if isinstance(r, Promise):
-            r.checkpoint(grad_fn)
+            r.setarg(saved_input)
+            if r.complete:
+                r = r.rin
+            else:
+                return r
         else:
             LRPCheckpoint.save_val(grad_fn, r)
         return r
     
     @classmethod
     @output_relevances
+    @add_node_to_promise_path
     def EmbeddingBackwardProp(cls, grad_fn, r):
         idxs : torch.Tensor = grad_fn._saved_indices
         weights = grad_fn.next_functions[0][0].variable # BIG assumption here

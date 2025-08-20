@@ -1,8 +1,9 @@
-from abc import abstractmethod
 import torch
+from abc import abstractmethod
+from torch.autograd.graph import Node
+from typing import Callable, Union
 from util import (
     DEBUG,
-    LRPCheckpoint,
 )
 
 class Promise:
@@ -20,40 +21,77 @@ class Promise:
         So you should apply from left to right, but the inner functions themselves nest right to left.
     fwd_shape: used as target shape for shape-modifying operations in fwd
     other_branch: if it exists, the branch of the promise that searches for the other argument of the operation
+    arg_node_ind: the unique index of the grad_fn node at which this branch's argument was found
+    arg_node_retrieval_fcn
     """
+    all_inner_nodes : set[int] = set()
+    start_nodes_to_promise = {}
+    leaf_promises = []
     all_promises = []
-    def __init__(self, promise, *args, **kwargs):
-        self.promise = promise
+    def __init__(self, promise, traversal_ind, *args, **kwargs):
+        self.promise : dict = promise
         self.parents : list[Promise] = promise["parents"]
         self.children : list[Promise | tuple[Promise]] = [] # Will be added to if further nested promise Nodes are found.
-        self.fwd = lambda x: x
-        self.bwd = [ (None, lambda x: x) ] # This will chain in case we come across a Checkpoint partway through
+        self.fwd : Callable[[torch.Tensor]] = lambda x: x
+        self.bwd : Callable[[torch.Tensor]] = lambda x: x
         self.fwd_shape = promise["rout"].shape # This will update after a shape-modifying operation is added to fwd
         self.promise["tail_nodes"] = set()
-        self.other_branch = None
+        self.other_branch : Promise = None
+        self.arg_node_ind : int = None
+        self.arg_node_retrieval_fcn : Union[str, Callable[[Node]]] = None
+        self.start_ind : int = traversal_ind
+        self.path : set[int] = set()
+
+        if traversal_ind not in Promise.start_nodes_to_promise:
+            # Can access other_branch if needed
+            Promise.start_nodes_to_promise[traversal_ind] = [ self ]
 
         if DEBUG:
             Promise.all_promises.append(self)
+    
+    def add_to_path(self, node_ind):
+        self.path.add(node_ind)
 
     def nest_fwd(self, next_f):
         """Nests a new operation for recovering the operand for the promise origin"""
         prev_fwd = self.fwd
         self.fwd = lambda x: prev_fwd(next_f(x))
 
-    def checkpoint(self, new_checkpoint):
-        """Marks a checkpoint in the backwards op chain and opens a new chain after the checkpoint"""
-        self.bwd[-1] = (new_checkpoint, self.bwd[-1][1])
-        self.bwd.append((None, lambda x: x))
+    # def checkpoint(self, new_checkpoint):
+    #     """Marks a checkpoint in the backwards op chain and opens a new chain after the checkpoint"""
+    #     self.bwd[-1] = (new_checkpoint, self.bwd[-1][1])
+    #     self.bwd.append((None, lambda x: x))
 
     def nest_bwd(self, next_f):
         """Stacks on a new operation for transforming the promised relevance back down the branch"""
-        last_checkpoint, most_recent_f = self.bwd[-1] # last_checkpoint is actually always None here
-        self.bwd[-1] = (last_checkpoint, lambda x: next_f(most_recent_f(x)))
+        most_recent_f = self.bwd
+        self.bwd = lambda x: next_f(most_recent_f(x))
     
     def __add__(self, other: torch.Tensor):
         assert self.fwd_shape == other.shape
         self.nest_bwd(lambda x: x + other)
         return self
+    
+    def clear_args_and_rout(self):
+        """Sets all args and rout to None"""
+        for i in range(len(self.promise["args"])):
+            self.promise["args"][i] = None
+        self.set_rout(None)
+        self.promise["complete"] = False
+        self.promise["ready"] = False
+    
+    @classmethod
+    def clear_args_and_rout_raw(cls, promise_dict):
+        """Sets all args and rout to None for the raw promise dict"""
+        for i in range(len(promise_dict["args"])):
+            promise_dict["args"][i] = None
+        promise_dict["rout"] = None
+        promise_dict["complete"] = False
+        promise_dict["ready"] = False
+
+    @property
+    def inner_nodes(self):
+        return self.path - set(self.arg_node_ind, self.start_ind)
 
     @property
     def pending_parents(self):
@@ -81,13 +119,13 @@ class Promise:
     @property
     @abstractmethod
     def arg(self):
-        pass
+        ...
 
     @property
     @abstractmethod
     def op_result(self):
         """Returns the forward result of the operation when applied on the promise args"""
-        pass
+        ...
 
     @property
     def shape(self):
@@ -96,7 +134,7 @@ class Promise:
     @property
     @abstractmethod
     def rin(self):
-        pass
+        ...
 
     @property
     def rout(self):
@@ -107,54 +145,45 @@ class Promise:
 
     @abstractmethod
     def set_rin(self, new_rin):
-        pass
+        ...
 
     def accumulate_rout(self, new_rout):
         assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
         self.promise["rout"] += new_rout
 
-    def exec_bwd(self) -> tuple[list, torch.Tensor]:
-        """Perform each saved backward execution chain to propagate relevance back down the branch.
-        Save values for any checkpoints marked along the path and return them with their respective checkpoints."""
+    def exec_bwd(self) -> torch.Tensor:
+        """Perform the saved backward execution chain to propagate relevance back down the branch."""
         assert self.ready and self.pending_parents == 0, \
             "Promise backward execution was triggered before promise was ready or before parent promise was complete."
         # assert not self.complete, "Promise is complete, exec_bwd was already called."
         if self.complete:
             return
-        res = self.rin
-        checkpoints = []
-        for checkpoint, fcn in self.bwd:
-            res = fcn(res)
-            if checkpoint is not None:
-                checkpoints.append((checkpoint, res))
-
+        res = self.bwd(self.rin)
         self.set_rin(res)
 
-        return checkpoints, res
+        return res
 
     @abstractmethod
     def compute_rins(self):
-        pass
+        ...
 
-    def trigger_promise_completion(self):
+    def trigger_promise_completion(self, fwd_only=False):
         # This is only called once a promise receives its second argument.
         assert self.ready, "Promise completion was triggered before promise was ready."
         if self.complete:
             return
-        if self.pending_parents == 0:
+        if self.pending_parents == 0 and not fwd_only:
             # Either reached root of a promise tree, or we are in the exec_bwd call of a child of a completed promise.
             self.compute_rins()
-            checkpoints, res1 = self.exec_bwd()
+            res1 = self.exec_bwd()
             res2 = None
             if self.other_branch is not None:
-                checkpoints2, res2 = self.other_branch.exec_bwd()
-                checkpoints += checkpoints2
-            # Save checkpoint relevances to their grad_fn metadatas to collect later.
-            for checkpoint, val in checkpoints:
-                LRPCheckpoint.save_val(checkpoint, val)
+                res2 = self.other_branch.exec_bwd()
+
             if self.parents:
                 assert (self.rout.nansum() - sum([ float(r.nansum()) for r in self.promise["rins"] ])) / self.rout.nansum() < 0.0001, \
                     f"Expected child promise to have rout {self.rout.nansum()} equal to sum of rins {sum([ float(r.nansum()) for r in self.promise['rins'] ])}"
+
             self.set_complete()
 
             # Now that we have calculated the end relevance_in of this branch, we can feed it to the children promises.
@@ -187,15 +216,36 @@ class Promise:
 
     @abstractmethod
     def _setarg(self, value):
-        pass
+        ...
 
-    def setarg(self, value, tail_node: torch.autograd.graph.Node = None):
+    def setarg(self, value, tail_node: torch.autograd.graph.Node = None, tail_node_ind: int = None, ret_fcn: callable = None, fwd_only=False):
         """Set the corresponding arg for this branch and check if the promise is ready"""
-        if tail_node:
+        if tail_node and tail_node_ind and ret_fcn:
             self.promise["tail_nodes"].add(tail_node)
+            self.arg_node_ind = tail_node_ind
+            self.arg_node_retrieval_fcn = ret_fcn
+            Promise.leaf_promises.append(self)
 
-        self._setarg(self.fwd(value))
+        # This branch is now terminating, so add the inner nodes to the total set of inner nodes
+        Promise.all_inner_nodes.update(self.inner_nodes)
+
+        if value != 0.0:
+            self._setarg(self.fwd(value))
+        else:
+            self._setarg(0.0)
         # self.promise["args"][self.idx] = self.fwd(value)
         if self.set_and_check_ready():
             # print(f"triggering promise {self}")
-            self.trigger_promise_completion()
+            self.trigger_promise_completion(fwd_only)
+    
+    def retrieve_and_set_new_arg(self, grad_fn):
+        if self.arg_node_ind in Promise.start_nodes_to_promise:
+            raise ValueError("retrieve_and_set_new_arg should only be called on nodes with leaf Promises, yet it \
+                             was found with a child promise.")
+        if isinstance(self.arg_node_retrieval_fcn, str):
+            attr = getattr(grad_fn, self.arg_node_retrieval_fcn)
+            self.setarg(attr, fwd_only=True)
+        elif callable(self.arg_node_retrieval_fcn):
+            self.setarg(self.arg_node_retrieval_fcn(grad_fn), fwd_only=True)
+        else:
+            raise ValueError("Saved Promise arg_node_retrieval_fcn was neither a callable nor a string attribute name.")

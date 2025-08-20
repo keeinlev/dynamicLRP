@@ -11,8 +11,8 @@ class AddBackwardPromise(Promise):
     idx: specifies which argument/operand the branch is looking for.
     """
     all_promises = []
-    def __init__(self, promise, idx):
-        super().__init__(promise)
+    def __init__(self, promise, traversal_ind, idx):
+        super().__init__(promise, traversal_ind)
         self.idx = idx
 
         if DEBUG:

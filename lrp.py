@@ -2,12 +2,20 @@ import torch
 import time
 from transformers.modeling_outputs import SequenceClassifierOutput
 from torch.autograd.graph import Node
-from lrp_graph import make_graph
+from lrp_graph import (
+    make_graph,
+    convert_graph_to_index_based,
+    create_checkpoint_execution_plan,
+)
 from lrp_prop_fcns import LRPPropFunctions
 from add_backward_promise import AddBackwardPromise
 from dummy_promise import compound_promises
 from promise import Promise
-from util import create_checkpoint
+from util import (
+    create_checkpoint,
+    DEBUG,
+)
+from typing import Callable
 
 def checkpoint_hook(module, input, output):
     return create_checkpoint(output)
@@ -36,9 +44,15 @@ def seq_class_lrp_hook(module, input, output, print_cond = False):
     return output
 
 
-def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None, visited=None):
-    if in_adj_list is None or out_adj_list is None or visited is None:
-        in_adj_list, out_adj_list, names = make_graph(hidden_states)
+def lrp_engine(
+        hidden_states : torch.Tensor,
+        in_adj_list: set[Node | int] = None,
+        out_adj_list: set[Node | int] = None,
+        topo_exec_order : list[int] = None,
+        fcn_map : dict[str, Callable] = None,
+    ):
+    if in_adj_list is None or out_adj_list is None or topo_exec_order is None or fcn_map is None:
+        in_adj_list, out_adj_list, names, _, num_nodes = make_graph(hidden_states)
         input_tracker : dict[Node, list] = { k : [] for k in list(in_adj_list.keys()) }
         checkpoints = list(filter(lambda k: type(k).__name__ == "LRPCheckpointBackward", list(in_adj_list.keys())))
         num_checkpoints_reached = 0
@@ -160,7 +174,7 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
                     curnode_in_rel = sum(tensor_inputs) + sum([ p.rin for p in complete_promise_inputs ])
                     if pending_promise_inputs:
                         # In promise traversal mode this will be True
-                        agg_promises = compound_promises(pending_promise_inputs, promise_traversal_mode, promise_traversal_mode)
+                        agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_traversal_mode, promise_traversal_mode)
                         if curnode_in_rel != 0:
                             curnode_in_rel = agg_promises + curnode_in_rel
                         else:
@@ -168,6 +182,8 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
                 else:
                     # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
                     curnode_in_rel = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
+                    if not DEBUG:
+                        Promise.clear_args_and_rout_raw(curnode.metadata["promise"])
                     del curnode.metadata["promise"], curnode.metadata["promise_idx"]
 
                 ####### END INPUT MERGING
@@ -194,6 +210,8 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
                             pre_promise.accumulate_rout(curnode_in_rel)
                             pre_promise.trigger_promise_completion()
 
+                    if not DEBUG:
+                        curnode.metadata["pre_promise"].clear_args_and_rout()
                     del curnode.metadata["pre_promise"]
 
                     tail_nodes = pre_promise.promise["tail_nodes"]
@@ -215,6 +233,11 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
                 if promise_traversal_mode:
                     # We want to save this so later we'll know we've already traversed this node.
                     curnode.metadata["pre_promise"] = curnode_in_rel
+                elif not DEBUG:
+                    # We can free up some memory because we will no longer need to access these inputs
+                    # Chained promises will maintain their relationships via their class instance members.
+                    if nodes_pending[curnode] == 0:
+                        del input_tracker[curnode]
 
 
                 ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
@@ -234,10 +257,16 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
 
                 ####### OUTPUT PROPAGATION TO CHILDREN
 
+                #   end
                 # 1  2  3
+                #  \ | /
+                #    |
+                # rel_out
+                #    |
                 #    0
+                #  start
 
-                # curnode_outputs = prop_fcn(node_0, rel) -> rel_in_1, rel_in_2, rel_in_3
+                # curnode_outputs = prop_fcn(node_0, rel_out) -> rel_in_1, rel_in_2, rel_in_3
 
 
                 # Children may contain None, like grad_fn.next_functions, to keep integrity of input tracking
@@ -255,8 +284,7 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
                     if child is None:
                         # Discard the input (it shouldn't have value anyway), if it's a promise make it a zero-promise
                         if isinstance(curnode_outputs[i], Promise):
-                            # Manually set the arg to not trigger any additional side effects
-                            curnode_outputs[i].promise["args"][curnode_outputs[i].idx] = 0.0
+                            curnode_outputs[i].setarg(0.0)
                         continue
                     input_tracker[child].append(curnode_outputs[i])
                     nodes_pending[child] -= 1
@@ -287,7 +315,7 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
                 ####### END SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
 
         end_time = time.time()
-        print(f"took {end_time - start_time} seconds")
+        print(f"propagation took {end_time - start_time} seconds")
 
         # Checking conservation holds across the entire propagation
         # The frontier includes:
@@ -318,7 +346,57 @@ def lrp_engine(hidden_states : torch.Tensor, in_adj_list=None, out_adj_list=None
             total_frontier_in += total_in
         print(total_frontier_in)
 
-        # Sorted in desc because they are indexed in the order that we save them in (going backwards).
+        # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
         checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
         checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
-        return checkpoint_vals, in_adj_list, out_adj_list, visited
+
+
+        # If we want to reuse the graph, we need to re-define it in terms of the topological sort order.
+        # Convert autograd-based Node graph into topo_ind graph
+        in_adj_list, out_adj_list = convert_graph_to_index_based(in_adj_list, out_adj_list)
+
+        # Filter down the indices of nodes to only what is necessary for computing checkpoints
+        topo_exec_order = create_checkpoint_execution_plan(
+            [ checkpoint.metadata["topo_ind"] for checkpoint in checkpoints ],
+            in_adj_list,
+            num_nodes,
+            hidden_states.grad_fn.metadata["topo_ind"],
+            Promise.all_inner_nodes,
+        )
+
+        return checkpoint_vals, in_adj_list, out_adj_list, topo_exec_order, fcn_map
+    else:
+        # Run execution plan made from first pass
+        # All adjacency lists and node orders are in terms of topological indices now
+
+        # Need to re-map the graph to all the indices based on topo sort
+        _, _, _, ind_to_node, _ = make_graph(hidden_states, True)
+
+        input_frontier : dict[int, list[torch.Tensor]] = {}
+
+        # First pre-process all Promises by setting every leaf Promise arg
+        leaf_promise: Promise
+        for leaf_promise in Promise.leaf_promises:
+            arg_node_grad_fn = ind_to_node[leaf_promise.arg_node_ind]
+            leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
+        
+        # All promises that are required for the checkpoints should be ready now, as
+        # we have set the args of all leaf promises. Now all we need to do is call the
+        # bwd() functions as we traverse by each promise.
+
+        for ind in topo_exec_order:
+            node = ind_to_node[ind]
+
+            rel = sum(input_frontier[ind])
+
+            if (promise := Promise.start_nodes_to_promise.get(ind)) is not None and isinstance(promise, Promise):
+                assert promise.ready, "During running of execution plan, promise was missing arg(s)"
+                
+                promise.set_rout(rel)
+                promise.compute_rins()
+                res = promise.bwd(promise.rin)
+                # Assign rin to the end node of the promise
+                input_frontier[promise.arg_node_ind] += res
+            else:
+                res = fcn_map[type(node).__name__](node, rel)
+                # TODO: Distribute the relevance the same way as first pass

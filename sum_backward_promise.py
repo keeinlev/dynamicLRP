@@ -21,8 +21,8 @@ class SumBackwardPromise(Promise):
         So you should apply from left to right, but the inner functions themselves nest right to left.
     fwd_shape: used as target shape for shape-modifying operations in fwd
     """
-    def __init__(self, promise, saved_dim, keepdim):
-        super().__init__(promise)
+    def __init__(self, promise, traversal_ind, saved_dim, keepdim):
+        super().__init__(promise, traversal_ind)
         self.dim = saved_dim
         if isinstance(saved_dim, int):
             self.dim = (saved_dim,)

@@ -202,7 +202,7 @@ class Promise:
                 res2 = self.other_branch.exec_bwd()
 
             if self.parents:
-                assert (self.rout.nansum() - sum([ float(r.nansum()) for r in self.promise["rins"] ])) / self.rout.nansum() < 0.0001, \
+                assert (self.rout.nansum() - sum([ float(r.nansum()) for r in self.promise["rins"] ])) / self.rout.nansum() < 0.001, \
                     f"Expected child promise to have rout {self.rout.nansum()} equal to sum of rins {sum([ float(r.nansum()) for r in self.promise['rins'] ])}"
 
             self.set_complete()

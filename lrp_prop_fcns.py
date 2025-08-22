@@ -18,6 +18,8 @@ r is the relevance tensor of the output of the given Node.
 """
 
 
+########## TODO: need to write in the retrieval fcn for each promise arg node
+
 def output_relevances(func):
     if not DEBUG:
         return func
@@ -103,6 +105,7 @@ class LRPPropFunctions:
         promise2.other_branch = promise1
 
         if isinstance(r, Promise):
+            r.arg_node_ind = traversal_ind
             r.children = [(promise1, promise2)]
 
         grad_fn.metadata["promise"] = promise
@@ -138,6 +141,7 @@ class LRPPropFunctions:
         promise = SumBackwardPromise(promise, traversal_ind, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"))
 
         if isinstance(r, Promise):
+            r.arg_node_ind = traversal_ind
             r.children = [promise]
 
         grad_fn.metadata["promise"] = promise
@@ -161,7 +165,7 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             if max_type == 0:
-                r.setarg(grad_fn._saved_result)
+                r.setarg(grad_fn._saved_result, grad_fn, "_saved_result")
                 if r.complete:
                     r = r.rin
                 else:
@@ -402,7 +406,7 @@ class LRPPropFunctions:
             if arg1 is None:
                 r.nest_fwd(lambda x: x * arg2)
             else:
-                r.setarg(arg1 * arg2, grad_fn)
+                r.setarg(arg1 * arg2, grad_fn, lambda fcn: fcn._saved_self * fcn._saved_other)
                 if r.complete:
                     r = r.rin
                 else:
@@ -432,7 +436,7 @@ class LRPPropFunctions:
             if arg1 is None:
                 r.nest_fwd(lambda x: x / arg2)
             else:
-                r.setarg(arg1 / arg2, grad_fn)
+                r.setarg(arg1 / arg2, grad_fn, lambda fcn: fcn._saved_self / fcn._saved_other)
                 if r.complete:
                     r = r.rin
                 else:
@@ -457,11 +461,17 @@ class LRPPropFunctions:
     def MmBackwardProp(cls, grad_fn, r):
         x = grad_fn._saved_self # s d
         weights = grad_fn._saved_mat2 # d o
+
+        #### TODO: (Aug 21, 2025) There is an overlooked case of when one of x, weights is None because one of them does not have requires_grad=True
+        # However, this is most likely mitigated if the model is in training mode / using requires_grad as a whole.
+        # Priority right now is getting the deterministic execution plan run mode working, can circle back to this later
+        # because it will likely require some reworking on Promises as well. See the note I left in promise.py.
+
         z = x @ weights # s o
         z_stabilized = z + epsilon * z.sign()
 
         if isinstance(r, Promise):
-            r.setarg(z, grad_fn)
+            r.setarg(z, grad_fn, lambda fcn: fcn._saved_self @ fcn._saved_mat2)
             if r.complete:
                 r = r.rin
             else:
@@ -501,7 +511,7 @@ class LRPPropFunctions:
         z_stabilized = z + epsilon * z.sign()
 
         if isinstance(r, Promise):
-            r.setarg(z, grad_fn)
+            r.setarg(z, grad_fn, lambda fcn: fcn._saved_self @ fcn._saved_mat2)
             if r.complete:
                 r = r.rin
             else:
@@ -543,7 +553,7 @@ class LRPPropFunctions:
             return normalized * gamma + beta
 
         if isinstance(r, Promise):
-            r.setarg(layerNorm(input_), grad_fn)
+            r.setarg(layerNorm(input_), grad_fn, lambda fcn: layerNorm(fcn._saved_input))
             if r.complete:
                 r = r.rin
             else:
@@ -559,7 +569,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def GeluBackwardProp(cls, grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(torch.nn.GELU(grad_fn._saved_self), grad_fn)
+            r.setarg(torch.nn.GELU(grad_fn._saved_self), grad_fn, lambda fcn: torch.nn.GELU(fcn._saved_self))
             if r.complete:
                 r = r.rin
         return r
@@ -569,7 +579,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def SoftmaxBackwardProp(cls, grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(grad_fn._saved_result, grad_fn)
+            r.setarg(grad_fn._saved_result, grad_fn, "_saved_result")
             if r.complete:
                 r = r.rin
         return r
@@ -583,7 +593,7 @@ class LRPPropFunctions:
 
         if isinstance(r, AddBackwardPromise):
             if hasattr(grad_fn, "_saved_result"):
-                r.setarg(grad_fn._saved_result)
+                r.setarg(grad_fn._saved_result, grad_fn, "_saved_result")
                 if r.complete:
                     return r.rin
                 return r
@@ -613,16 +623,16 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def AccumulateGradProp(cls, grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(grad_fn.variable)
+            r.setarg(grad_fn.variable, grad_fn, "variable")
         return 0.0
 
     @classmethod
     @output_relevances
     @add_node_to_promise_path
     def LRPCheckpointBackwardProp(cls, grad_fn, r):
-        saved_input = grad_fn._saved_tensors[0]
+        saved_input = grad_fn.saved_tensors[0]
         if isinstance(r, Promise):
-            r.setarg(saved_input)
+            r.setarg(saved_input, grad_fn, lambda fcn: fcn.saved_tensors[0])
             if r.complete:
                 r = r.rin
             else:
@@ -636,7 +646,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def EmbeddingBackwardProp(cls, grad_fn, r):
         idxs : torch.Tensor = grad_fn._saved_indices
-        weights = grad_fn.next_functions[0][0].variable # BIG assumption here
+        weights = grad_fn.next_functions[0][0].variable # assumption here
 
         def undoEmbedding(x):
             out = torch.zeros_like(weights)

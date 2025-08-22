@@ -59,6 +59,9 @@ def compound_promises(promises: list[Promise], traversal_ind, single_promise_ove
         "parents": promises,
     }
 
+    for promise in promises:
+        promise.arg_node_ind = traversal_ind
+
     new_promise = DummyPromise(p, traversal_ind)
 
     if not parent_only_connection:

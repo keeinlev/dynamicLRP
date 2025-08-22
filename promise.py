@@ -21,8 +21,12 @@ class Promise:
         So you should apply from left to right, but the inner functions themselves nest right to left.
     fwd_shape: used as target shape for shape-modifying operations in fwd
     other_branch: if it exists, the branch of the promise that searches for the other argument of the operation
-    arg_node_ind: the unique index of the grad_fn node at which this branch's argument was found
-    arg_node_retrieval_fcn
+    arg_node_ind: the unique index of the grad_fn node at which this branch's argument was found. For non-leaf Promises,
+        i.e. Promises that have children Promises, this is set to the Node where they assigned their child(ren). For
+        leaf Promises, this is set to the Node where setarg() gets called.
+    arg_node_retrieval_fcn: string attribute name or callable to be gotten/applied on the arg node's grad_fn,
+        returns the arg in question
+        
     """
     all_inner_nodes : set[int] = set()
     start_nodes_to_promise = {}
@@ -32,6 +36,15 @@ class Promise:
         self.promise : dict = promise
         self.parents : list[Promise] = promise["parents"]
         self.children : list[Promise | tuple[Promise]] = [] # Will be added to if further nested promise Nodes are found.
+
+        ### TODO: (Aug 21, 2025) I think fwd and bwd should just be a list of functions, then we can have a function for
+        # compiling them when needing to run. This will allow us to also store the grad_fn index corresponding to each
+        # step, so that even if certain saved args change with different inputs, it can pull those, update the fcns, then
+        # give the correct output.
+        # This will basically absorb arg_node_ind and arg_node_retrieval_fcn and adopt that method for the whole chain.
+        # In that case arg_node_retrieval_fcn will be the first function in any fwd chain.
+        # I think this is a pretty big priority but too much on my mind right this instant and will come back as soon as
+        # the execution plan work is done.
         self.fwd : Callable[[torch.Tensor]] = lambda x: x
         self.bwd : Callable[[torch.Tensor]] = lambda x: x
         self.fwd_shape = promise["rout"].shape # This will update after a shape-modifying operation is added to fwd
@@ -43,8 +56,16 @@ class Promise:
         self.path : set[int] = set()
 
         if traversal_ind not in Promise.start_nodes_to_promise:
+            # This implicitly makes it so that if a Node had a pre-promise associated to it, but also receives
+            # a Promise input during normal traversal in the first pass, only the pre-promise is saved for the
+            # deterministic pass, since the second promise is only an aggregator, it doesn't store any actual
+            # computation.
+            # To be clear, the aggregator is still necessary for bringing the args back to a root Promise, but
+            # in the deterministic pass, this will happen for all Promises before backward relevance propagation
+            # begins, so Promise bwd() execution can be handled manually and aggregator Promises can be skipped.
+
             # Can access other_branch if needed
-            Promise.start_nodes_to_promise[traversal_ind] = [ self ]
+            Promise.start_nodes_to_promise[traversal_ind] = self
 
         if DEBUG:
             Promise.all_promises.append(self)
@@ -91,7 +112,7 @@ class Promise:
 
     @property
     def inner_nodes(self):
-        return self.path - set(self.arg_node_ind, self.start_ind)
+        return self.path - set([self.arg_node_ind, self.start_ind])
 
     @property
     def pending_parents(self):
@@ -218,18 +239,18 @@ class Promise:
     def _setarg(self, value):
         ...
 
-    def setarg(self, value, tail_node: torch.autograd.graph.Node = None, tail_node_ind: int = None, ret_fcn: callable = None, fwd_only=False):
+    def setarg(self, value, arg_node: torch.autograd.graph.Node = None, ret_fcn: Callable = None, fwd_only = False):
         """Set the corresponding arg for this branch and check if the promise is ready"""
-        if tail_node and tail_node_ind and ret_fcn:
-            self.promise["tail_nodes"].add(tail_node)
-            self.arg_node_ind = tail_node_ind
+        if arg_node and ret_fcn:
+            self.promise["tail_nodes"].add(arg_node)
             self.arg_node_retrieval_fcn = ret_fcn
             Promise.leaf_promises.append(self)
+            self.arg_node_ind = arg_node.metadata["topo_ind"]
 
         # This branch is now terminating, so add the inner nodes to the total set of inner nodes
         Promise.all_inner_nodes.update(self.inner_nodes)
 
-        if value != 0.0:
+        if not isinstance(value, float) or value != 0.0:
             self._setarg(self.fwd(value))
         else:
             self._setarg(0.0)
@@ -240,7 +261,10 @@ class Promise:
     
     def retrieve_and_set_new_arg(self, grad_fn):
         if self.arg_node_ind in Promise.start_nodes_to_promise:
-            raise ValueError("retrieve_and_set_new_arg should only be called on nodes with leaf Promises, yet it \
+            # If the arg node index is a Promise start node, it means it's either the start of a child Promise
+            # or that the current Promise only has the one node in its chain
+            if self.arg_node_ind != self.start_ind:
+                raise ValueError("retrieve_and_set_new_arg should only be called on nodes with leaf Promises, yet it \
                              was found with a child promise.")
         if isinstance(self.arg_node_retrieval_fcn, str):
             attr = getattr(grad_fn, self.arg_node_retrieval_fcn)
@@ -248,4 +272,4 @@ class Promise:
         elif callable(self.arg_node_retrieval_fcn):
             self.setarg(self.arg_node_retrieval_fcn(grad_fn), fwd_only=True)
         else:
-            raise ValueError("Saved Promise arg_node_retrieval_fcn was neither a callable nor a string attribute name.")
+            raise ValueError("Saved Promise arg_node_retrieval_fcn was neither a callable nor a string attribute name.")# 

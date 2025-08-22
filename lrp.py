@@ -15,7 +15,7 @@ from util import (
     create_checkpoint,
     DEBUG,
 )
-from typing import Callable
+from typing import Callable, Union
 
 def checkpoint_hook(module, input, output):
     return create_checkpoint(output)
@@ -46,38 +46,40 @@ def seq_class_lrp_hook(module, input, output, print_cond = False):
 
 def lrp_engine(
         hidden_states : torch.Tensor,
-        in_adj_list: set[Node | int] = None,
-        out_adj_list: set[Node | int] = None,
+        out_adj_list: Union[set[Node], set[int]] = None,
         topo_exec_order : list[int] = None,
         fcn_map : dict[str, Callable] = None,
     ):
-    if in_adj_list is None or out_adj_list is None or topo_exec_order is None or fcn_map is None:
-        in_adj_list, out_adj_list, names, _, num_nodes = make_graph(hidden_states)
-        input_tracker : dict[Node, list] = { k : [] for k in list(in_adj_list.keys()) }
-        checkpoints = list(filter(lambda k: type(k).__name__ == "LRPCheckpointBackward", list(in_adj_list.keys())))
-        num_checkpoints_reached = 0
 
-        fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
+    start_time = time.time()
 
-        start_time = time.time()
-        visited = set()
-        with torch.no_grad():
-            # Create the first relevance layer via max logit.
-            m = hidden_states.max(-1)
-            relevance = torch.zeros_like(hidden_states)
-            if m.indices.dim() == 0:
-                relevance[0] = 1.0
-            else:
-                s = hidden_states.shape[-2]
-                dim = relevance.dim()
-                
-                for i, inds in enumerate(m.indices):
-                    if dim == 2:
-                        relevance[list(range(s)),inds] = torch.ones_like(m.values[0])
-                    elif dim == 3:
-                        relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
-                    else:
-                        raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
+    with torch.no_grad():
+        # Create the first relevance layer via max logit.
+        m = hidden_states.max(-1)
+        relevance = torch.zeros_like(hidden_states)
+        if m.indices.dim() == 0:
+            relevance[0] = 1.0
+        else:
+            s = hidden_states.shape[-2]
+            dim = relevance.dim()
+            
+            for i, inds in enumerate(m.indices):
+                if dim == 2:
+                    relevance[list(range(s)),inds] = torch.ones_like(m.values[0])
+                elif dim == 3:
+                    relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
+                else:
+                    raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
+
+        if out_adj_list is None or topo_exec_order is None or fcn_map is None:
+            in_adj_list, out_adj_list, names, ind_to_node, num_nodes = make_graph(hidden_states, True)
+            input_tracker : dict[Node, list] = { k : [] for k in list(in_adj_list.keys()) }
+            checkpoints = list(filter(lambda k: type(k).__name__ == "LRPCheckpointBackward", list(in_adj_list.keys())))
+            num_checkpoints_reached = 0
+
+            fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
+
+            visited = set()
 
             # Setup the first iteration
             input_tracker[hidden_states.grad_fn] = [ relevance ]
@@ -120,6 +122,13 @@ def lrp_engine(
                     # We can process these like normal actually
                     promise_traversal_mode = False
                     promise_fulfillment_mode = False
+
+                    # It's possible that this Node was already waiting on a Promise too, in the diamond deadlock case
+                    # If so, just remove the other link to the same promise for cleanliness
+                    if "promise" in curnode.metadata:
+                        assert curnode.metadata["promise"] == curnode.metadata["pre_promise"].promise, \
+                            "Node has both promise and pre_promise metadata fields, but the promises are not equal, traversal logic error."
+                        del curnode.metadata["promise"]
 
                 elif promise_traversal_stack:
                     # Second priority is promise traversal, which overrides the requirement for all inputs to land
@@ -204,6 +213,14 @@ def lrp_engine(
                             # In the case this completes and propagates relevance down, we will have to pick up from the tail nodes
                             # of the aggregate promise.
                             curnode_in_rel.children.append(pre_promise)
+
+                            # This may also actually be a different promise than the pre-promise's original parent, due to
+                            # the promise aggregation. Therefore, we must check if the parent-child relationship now flows through
+                            # the aggregate promise and not the promise that caused Promise Traversal Mode.
+                            # While there is no issue without doing this in first pass, it is needed for the deterministic pass.
+                            if curnode_in_rel not in pre_promise.parents:
+                                # Due to the pre-promise construction, we know there is only ever one parent, so can safely overwrite.
+                                pre_promise.parents = [ curnode_in_rel ]
                             curnode_in_rel.setarg(pre_promise.arg1 + pre_promise.arg2)
                         else:
                             # Manually set the rout and trigger the promise to finish the backward prop.
@@ -214,7 +231,7 @@ def lrp_engine(
                         curnode.metadata["pre_promise"].clear_args_and_rout()
                     del curnode.metadata["pre_promise"]
 
-                    tail_nodes = pre_promise.promise["tail_nodes"]
+                    tail_nodes = list(pre_promise.promise["tail_nodes"])
                     if curnode in tail_nodes:
                         tail_nodes.remove(curnode)
                     if tail_nodes:
@@ -314,89 +331,137 @@ def lrp_engine(
 
                 ####### END SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
 
-        end_time = time.time()
-        print(f"propagation took {end_time - start_time} seconds")
+            end_time = time.time()
+            print(f"propagation took {end_time - start_time} seconds")
 
-        # Checking conservation holds across the entire propagation
-        # The frontier includes:
-        # a) true leaf nodes (no children)
-        # b) nodes which received inputs but were never traversed due to computation ending early
+            # Checking conservation holds across the entire propagation
+            # The frontier includes:
+            # a) true leaf nodes (no children)
+            # b) nodes which received inputs but were never traversed due to computation ending early
 
-        frontier = [ node 
-                    for node, out_nodes in list(out_adj_list.items())
-                    if len(out_nodes) == 0
-                  ]
+            frontier = [ node 
+                        for node, out_nodes in list(out_adj_list.items())
+                        if len(out_nodes) == 0
+                    ]
 
-        frontier += [ node for node in stack if input_tracker[node] ]
+            frontier += [ node for node in stack if input_tracker[node] ]
 
-        frontier = list(set(frontier))
+            frontier = list(set(frontier))
 
-        # Tally the total relevance at the frontier
-        total_frontier_in = 0.0
-        for node in frontier:
-            total_in = 0.0
-            for input_ in input_tracker[node]:
-                if isinstance(input_, AddBackwardPromise):
-                    if input_.complete:
-                        total_in += input_.rin.sum()
-                    else:
-                        continue
-                elif isinstance(input_, torch.Tensor):
-                    total_in += input_.sum()
-            total_frontier_in += total_in
-        print(total_frontier_in)
+            # Tally the total relevance at the frontier
+            total_frontier_in = 0.0
+            for node in frontier:
+                total_in = 0.0
+                if node not in input_tracker:
+                    continue
+                for input_ in input_tracker[node]:
+                    if isinstance(input_, AddBackwardPromise):
+                        if input_.complete:
+                            total_in += input_.rin.sum()
+                        else:
+                            continue
+                    elif isinstance(input_, torch.Tensor):
+                        total_in += input_.sum()
+                total_frontier_in += total_in
+            print(total_frontier_in)
 
-        # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
-        checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
-        checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
+            # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
+            checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
+            checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
 
 
-        # If we want to reuse the graph, we need to re-define it in terms of the topological sort order.
-        # Convert autograd-based Node graph into topo_ind graph
-        in_adj_list, out_adj_list = convert_graph_to_index_based(in_adj_list, out_adj_list)
+            # If we want to reuse the graph, we need to re-define it in terms of the topological sort order.
+            # Convert autograd-based Node graph into topo_ind graph
+            in_adj_list, out_adj_list = convert_graph_to_index_based(in_adj_list, out_adj_list)
 
-        # Filter down the indices of nodes to only what is necessary for computing checkpoints
-        topo_exec_order = create_checkpoint_execution_plan(
-            [ checkpoint.metadata["topo_ind"] for checkpoint in checkpoints ],
-            in_adj_list,
-            num_nodes,
-            hidden_states.grad_fn.metadata["topo_ind"],
-            Promise.all_inner_nodes,
-        )
+            # Filter down the indices of nodes to only what is necessary for computing checkpoints
+            topo_exec_order = create_checkpoint_execution_plan(
+                [ checkpoint.metadata["topo_ind"] for checkpoint in checkpoints ],
+                in_adj_list,
+                num_nodes,
+                hidden_states.grad_fn.metadata["topo_ind"],
+                Promise.all_inner_nodes,
+                ind_to_node=ind_to_node
+            )
 
-        return checkpoint_vals, in_adj_list, out_adj_list, topo_exec_order, fcn_map
-    else:
-        # Run execution plan made from first pass
-        # All adjacency lists and node orders are in terms of topological indices now
+            return checkpoint_vals, out_adj_list, topo_exec_order, fcn_map
+        else:
+            # Run execution plan made from first pass
+            # All adjacency lists and node orders are in terms of topological indices now
 
-        # Need to re-map the graph to all the indices based on topo sort
-        _, _, _, ind_to_node, _ = make_graph(hidden_states, True)
+            # Need to re-map the graph to all the indices based on topo sort
+            _, _, _, ind_to_node, _ = make_graph(hidden_states, True)
+            checkpoints = list(filter(lambda node: type(node).__name__ == "LRPCheckpointBackward", list(ind_to_node.values())))
 
-        input_frontier : dict[int, list[torch.Tensor]] = {}
+            input_frontier : dict[int, list[torch.Tensor]] = { ind : 0.0 for ind in topo_exec_order }
 
-        # First pre-process all Promises by setting every leaf Promise arg
-        leaf_promise: Promise
-        for leaf_promise in Promise.leaf_promises:
-            arg_node_grad_fn = ind_to_node[leaf_promise.arg_node_ind]
-            leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
-        
-        # All promises that are required for the checkpoints should be ready now, as
-        # we have set the args of all leaf promises. Now all we need to do is call the
-        # bwd() functions as we traverse by each promise.
+            # Setup first iteration
+            input_frontier[hidden_states.grad_fn.metadata["topo_ind"]] = relevance
 
-        for ind in topo_exec_order:
-            node = ind_to_node[ind]
+            # First pre-process all Promises by setting every leaf Promise arg
+            leaf_promise: Promise
+            for leaf_promise in Promise.leaf_promises:
+                if leaf_promise.arg_node_ind is not None:
+                    arg_node_grad_fn = ind_to_node.get(leaf_promise.arg_node_ind)
+                    leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
+                else:
+                    # Case where leaf Promise ended in a None Node
+                    leaf_promise.setarg(0.0)
+            
+            # All promises that are required for the checkpoints should be ready now, as
+            # we have set the args of all leaf promises. Now all we need to do is call the
+            # bwd() functions as we traverse by each promise.
 
-            rel = sum(input_frontier[ind])
+            fulfilled_promises : set[Promise] = set()
 
-            if (promise := Promise.start_nodes_to_promise.get(ind)) is not None and isinstance(promise, Promise):
-                assert promise.ready, "During running of execution plan, promise was missing arg(s)"
-                
-                promise.set_rout(rel)
-                promise.compute_rins()
-                res = promise.bwd(promise.rin)
-                # Assign rin to the end node of the promise
-                input_frontier[promise.arg_node_ind] += res
-            else:
-                res = fcn_map[type(node).__name__](node, rel)
-                # TODO: Distribute the relevance the same way as first pass
+            for node_ind in topo_exec_order:
+                node = ind_to_node[node_ind]
+
+                rel = input_frontier[node_ind]
+
+                if (promise := Promise.start_nodes_to_promise.get(node_ind)) is not None and isinstance(promise, Promise) \
+                        and promise not in fulfilled_promises:
+                    assert promise.ready, "During running of execution plan, promise was missing arg(s)"
+                    
+                    if promise.arg_node_ind in input_frontier:
+                        # Sometimes one of the arg nodes isn't actually a checkpoint ancestor, so we only care about the other one.
+                        promise.set_rout(rel)
+                        promise.compute_rins()
+                        res = promise.bwd(promise.rin)
+
+                        # Assign rin to the end node of the promise
+                        input_frontier[promise.arg_node_ind] += res
+                        fulfilled_promises.add(promise)
+
+                    # Do the same for other branch if applicable
+                    if (other := promise.other_branch) is not None and other not in fulfilled_promises \
+                            and other.arg_node_ind in input_frontier:
+                        res2 = other.bwd(other.rin)
+
+                        input_frontier[other.arg_node_ind] += res2
+                        fulfilled_promises.add(other)
+                else:
+                    res = fcn_map[type(node).__name__](node, rel)
+                    # Distribute the relevance the same way as first pass
+                    if not isinstance(res, tuple):
+                        res = [ res ]
+
+                    for i, child in enumerate(out_adj_list[node_ind]):
+                        if child is None or child not in input_frontier or (isinstance(res, float) and res[i] == 0.0):
+                            continue
+                        input_frontier[child] += res[i]
+
+                # Move the frontier forward
+                # Since we are iterating over a topological ordering, when we are a certain node, we are certain
+                # that all of its dependencies have been visited at that point, so we can safely delete its inputs.
+                del input_frontier[node_ind]
+
+
+            end_time = time.time()
+            print(f"propagation took {end_time - start_time} seconds")
+
+            # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
+            checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
+            checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
+
+            return checkpoint_vals, out_adj_list, topo_exec_order, fcn_map

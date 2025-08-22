@@ -25,7 +25,7 @@ def make_graph(hidden_states: torch.Tensor, return_topo_dict: bool = False):
 
     make_graph_topo_dfs(root, in_adj, out_adj, visited, topo_stack)
     if return_topo_dict:
-        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), dict(topo_stack), None
+        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), dict(topo_stack), len(topo_stack)
     else:
         return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), None, len(topo_stack)
 
@@ -96,7 +96,7 @@ def convert_graph_to_index_based(in_adj, out_adj):
     }
     new_out_adj = {
         node.metadata["topo_ind"] :
-         [ c.metadata["topo_ind"] for c in children ]
+         [ c.metadata["topo_ind"] if c is not None else None for c in children ]
         for node, children in list(out_adj.items())
     }
 
@@ -108,7 +108,8 @@ def create_checkpoint_execution_plan(
         num_nodes: int,
         stop_node_ind: int,
         prom_inner_node_inds: set[int],
-    ) -> dict[tuple[int, int], list[int]]:
+        ind_to_node: dict[int, Node] = False
+    ) -> list[int]:
     """Starting at each checkpoint node, finds all nodes ascending from that checkpoint
     to the original hidden_states grad_fn node or any checkpoints in between.
 
@@ -121,6 +122,7 @@ def create_checkpoint_execution_plan(
     num_nodes        : number of unique node indices stored by the topological sort
     stop_node_ind    : unique index of the hidden_states leaf grad_fn node
     prom_inner_node_inds: all node indices corresponding to nodes inside a promise chain
+    ind_to_node      : maps index to autograd node, for debugging
     """
 
     stop_inds = [ stop_node_ind, *checkpoint_inds ]
@@ -133,23 +135,27 @@ def create_checkpoint_execution_plan(
         stack : list[int] = [ cur_checkpoint ]
 
         while stack:
-            curnode = stack[0]
-            stack = stack[1:]
+            curnode = stack.pop()
 
-            if curnode in visited or curnode in prom_inner_node_inds:
-                # We skip inner nodes of Promises since we should not need to recompute these propagations,
-                # they should be baked into the Promise's fwd() and bwd().
+            if curnode in visited:
                 continue
-            visited.add(curnode)
-            ancestor_nodes[curnode] = 1
+
+            if curnode not in prom_inner_node_inds:
+                # We don't flag inner nodes of Promises since we should not recompute these propagations,
+                # they should be baked into the Promise's fwd() and bwd().
+                # We do need to keep traversing through Promise inner nodes, though, so don't just end the branch.
+                ancestor_nodes[curnode] = 1
 
             if curnode != cur_checkpoint and curnode in stop_inds:
                 # Condition for stopping traversal on a given branch
                 continue
 
-            stack = in_adj[curnode] + stack
+            visited.add(curnode)
+
+            stack = stack + in_adj[curnode]
 
     # Return in reverse order (default is already according to topo sort)
+    # Note that the reverse topological order of a DAG is a topological order of the same DAG with all edge directions flipped
     return [ i for i, flag in list(enumerate(ancestor_nodes))[::-1] if flag == 1 ]
 
 

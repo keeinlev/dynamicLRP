@@ -420,7 +420,7 @@ def lrp_engine(
                 rel = input_frontier[node_ind]
 
                 if (promise := Promise.start_nodes_to_promise.get(node_ind)) is not None and isinstance(promise, Promise) \
-                        and promise not in fulfilled_promises:
+                        and promise not in fulfilled_promises and promise.start_ind != promise.arg_node_ind:
                     assert promise.ready, "During running of execution plan, promise was missing arg(s)"
                     
                     if promise.arg_node_ind in input_frontier:
@@ -447,7 +447,7 @@ def lrp_engine(
                         res = [ res ]
 
                     for i, child in enumerate(out_adj_list[node_ind]):
-                        if child is None or child not in input_frontier or (isinstance(res, float) and res[i] == 0.0):
+                        if child is None or child not in input_frontier or (isinstance(res[i], float) and res[i] == 0.0):
                             continue
                         input_frontier[child] += res[i]
 

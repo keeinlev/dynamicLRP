@@ -34,6 +34,7 @@ class Promise:
     start_nodes_to_promise = {}
     leaf_promises = []
     all_promises = []
+    ind_to_node = {}
     def __init__(self, promise, traversal_ind, *args, **kwargs):
         self.promise : dict = promise
         self.parents : list[Promise] = promise["parents"]
@@ -49,7 +50,7 @@ class Promise:
         # the execution plan work is done.
         self.fwd_list : list[Callable[[Node, torch.Tensor]]] = []
         self.bwd_list : list[Callable[[Node, torch.Tensor]]] = []
-        self.fwd_shape_getters : list[Callable[[Node]]] = [(None, lambda x: promise["rout"].shape)] # Give it 1 pos arg for consistency
+        self.shapes_list = []
         self.fwd : None
         self.bwd : None
         self.fwd_shape = promise["rout"].shape # This will update after a shape-modifying operation is added to fwd
@@ -59,6 +60,7 @@ class Promise:
         self.arg_node_retrieval_fcn : Union[str, Callable[[Node]]] = None
         self.start_ind : int = traversal_ind
         self.path : set[int] = set()
+        # self.ind_to_node = {}
 
         if traversal_ind not in Promise.start_nodes_to_promise:
             # This implicitly makes it so that if a Node had a pre-promise associated to it, but also receives
@@ -78,22 +80,41 @@ class Promise:
     def add_to_path(self, node_ind):
         self.path.add(node_ind)
     
-    def compile_fwd_bwd(self, ind_to_node):
+    def compile_fwd_bwd(self):
+
+        def compose_fwd(prev, op):
+            return lambda x: prev(op(x))
+
+        def compose_bwd(prev, op):
+            return lambda x: op(prev(x))
+
         fwd = lambda x: x
+        fwd_shape = self.fwd_shape
+        self.shapes_list = [fwd_shape]
         if self.fwd_list:
-            for node_ind, fcn in self.fwd_list:
-                prev_fcn = fwd
-                node = ind_to_node[node_ind]
-                fwd = lambda x: prev_fcn(fcn(node, x))
+            for fcn_type, node_ind, factory_fcn, expects_fwd_shape in self.fwd_list:
+                node = Promise.ind_to_node[node_ind] if node_ind is not None else None
+                if fcn_type == "fwd":
+                    prev_fcn = fwd
+                    fcn = factory_fcn(node, fwd_shape) if expects_fwd_shape else factory_fcn(node)
+                    fwd = compose_fwd(prev_fcn, fcn)
+                elif fcn_type == "shape":
+                    if isinstance(factory_fcn, str):
+                        fwd_shape = getattr(node, factory_fcn)
+                    else:
+                        fwd_shape = factory_fcn(node, fwd_shape) if expects_fwd_shape else factory_fcn(node)
+                    self.shapes_list.append(fwd_shape)
         
+        self.fwd_shape = fwd_shape
         self.fwd = fwd
         
         bwd = lambda x: x
         if self.bwd_list:
-            for node_ind, fcn in self.bwd_list:
+            for node_ind, factory_fcn in self.bwd_list:
                 prev_fcn = bwd
-                node = ind_to_node[node_ind]
-                bwd = lambda x: fcn(prev_fcn(node, x))
+                node = Promise.ind_to_node[node_ind] if node_ind is not None else None
+                fcn = factory_fcn(node)
+                bwd = compose_bwd(prev_fcn, fcn)
         
         self.bwd = bwd
 
@@ -103,22 +124,12 @@ class Promise:
         
         expects_fwd_shape   : signals that next_f will take an additional positional arg, expected_fwd_shape, which
             can then be used for input-agnostic shape-modifying operations to track the last known shape ahead of the op."""
-        if next_f_expects_fwd_shape:
-            # Flags that this operation would need to know the last fwd_shape recorded
-            if self.fwd_shape_getters:
-                shape_source_node_ind, fwd_shape_getter = self.fwd_shape_getters[-1]
-            self.fwd_list.append((node_ind, next_f, shape_source_node_ind, fwd_shape_getter))
-        else:
-            self.fwd_list.append((node_ind, next_f, None, None))
+        self.fwd_list.append(("fwd", node_ind, next_f, next_f_expects_fwd_shape))
 
         if shape_getter:
-            # This fwd call expects to modify the shape of the relevance tensor, so it needs to retrieve
-            # the last known shape in the fwd chain and then append to it a getter for the new shape post-op.
-            if shape_getter_expects_fwd_shape:
-                shape_source_node_ind, fwd_shape_getter = self.fwd_shape_getters[-1]
-                self.fwd_shape_getters.append((node_ind, shape_getter, shape_source_node_ind, fwd_shape_getter))
-            else:
-                self.fwd_shape_getters.append((node_ind, shape_getter, None, None))
+            # This fwd call expects to modify the shape of the relevance tensor, so we'll add the shape getter
+            # to the fwd chain, so we can keep track of the last known shape when calling compile_fwd_bwd.
+            self.fwd_list.append(("shape", node_ind, shape_getter, shape_getter_expects_fwd_shape))
         # prev_fwd = self.fwd
         # self.fwd = lambda x: prev_fwd(next_f(x))
 
@@ -135,14 +146,14 @@ class Promise:
     
     def __add__(self, other: torch.Tensor):
         assert self.fwd_shape == other.shape
-        self.nest_bwd(lambda x: x + other)
+        self.nest_bwd(lambda node: (lambda x: x + other), None)
         return self
     
     def clear_args_and_rout(self):
         """Sets all args and rout to None"""
         for i in range(len(self.promise["args"])):
             self.promise["args"][i] = None
-        self.set_rout(None)
+        self.set_rout(torch.zeros_like(self.rout))
         self.promise["complete"] = False
         self.promise["ready"] = False
     
@@ -151,9 +162,14 @@ class Promise:
         """Sets all args and rout to None for the raw promise dict"""
         for i in range(len(promise_dict["args"])):
             promise_dict["args"][i] = None
-        promise_dict["rout"] = None
+        promise_dict["rout"] = torch.zeros_like(promise_dict["rout"])
         promise_dict["complete"] = False
         promise_dict["ready"] = False
+    
+    @classmethod
+    def clear_all(cls):
+        for p in list(cls.start_nodes_to_promise.values()):
+            p.clear_args_and_rout()
 
     @property
     def inner_nodes(self):
@@ -233,7 +249,7 @@ class Promise:
     def compute_rins(self):
         ...
 
-    def trigger_promise_completion(self, fwd_only=False):
+    def trigger_promise_completion(self, fwd_only=False, recompile=True):
         # This is only called once a promise receives its second argument.
         assert self.ready, "Promise completion was triggered before promise was ready."
         if self.complete:
@@ -278,13 +294,13 @@ class Promise:
             for parent in self.parents:
                 if self in parent.children: # Edge case for early promise propagation
                     parent.promise["tail_nodes"].union(self.promise["tail_nodes"])
-                parent.setarg(self.op_result)
+                parent.setarg(self.op_result, fwd_only=fwd_only, recompile=recompile)
 
     @abstractmethod
     def _setarg(self, value):
         ...
 
-    def setarg(self, value, arg_node: torch.autograd.graph.Node = None, ret_fcn: Callable = None, fwd_only = False):
+    def setarg(self, value, arg_node: torch.autograd.graph.Node = None, ret_fcn: Callable = None, fwd_only = False, recompile=True):
         """Set the corresponding arg for this branch and check if the promise is ready"""
         if arg_node and ret_fcn:
             self.promise["tail_nodes"].add(arg_node)
@@ -295,6 +311,10 @@ class Promise:
         # This branch is now terminating, so add the inner nodes to the total set of inner nodes
         Promise.all_inner_nodes.update(self.inner_nodes)
 
+        if recompile:
+            # Compile the functions
+            self.compile_fwd_bwd()
+
         if not isinstance(value, float) or value != 0.0:
             self._setarg(self.fwd(value))
         else:
@@ -302,7 +322,7 @@ class Promise:
         # self.promise["args"][self.idx] = self.fwd(value)
         if self.set_and_check_ready():
             # print(f"triggering promise {self}")
-            self.trigger_promise_completion(fwd_only)
+            self.trigger_promise_completion(fwd_only, recompile)
     
     def retrieve_and_set_new_arg(self, grad_fn):
         if self.arg_node_ind in Promise.start_nodes_to_promise:
@@ -313,8 +333,33 @@ class Promise:
                              was found with a child promise.")
         if isinstance(self.arg_node_retrieval_fcn, str):
             attr = getattr(grad_fn, self.arg_node_retrieval_fcn)
-            self.setarg(attr, fwd_only=True)
+            self.setarg(attr, fwd_only=True, recompile=False)
         elif callable(self.arg_node_retrieval_fcn):
-            self.setarg(self.arg_node_retrieval_fcn(grad_fn), fwd_only=True)
+            self.setarg(self.arg_node_retrieval_fcn(grad_fn), fwd_only=True, recompile=False)
         else:
             raise ValueError("Saved Promise arg_node_retrieval_fcn was neither a callable nor a string attribute name.")# 
+
+    def propagate_fwd_shape(self, shape, leaf_promises_accumulator: set):
+        """Recursive function that should start at the root of a Promise tree and end at the leaf Promises of the tree.
+        Assumes shape is the correct shape for rout at this Promise on the given run.
+        This prepares the entire Promise tree for fwd propagation of args."""
+        self.fwd_shape = shape
+        self.compile_fwd_bwd() # Will update self.fwd_shape to the end-of-branch shape.
+
+        if not self.children:
+            leaf_promises_accumulator.add(self)
+
+        for child in self.children:
+            if isinstance(child, tuple):
+                child[0].propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
+                child[1].propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
+            else:
+                child.propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
+    
+    @classmethod
+    def repair_all_parent_child_connections(cls):
+        for p in list(cls.start_nodes_to_promise.values()):
+            if p.parents:
+                for parent in p.parents:
+                    if p not in parent.children:
+                        parent.children.append(p)

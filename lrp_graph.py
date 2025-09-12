@@ -49,13 +49,15 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack):
     if type(fcn).__name__ == "AddmmBackward0":
         # Decompose the function into an Add + Mm, then re-assign its adjacencies.
         decomposed_add = decompose_addmmbackward(fcn)
-        # Assign new Add's in-neighbours to the AddMm's in-neighbours.
-        in_adj[decomposed_add] = in_adj[fcn]
-        for in_neighbour in in_adj[fcn]:
-            # Replace all out-edges going to the AddMm to point to the new Add.
-            old_fcn_idx = out_adj[in_neighbour].index(fcn)
-            out_adj[in_neighbour][old_fcn_idx] = decomposed_add
-        del in_adj[fcn]
+        if fcn in in_adj:
+            # Assign new Add's in-neighbours to the AddMm's in-neighbours.
+            in_adj[decomposed_add] = in_adj[fcn]
+            for in_neighbour in in_adj[fcn]:
+                # Replace all out-edges going to the AddMm to point to the new Add.
+                old_fcn_idx = out_adj[in_neighbour].index(fcn)
+                out_adj[in_neighbour][old_fcn_idx] = decomposed_add
+            
+            del in_adj[fcn]
         fcn = decomposed_add
 
     # Assign adjacencies

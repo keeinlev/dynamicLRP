@@ -49,6 +49,7 @@ def lrp_engine(
         out_adj_list: Union[set[Node], set[int]] = None,
         topo_exec_order : list[int] = None,
         fcn_map : dict[str, Callable] = None,
+        no_recompile = False,
     ):
 
     start_time = time.time()
@@ -73,6 +74,9 @@ def lrp_engine(
 
         if out_adj_list is None or topo_exec_order is None or fcn_map is None:
             in_adj_list, out_adj_list, names, ind_to_node, num_nodes = make_graph(hidden_states, True)
+
+            Promise.ind_to_node = ind_to_node
+
             input_tracker : dict[Node, list] = { k : [] for k in list(in_adj_list.keys()) }
             checkpoints = list(filter(lambda k: type(k).__name__ == "LRPCheckpointBackward", list(in_adj_list.keys())))
             num_checkpoints_reached = 0
@@ -221,7 +225,7 @@ def lrp_engine(
                             if curnode_in_rel not in pre_promise.parents:
                                 # Due to the pre-promise construction, we know there is only ever one parent, so can safely overwrite.
                                 pre_promise.parents = [ curnode_in_rel ]
-                            curnode_in_rel.setarg(pre_promise.arg1 + pre_promise.arg2)
+                            curnode_in_rel.setarg(pre_promise.op_result)
                         else:
                             # Manually set the rout and trigger the promise to finish the backward prop.
                             pre_promise.accumulate_rout(curnode_in_rel)
@@ -260,7 +264,12 @@ def lrp_engine(
                 ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
 
                 # Call the propagation function for the node
-                curnode_outputs = fcn_map[type(curnode).__name__](curnode, curnode_in_rel)
+                try:
+                    curnode_outputs = fcn_map[type(curnode).__name__](curnode, curnode_in_rel)
+                except Exception as e:
+                    print(e)
+                    # raise e
+                    return curnode, curnode_in_rel, in_adj_list, out_adj_list
 
                 if isinstance(curnode_outputs, Promise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
                     # Node is waiting on Promise to be completed, add to promise queue and come back later.
@@ -301,7 +310,7 @@ def lrp_engine(
                     if child is None:
                         # Discard the input (it shouldn't have value anyway), if it's a promise make it a zero-promise
                         if isinstance(curnode_outputs[i], Promise):
-                            curnode_outputs[i].setarg(0.0)
+                            curnode_outputs[i].setarg(0.0, curnode, lambda node: 0.0)
                         continue
                     input_tracker[child].append(curnode_outputs[i])
                     nodes_pending[child] -= 1
@@ -384,6 +393,11 @@ def lrp_engine(
                 ind_to_node=ind_to_node
             )
 
+            if not DEBUG:
+                Promise.clear_all()
+            
+            Promise.repair_all_parent_child_connections()
+
             return checkpoint_vals, out_adj_list, topo_exec_order, fcn_map
         else:
             # Run execution plan made from first pass
@@ -391,6 +405,9 @@ def lrp_engine(
 
             # Need to re-map the graph to all the indices based on topo sort
             _, _, _, ind_to_node, _ = make_graph(hidden_states, True)
+
+            Promise.ind_to_node = ind_to_node
+
             checkpoints = list(filter(lambda node: type(node).__name__ == "LRPCheckpointBackward", list(ind_to_node.values())))
 
             input_frontier : dict[int, list[torch.Tensor]] = { ind : 0.0 for ind in topo_exec_order }
@@ -398,35 +415,78 @@ def lrp_engine(
             # Setup first iteration
             input_frontier[hidden_states.grad_fn.metadata["topo_ind"]] = relevance
 
-            # First pre-process all Promises by setting every leaf Promise arg
-            leaf_promise: Promise
-            for leaf_promise in Promise.leaf_promises:
-                if leaf_promise.arg_node_ind is not None:
-                    arg_node_grad_fn = ind_to_node.get(leaf_promise.arg_node_ind)
-                    leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
-                else:
-                    # Case where leaf Promise ended in a None Node
-                    leaf_promise.setarg(0.0)
+
+            if no_recompile:
+                # First pre-process all Promises by setting every leaf Promise arg
+                leaf_promise: Promise
+                for leaf_promise in Promise.leaf_promises:
+                    if leaf_promise.arg_node_ind is not None:
+                        arg_node_grad_fn = ind_to_node.get(leaf_promise.arg_node_ind)
+
+                        leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
+                    else:
+                        # Case where leaf Promise ended in a None Node
+                        leaf_promise.setarg(0.0)
             
-            # All promises that are required for the checkpoints should be ready now, as
-            # we have set the args of all leaf promises. Now all we need to do is call the
-            # bwd() functions as we traverse by each promise.
+                # All promises that are required for the checkpoints should be ready now, as
+                # we have set the args of all leaf promises. Now all we need to do is call the
+                # bwd() functions as we traverse by each promise.
 
             fulfilled_promises : set[Promise] = set()
 
             for node_ind in topo_exec_order:
+                iter_start_time = time.time()
                 node = ind_to_node[node_ind]
 
                 rel = input_frontier[node_ind]
 
                 if (promise := Promise.start_nodes_to_promise.get(node_ind)) is not None and isinstance(promise, Promise) \
-                        and promise not in fulfilled_promises and promise.start_ind != promise.arg_node_ind:
-                    assert promise.ready, "During running of execution plan, promise was missing arg(s)"
-                    
+                    and not promise.parents and not no_recompile:
+
+                    # When we hit a Node that starts a Promise, and the Promise is the root of its Promise tree,
+                    # we need to update its entire Promise tree's rout values to be of the correct shapes, since
+                    # they may have changed with the input.
+                    # First set this Promise's rout to rel, as this is correct for sure.
+                    promise.set_rout(rel)
+                    # Now call the recursive shape propagation function
+                    leaf_promises = set()
+                    promise.propagate_fwd_shape(rel.shape, leaf_promises)
+
+                    # And of course do this for the other branch too, if it exists
+                    if promise.other_branch is not None:
+                        promise.other_branch.propagate_fwd_shape(rel.shape, leaf_promises)
+
+                    # Now do the arg fwd-prop from the leaf Promises of just THIS Promise tree.
+                    leaf_promise: Promise
+                    for leaf_promise in list(leaf_promises):
+                        if leaf_promise.arg_node_ind is not None:
+                            arg_node_grad_fn = ind_to_node[leaf_promise.arg_node_ind]
+
+                            try:
+                                leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
+                            except RuntimeError as e:
+                                print(node_ind, leaf_promise.fwd_shape)
+                                raise e
+                        else:
+                            # Case where leaf Promise ended in a None Node
+                            leaf_promise.setarg(0.0, fwd_only=True, recompile=False)
+
+                if isinstance(promise, Promise) and promise not in fulfilled_promises and \
+                        promise.start_ind != promise.arg_node_ind:
+                    if not promise.ready:
+                        print(node_ind, promise.start_ind, promise.arg_node_ind)
+                    assert promise.ready, f"During running of execution plan, promise was missing arg(s) {promise.promise}"
+
+                    # Prep the promise
+                    promise.set_rout(rel)
+                    if isinstance(promise.rout, float):
+                        print(promise.promise, promise.start_ind)
+                        raise TypeError
+                    promise.compute_rins()
+
+                    # Propagate the rins
                     if promise.arg_node_ind in input_frontier:
                         # Sometimes one of the arg nodes isn't actually a checkpoint ancestor, so we only care about the other one.
-                        promise.set_rout(rel)
-                        promise.compute_rins()
                         res = promise.bwd(promise.rin)
 
                         # Assign rin to the end node of the promise
@@ -440,8 +500,14 @@ def lrp_engine(
 
                         input_frontier[other.arg_node_ind] += res2
                         fulfilled_promises.add(other)
+                    
+                    promise.set_complete()
                 else:
-                    res = fcn_map[type(node).__name__](node, rel)
+                    try:
+                        res = fcn_map[type(node).__name__](node, rel)
+                    except RuntimeError as e:
+                        print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind].shape)
+                        raise e
                     # Distribute the relevance the same way as first pass
                     if not isinstance(res, tuple):
                         res = [ res ]
@@ -449,12 +515,17 @@ def lrp_engine(
                     for i, child in enumerate(out_adj_list[node_ind]):
                         if child is None or child not in input_frontier or (isinstance(res[i], float) and res[i] == 0.0):
                             continue
+
                         input_frontier[child] += res[i]
 
                 # Move the frontier forward
                 # Since we are iterating over a topological ordering, when we are a certain node, we are certain
                 # that all of its dependencies have been visited at that point, so we can safely delete its inputs.
                 del input_frontier[node_ind]
+
+                iter_time = time.time() - iter_start_time
+                if iter_time > 1.5 / len(topo_exec_order) and DEBUG:
+                    print(f"Node {node_ind}, {node} took {iter_time}s")
 
 
             end_time = time.time()
@@ -463,5 +534,8 @@ def lrp_engine(
             # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
             checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
             checkpoint_vals = [ checkpoint.metadata["checkpoint_relevance" ] for checkpoint in checkpoints ]
+
+            if not DEBUG:
+                Promise.clear_all()
 
             return checkpoint_vals, out_adj_list, topo_exec_order, fcn_map

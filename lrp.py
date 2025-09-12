@@ -435,6 +435,7 @@ def lrp_engine(
             fulfilled_promises : set[Promise] = set()
 
             for node_ind in topo_exec_order:
+                iter_start_time = time.time()
                 node = ind_to_node[node_ind]
 
                 rel = input_frontier[node_ind]
@@ -521,6 +522,10 @@ def lrp_engine(
                 # Since we are iterating over a topological ordering, when we are a certain node, we are certain
                 # that all of its dependencies have been visited at that point, so we can safely delete its inputs.
                 del input_frontier[node_ind]
+
+                iter_time = time.time() - iter_start_time
+                if iter_time > 1.5 / len(topo_exec_order) and DEBUG:
+                    print(f"Node {node_ind}, {node} took {iter_time}s")
 
 
             end_time = time.time()

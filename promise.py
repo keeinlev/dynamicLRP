@@ -51,8 +51,8 @@ class Promise:
         self.fwd_list : list[Callable[[Node, torch.Tensor]]] = []
         self.bwd_list : list[Callable[[Node, torch.Tensor]]] = []
         self.shapes_list = []
-        self.fwd : None
-        self.bwd : None
+        self.compiled_fwd = []
+        self.compiled_bwd = []
         self.fwd_shape = promise["rout"].shape # This will update after a shape-modifying operation is added to fwd
         self.promise["tail_nodes"] = set()
         self.other_branch : Promise = None
@@ -82,13 +82,7 @@ class Promise:
     
     def compile_fwd_bwd(self):
 
-        def compose_fwd(prev, op):
-            return lambda x: prev(op(x))
-
-        def compose_bwd(prev, op):
-            return lambda x: op(prev(x))
-
-        fwd = lambda x: x
+        fwd = []
         fwd_shape = self.fwd_shape
         self.shapes_list = [fwd_shape]
         if self.fwd_list:
@@ -96,8 +90,13 @@ class Promise:
                 node = Promise.ind_to_node[node_ind] if node_ind is not None else None
                 if fcn_type == "fwd":
                     prev_fcn = fwd
-                    fcn = factory_fcn(node, fwd_shape) if expects_fwd_shape else factory_fcn(node)
-                    fwd = compose_fwd(prev_fcn, fcn)
+                    if isinstance(factory_fcn, str) and factory_fcn == "self":
+                        fcn = node
+                    else:
+                        fcn = factory_fcn(node, fwd_shape) if expects_fwd_shape else factory_fcn(node)
+                    
+                    fwd.append(fcn)
+                    # fwd = compose_fwd(prev_fcn, fcn)
                 elif fcn_type == "shape":
                     if isinstance(factory_fcn, str):
                         fwd_shape = getattr(node, factory_fcn)
@@ -106,17 +105,30 @@ class Promise:
                     self.shapes_list.append(fwd_shape)
         
         self.fwd_shape = fwd_shape
-        self.fwd = fwd
+        self.compiled_fwd = fwd
         
-        bwd = lambda x: x
+        bwd = []
         if self.bwd_list:
             for node_ind, factory_fcn in self.bwd_list:
                 prev_fcn = bwd
                 node = Promise.ind_to_node[node_ind] if node_ind is not None else None
-                fcn = factory_fcn(node)
-                bwd = compose_bwd(prev_fcn, fcn)
+                if isinstance(factory_fcn, str) and factory_fcn == "self":
+                    fcn = node
+                else:
+                    fcn = factory_fcn(node)
+                bwd.append(fcn)
         
-        self.bwd = bwd
+        self.compiled_bwd = bwd
+    
+    def fwd(self, x):
+        for fcn in self.compiled_fwd[::-1]:
+            x = fcn(x)
+        return x
+
+    def bwd(self, x):
+        for fcn in self.compiled_bwd:
+            x = fcn(x)
+        return x
 
     def nest_fwd(self, next_f, node_ind, shape_getter = None, next_f_expects_fwd_shape = False, shape_getter_expects_fwd_shape = False):
         """Nests a new operation for recovering the operand for the promise origin.

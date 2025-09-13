@@ -39,17 +39,23 @@ def shift_and_renormalize(rz, rx, alpha=0.5):
 # Since the autograd Nodes are code-generated and not exposed to the torch API, we just redefine shell
 # classes for the ones we need to instantiate, with the fields we need according to the dir() of the
 # original classes.
+
+class InputMetadata():
+    def __init__(self, shape):
+        self.shape = shape
+
 class AddBackward0:
-    def __init__(self, next_functions, sequence_nr):
+    def __init__(self, next_functions, sequence_nr, shape):
         self.name = "AddBackward0"
         self.next_functions = next_functions
         self.metadata = {}
         self.sequence_nr = sequence_nr
+        self._input_metadata = (InputMetadata(shape),)
     
     def _sequence_nr(self):
         return self.sequence_nr
 class MmBackward0:
-    def __init__(self, next_functions, mat1, mat2, sequence_nr):
+    def __init__(self, next_functions, mat1, mat2, sequence_nr, shape):
         self.name = "MmBackward0"
         self.next_functions = next_functions
         self._saved_self = mat1
@@ -58,6 +64,7 @@ class MmBackward0:
         self._saved_mat2_sym_sizes = mat2.shape
         self.metadata = {}
         self.sequence_nr = sequence_nr
+        self._input_metadata = (InputMetadata(shape),)
     
     def _sequence_nr(self):
         return self.sequence_nr
@@ -89,7 +96,10 @@ def decompose_addmmbackward(grad_fn):
     """Assuming grad_fn is an instance of AddMmBackward, returns an AddBackward0 instance that is the parent
     of an MmBackward0 instance and the first function in grad_fn.next_functions.
     The MmBackward0 is then the parent of the last two functions in grad_fn.next_functions."""
-    mm_fn = MmBackward0(grad_fn.next_functions[1:], grad_fn._saved_mat1, grad_fn._saved_mat2, grad_fn._sequence_nr())
-    add_fn = AddBackward0((grad_fn.next_functions[0], (mm_fn, 0)), grad_fn._sequence_nr())
+    mat1_shape = list(grad_fn._saved_mat1.shape)
+    mat2_shape = list(grad_fn._saved_mat2.shape)
+    result_shape = mat1_shape[:-2] + [mat1_shape[-2]] + [mat2_shape[-1]]
+    mm_fn = MmBackward0(grad_fn.next_functions[1:], grad_fn._saved_mat1, grad_fn._saved_mat2, grad_fn._sequence_nr(), result_shape)
+    add_fn = AddBackward0((grad_fn.next_functions[0], (mm_fn, 0)), grad_fn._sequence_nr(), result_shape)
 
     return add_fn

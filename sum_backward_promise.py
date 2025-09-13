@@ -2,27 +2,14 @@ import torch
 from util import (
     epsilon,
     renormalize_epsilon_scalar,
-    LRPCheckpoint,
 )
 from promise import Promise
 
 class SumBackwardPromise(Promise):
-    """
-    promise: shared data between the promise origin and both branches.
-    parent: parent promise, i.e. if this promise's result depends on another promise
-    children: child promises, i.e. if this promise will feed its results to other promises
-    fwd: applies all operations to the operand found from a branch to the origin of the promise.
-    bwd: applies all operations to the relevance of the operand from the origin of the promise
-        to the end of the branch, possibly in steps if one or more Checkpoints were on the branch.
-        Structure: [ (checkpoint1, fcn_to_get_from_origin_to_checkpoint1),
-                    (checkpoint2, fcn_to_get_from_checkpoint1_to_checkpoint2),
-                    ...
-                    (None, fcn_to_get_from_last_checkpoint_to_curnode) ]
-        So you should apply from left to right, but the inner functions themselves nest right to left.
-    fwd_shape: used as target shape for shape-modifying operations in fwd
-    """
     def __init__(self, promise, traversal_ind, saved_dim, keepdim):
         super().__init__(promise, traversal_ind)
+
+        #### TODO: Need to handle negative indices (also in CatBackwardPromise)
         self.dim = saved_dim
         if isinstance(saved_dim, int):
             self.dim = (saved_dim,)

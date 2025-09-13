@@ -22,12 +22,16 @@ def make_graph(hidden_states: torch.Tensor, return_topo_dict: bool = False):
     root = hidden_states.grad_fn
     visited = set()
     topo_stack = []
+    update_root = None
 
-    make_graph_topo_dfs(root, in_adj, out_adj, visited, topo_stack)
+    if type(root).__name__ == "AddmmBackward0":
+        update_root = [root]
+
+    make_graph_topo_dfs(root, in_adj, out_adj, visited, topo_stack, update_root)
     if return_topo_dict:
-        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), dict(topo_stack), len(topo_stack)
+        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), dict(topo_stack), len(topo_stack), update_root
     else:
-        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), None, len(topo_stack)
+        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), None, len(topo_stack), update_root
 
     # idea: dynamically init relevance variables when branching occurs, assign them to the corresponding
     # downstream nodes they should belong to using next_functions and visited table. Requires 2 passes.
@@ -41,7 +45,7 @@ def make_graph(hidden_states: torch.Tensor, return_topo_dict: bool = False):
     # 2. Decompose AddmmBackward0's with AddBackward0 leading back to MmBackward0.
     # 3. Assign each grad_fn node to its unique integer id based on traversal order
 
-def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack):
+def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack, update_root=None):
     if fcn is None or fcn in visited:
         return
     visited.add(fcn)
@@ -49,6 +53,8 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack):
     if type(fcn).__name__ == "AddmmBackward0":
         # Decompose the function into an Add + Mm, then re-assign its adjacencies.
         decomposed_add = decompose_addmmbackward(fcn)
+        if update_root is not None and fcn == update_root[0]:
+            update_root[0] = decomposed_add
         if fcn in in_adj:
             # Assign new Add's in-neighbours to the AddMm's in-neighbours.
             in_adj[decomposed_add] = in_adj[fcn]
@@ -110,7 +116,6 @@ def create_checkpoint_execution_plan(
         num_nodes: int,
         stop_node_ind: int,
         prom_inner_node_inds: set[int],
-        ind_to_node: dict[int, Node] = False
     ) -> list[int]:
     """Starting at each checkpoint node, finds all nodes ascending from that checkpoint
     to the original hidden_states grad_fn node or any checkpoints in between.
@@ -159,49 +164,3 @@ def create_checkpoint_execution_plan(
     # Return in reverse order (default is already according to topo sort)
     # Note that the reverse topological order of a DAG is a topological order of the same DAG with all edge directions flipped
     return [ i for i, flag in list(enumerate(ancestor_nodes))[::-1] if flag == 1 ]
-
-
-
-    #         for path in paths:
-    #             curnode = path[0]
-
-    #             # The node in the path may be either just the node index or a tuple which
-    #             # specifies the node index and which output index of next_node's propagation fcn
-    #             # corresponds to curnode.
-    #             # If there is only one output, the path node is just the node index.
-
-    #             # E.g.
-    #             #  f0 ----> f1 (takes in output 0 of f0)
-    #             #     \---> f2 (takes in output 1 of f0) -----> f3
-
-    #             # If we trace the path from f3 back to f0, we get a path like so:
-    #             # [0, (2, 1), 3]
-    #             # Where the tuple (2, 1) signifies that the next prop fcn is f2, and the
-    #             # input we give it comes from index 1 of the previous output.
-    #             # See that since f2 has only one output, f3 is not represented by a tuple.
-
-    #             next_nodes = [
-    #                     (next_node,
-    #                      (out := out_adj[next_node]).index(curnode))
-    #                     if len(out) > 1
-    #                     else next_node
-    #                 for next_node in in_adj[curnode]
-    #             ]
-
-    #             # Check if the node is a promise origin, and condense its path if so
-    #             # This cuts out the nodes that are already applied via the promise's bwd()
-    #             if curnode in prom_ind_to_path_len:
-    #                 path = [curnode, *path[prom_ind_to_path_len[curnode] - 1:] ]
-
-    #             # Check if we can end the path here and save it if so
-    #             if curnode in stop_inds:
-    #                 relevant_paths.append(path)
-    #                 continue
-    #             else:
-    #                 next_paths += [ [ next_node, *path ] for next_node in next_nodes ]
-            
-    #         paths = next_paths
-        
-    #     checkpoint_paths[node_to_ind[checkpoint]] = relevant_paths
-
-    # return checkpoint_paths

@@ -1,33 +1,24 @@
-from util import (
-    epsilon,
-    renormalize_epsilon,
-)
+import torch
 from promise import Promise
 
-class AddBackwardPromise(Promise):
+class CatBackwardPromise(Promise):
     """
     idx: specifies which argument/operand the branch is looking for.
     """
-    def __init__(self, promise, traversal_ind, idx):
+    def __init__(self, promise, traversal_ind, saved_dim, idx):
         super().__init__(promise, traversal_ind)
+        self.dim = saved_dim
+        if isinstance(saved_dim, int):
+            self.dim = (saved_dim,)
         self.idx = idx
 
-    @property
-    def arg1(self):
-        return self.promise["args"][0]
-
-    @property
-    def arg2(self):
-        return self.promise["args"][1]
-    
     @property
     def arg(self):
         return self.promise["args"][self.idx]
     
     @property
     def op_result(self):
-        """Returns the forward result of the operation when applied on the promise args"""
-        return self.arg1 + self.arg2
+        return torch.cat(self.promise["args"])
 
     @property
     def rin(self):
@@ -36,18 +27,17 @@ class AddBackwardPromise(Promise):
     def set_rout(self, new_rout):
         self.promise["rout"] = new_rout
 
+    def accumulate_rout(self, new_rout):
+        assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
+        self.promise["rout"] = self.rout + new_rout
+
     def set_rin(self, new_rin):
         self.promise["rins"][self.idx] = new_rin
 
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
         assert self.ready and self.pending_parents == 0
-        arg1, arg2 = self.promise["args"]
-        r = self.promise["rout"]
-        denom = arg1 ** 2 + arg2 ** 2 + epsilon
-        r1 = (arg1 ** 2 / denom) * r
-        r2 = (arg2 ** 2 / denom) * r
-        self.promise["rins"][0], self.promise["rins"][1] = renormalize_epsilon(r, r1, r2)
+        self.set_rin(Promise.ind_to_node[self.start_ind](self.rout)[self.idx])
 
     def _setarg(self, value):
         self.promise["args"][self.idx] = value

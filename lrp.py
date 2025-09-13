@@ -73,7 +73,11 @@ def lrp_engine(
                     raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
 
         if out_adj_list is None or topo_exec_order is None or fcn_map is None:
-            in_adj_list, out_adj_list, names, ind_to_node, num_nodes = make_graph(hidden_states, True)
+            in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_root = make_graph(hidden_states, True)
+
+            root = hidden_states.grad_fn
+            if updated_root is not None:
+                root = updated_root[0]
 
             Promise.ind_to_node = ind_to_node
 
@@ -86,9 +90,9 @@ def lrp_engine(
             visited = set()
 
             # Setup the first iteration
-            input_tracker[hidden_states.grad_fn] = [ relevance ]
-            stack : list[Node] = [hidden_states.grad_fn]
-            in_adj_list[hidden_states.grad_fn] = []
+            input_tracker[root] = [ relevance ]
+            stack : list[Node] = [root]
+            in_adj_list[root] = []
             nodes_pending = { k : len(v) for k, v in list(in_adj_list.items()) }
 
             promise_queue : list[Node] = []
@@ -268,7 +272,7 @@ def lrp_engine(
                     curnode_outputs = fcn_map[type(curnode).__name__](curnode, curnode_in_rel)
                 except Exception as e:
                     print(e)
-                    # raise e
+                    raise e
                     return curnode, curnode_in_rel, in_adj_list, out_adj_list
 
                 if isinstance(curnode_outputs, Promise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
@@ -341,7 +345,8 @@ def lrp_engine(
                 ####### END SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
 
             end_time = time.time()
-            print(f"propagation took {end_time - start_time} seconds")
+            if DEBUG:
+                print(f"propagation took {end_time - start_time} seconds")
 
             # Checking conservation holds across the entire propagation
             # The frontier includes:
@@ -390,7 +395,6 @@ def lrp_engine(
                 num_nodes,
                 hidden_states.grad_fn.metadata["topo_ind"],
                 Promise.all_inner_nodes,
-                ind_to_node=ind_to_node
             )
 
             if not DEBUG:
@@ -404,7 +408,7 @@ def lrp_engine(
             # All adjacency lists and node orders are in terms of topological indices now
 
             # Need to re-map the graph to all the indices based on topo sort
-            _, _, _, ind_to_node, _ = make_graph(hidden_states, True)
+            _, _, _, ind_to_node, _, _ = make_graph(hidden_states, True)
 
             Promise.ind_to_node = ind_to_node
 
@@ -529,7 +533,8 @@ def lrp_engine(
 
 
             end_time = time.time()
-            print(f"propagation took {end_time - start_time} seconds")
+            if DEBUG:
+                print(f"propagation took {end_time - start_time} seconds")
 
             # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
             checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)

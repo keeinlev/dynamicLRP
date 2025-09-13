@@ -20,7 +20,6 @@ class Promise:
                     (None, fcn_to_get_from_last_checkpoint_to_curnode) ]
         So you should apply from left to right, but the inner functions themselves nest right to left.
     fwd_shape: used as target shape for shape-modifying operations in fwd
-    fwd_shape_getters: allows shape modifying operations to be input-agnostic, so even with varying input length, the
         Promise can be reused by tracking Nodes via index and using the getters on the corresponding Nodes.
     other_branch: if it exists, the branch of the promise that searches for the other argument of the operation
     arg_node_ind: the unique index of the grad_fn node at which this branch's argument was found. For non-leaf Promises,
@@ -40,20 +39,13 @@ class Promise:
         self.parents : list[Promise] = promise["parents"]
         self.children : list[Promise | tuple[Promise]] = [] # Will be added to if further nested promise Nodes are found.
 
-        ### TODO: (Aug 21, 2025) I think fwd and bwd should just be a list of functions, then we can have a function for
-        # compiling them when needing to run. This will allow us to also store the grad_fn index corresponding to each
-        # step, so that even if certain saved args change with different inputs, it can pull those, update the fcns, then
-        # give the correct output.
-        # This will basically absorb arg_node_ind and arg_node_retrieval_fcn and adopt that method for the whole chain.
-        # In that case arg_node_retrieval_fcn will be the first function in any fwd chain.
-        # I think this is a pretty big priority but too much on my mind right this instant and will come back as soon as
-        # the execution plan work is done.
-        self.fwd_list : list[Callable[[Node, torch.Tensor]]] = []
-        self.bwd_list : list[Callable[[Node, torch.Tensor]]] = []
-        self.shapes_list = []
-        self.compiled_fwd = []
-        self.compiled_bwd = []
-        self.fwd_shape = promise["rout"].shape # This will update after a shape-modifying operation is added to fwd
+        # These are where the fwd/bwd factory functions will be stored
+        self.fwd_list : list[Callable[[Node]]] = []
+        self.bwd_list : list[Callable[[Node]]] = []
+        # These are where the compiled fwd/bwd chain functions will be stored
+        self.compiled_fwd : list[Callable[[torch.Tensor]]] = []
+        self.compiled_bwd : list[Callable[[torch.Tensor]]] = []
+        self.fwd_shape = promise["rout"].shape # This will update during compilation based on shape-modifying operations
         self.promise["tail_nodes"] = set()
         self.other_branch : Promise = None
         self.arg_node_ind : int = None
@@ -81,36 +73,28 @@ class Promise:
         self.path.add(node_ind)
     
     def compile_fwd_bwd(self):
-
+        """The main driver of the input-agnostic specification of this framework.
+        Using saved factory functions which take in the autograd node, fetchable from ind_to_node using
+        the node's topological index (which is saved with the factory function), assembles a list of
+        functions in both the forward and backward directions to execute the Promise chains based on
+        the node's metadata in this current run."""
         fwd = []
-        fwd_shape = self.fwd_shape
-        self.shapes_list = [fwd_shape]
         if self.fwd_list:
-            for fcn_type, node_ind, factory_fcn, expects_fwd_shape in self.fwd_list:
+            for node_ind, factory_fcn in self.fwd_list:
                 node = Promise.ind_to_node[node_ind] if node_ind is not None else None
-                if fcn_type == "fwd":
-                    prev_fcn = fwd
-                    if isinstance(factory_fcn, str) and factory_fcn == "self":
-                        fcn = node
-                    else:
-                        fcn = factory_fcn(node, fwd_shape) if expects_fwd_shape else factory_fcn(node)
-                    
-                    fwd.append(fcn)
-                    # fwd = compose_fwd(prev_fcn, fcn)
-                elif fcn_type == "shape":
-                    if isinstance(factory_fcn, str):
-                        fwd_shape = getattr(node, factory_fcn)
-                    else:
-                        fwd_shape = factory_fcn(node, fwd_shape) if expects_fwd_shape else factory_fcn(node)
-                    self.shapes_list.append(fwd_shape)
-        
-        self.fwd_shape = fwd_shape
+                if isinstance(factory_fcn, str) and factory_fcn == "self":
+                    fcn = node
+                else:
+                    fcn = factory_fcn(node)
+                
+                fwd.append(fcn)
+
+        self.fwd_shape = Promise.ind_to_node[self.arg_node_ind]._input_metadata[0].shape
         self.compiled_fwd = fwd
         
         bwd = []
         if self.bwd_list:
             for node_ind, factory_fcn in self.bwd_list:
-                prev_fcn = bwd
                 node = Promise.ind_to_node[node_ind] if node_ind is not None else None
                 if isinstance(factory_fcn, str) and factory_fcn == "self":
                     fcn = node
@@ -130,25 +114,13 @@ class Promise:
             x = fcn(x)
         return x
 
-    def nest_fwd(self, next_f, node_ind, shape_getter = None, next_f_expects_fwd_shape = False, shape_getter_expects_fwd_shape = False):
+    def nest_fwd(self, next_f, node_ind):
         """Nests a new operation for recovering the operand for the promise origin.
         Designed to make Promises input-agnostic so they can be reused in later runs.
         
         expects_fwd_shape   : signals that next_f will take an additional positional arg, expected_fwd_shape, which
             can then be used for input-agnostic shape-modifying operations to track the last known shape ahead of the op."""
-        self.fwd_list.append(("fwd", node_ind, next_f, next_f_expects_fwd_shape))
-
-        if shape_getter:
-            # This fwd call expects to modify the shape of the relevance tensor, so we'll add the shape getter
-            # to the fwd chain, so we can keep track of the last known shape when calling compile_fwd_bwd.
-            self.fwd_list.append(("shape", node_ind, shape_getter, shape_getter_expects_fwd_shape))
-        # prev_fwd = self.fwd
-        # self.fwd = lambda x: prev_fwd(next_f(x))
-
-    # def checkpoint(self, new_checkpoint):
-    #     """Marks a checkpoint in the backwards op chain and opens a new chain after the checkpoint"""
-    #     self.bwd[-1] = (new_checkpoint, self.bwd[-1][1])
-    #     self.bwd.append((None, lambda x: x))
+        self.fwd_list.append((node_ind, next_f))
 
     def nest_bwd(self, next_f, node_ind):
         """Stacks on a new operation for transforming the promised relevance back down the branch"""

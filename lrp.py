@@ -168,9 +168,9 @@ def lrp_engine(
                 if not promise_fulfillment_mode:
 
                     # Categorize all inputs into either pending promises, complete promises, or tensors
-                    pending_promise_inputs = []
-                    complete_promise_inputs = []
-                    tensor_inputs = []
+                    pending_promise_inputs : list[Promise] = []
+                    complete_promise_inputs : list[Promise] = []
+                    tensor_inputs : list[torch.Tensor] = []
                     for input_ in curnode_inputs:
                         if isinstance(input_, torch.Tensor):
                             tensor_inputs.append(input_)
@@ -183,19 +183,78 @@ def lrp_engine(
                         else:
                             print(input_)
                             raise ValueError(f"Expected relevance input to Node {curnode} to be type Promise or Tensor, but got {type(input_)} instead.")
-            
+
                     if not complete_promise_inputs and not pending_promise_inputs and not tensor_inputs:
                         continue
-            
+
                     # Aggregate all inputs into one Tensor or Promise
-                    curnode_in_rel = sum(tensor_inputs) + sum([ p.rin for p in complete_promise_inputs ])
-                    if pending_promise_inputs:
+                    curnode_in_rel = sum(tensor_inputs)
+
+
+                    ####### PRE-PROMISE RETRIEVAL
+                    # Consider that we traverse the same Node at most twice at this stage. Once possibly for PTM, and the second
+                    # in Normal Traversal Mode. This is because a Node will not be placed back in PTM if it already
+                    # has set the "pre_promise" key in its metadata, i.e. if we've already processed it in PTM.
+                    if "pre_promise" in curnode.metadata:
+                        # Essentially checking if this is a Node we traversed in PTM and are now traversing again in Normal Mode.
+                        pre_promise : Promise = curnode.metadata["pre_promise"]
+                        assert pre_promise.ready, "Pre-Promise assumed to be ready upon re-traversal but was not."
+                        assert nodes_pending[curnode] == 0, "Re-traversing Node with Pre-Promise but not all of its inputs have landed."
+
+                        # Accumulate the landed Tensor relevance
+                        if isinstance(curnode_in_rel, torch.Tensor):
+                            pre_promise.set_rout(curnode_in_rel)
+                        
+                        for parent in pre_promise.parents:
+                            if pre_promise not in parent.children:
+                                parent.children.append(pre_promise)
+                                if parent.complete:
+                                    pre_promise.accumulate_rout(parent.rin)
+
+                        for pending_promise in pending_promise_inputs:
+                            if pending_promise not in pre_promise.parents:
+                                # Create parent-child link now that we know all inputs have landed.
+                                # The Pre-Promise becomes the Aggregate Promise, except it has already been fully built.
+                                pre_promise.parents.append(pending_promise)
+                            if pre_promise not in pending_promise.children:
+                                pending_promise.children.append(pre_promise)
+                            pending_promise.arg_node_ind = curnode.metadata["topo_ind"]
+
+                        pre_promise.trigger_promise_completion()
+
+                        if not pre_promise.complete:
+                            # Pre-Promise now stalls waiting for its parents.
+                            promise_queue.append(curnode)
+                            continue
+                        elif curnode in (tail_nodes := pre_promise.promise["tail_nodes"]) and len(tail_nodes) == 1:
+                            # Singleton Promise, just set the relevance input to the Pre-Promise rin and go on to process the node
+                            curnode_in_rel = pre_promise.rin
+                        else:
+                            ready_tail_nodes = []
+                            for tail_node in tail_nodes:
+                                if tail_node not in stack and nodes_pending[tail_node] == 0:
+                                    ready_tail_nodes.append(tail_node)
+                            stack = ready_tail_nodes + stack
+                            continue
+                    ####### END PRE-PROMISE RETRIEVAL
+
+
+                    elif pending_promise_inputs:
                         # In promise traversal mode this will be True
                         agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_traversal_mode, promise_traversal_mode)
-                        if curnode_in_rel != 0:
-                            curnode_in_rel = agg_promises + curnode_in_rel
-                        else:
-                            curnode_in_rel = agg_promises
+                        if isinstance(curnode_in_rel, torch.Tensor):
+                            if not promise_traversal_mode and len(pending_promise_inputs) == 1:
+                                # In this case, compound_promises did not return a new DummyPromise, since there was only one Promise to compound
+                                # However, we now know there are also Tensor relevance inputs from other in-edges, which we cannot account for
+                                # in the input-agnostic run if we merge them into the Promise chain at this point. It needs to be at the start of
+                                # a Promise.
+                                agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], single_promise_override=True)
+                            agg_promises.set_rout(curnode_in_rel)
+                        curnode_in_rel = agg_promises
+
+                    else:
+                        curnode_in_rel += sum([ p.rin for p in complete_promise_inputs ])
+
                 else:
                     # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
                     curnode_in_rel = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
@@ -204,55 +263,6 @@ def lrp_engine(
                     del curnode.metadata["promise"], curnode.metadata["promise_idx"]
 
                 ####### END INPUT MERGING
-
-
-                ####### PRE-PROMISE RETRIEVAL
-
-                if not promise_traversal_mode and "pre_promise" in curnode.metadata:
-                    # We have already traversed a promise tree, but have not calculated its bwd,
-                    # since it was done in promise traversal mode.
-                    pre_promise : Promise = curnode.metadata["pre_promise"]
-
-                    assert pre_promise.ready, f"Pre-promise at {curnode} was assumed to be ready but was not."
-
-                    if not pre_promise.complete:
-                        if isinstance(curnode_in_rel, Promise):
-                            # If there is still pending promises at this node, try to complete them via the aggregate promise.
-                            # In the case this completes and propagates relevance down, we will have to pick up from the tail nodes
-                            # of the aggregate promise.
-                            curnode_in_rel.children.append(pre_promise)
-
-                            # This may also actually be a different promise than the pre-promise's original parent, due to
-                            # the promise aggregation. Therefore, we must check if the parent-child relationship now flows through
-                            # the aggregate promise and not the promise that caused Promise Traversal Mode.
-                            # While there is no issue without doing this in first pass, it is needed for the deterministic pass.
-                            if curnode_in_rel not in pre_promise.parents:
-                                # Due to the pre-promise construction, we know there is only ever one parent, so can safely overwrite.
-                                pre_promise.parents = [ curnode_in_rel ]
-                            curnode_in_rel.setarg(pre_promise.op_result)
-                        else:
-                            # Manually set the rout and trigger the promise to finish the backward prop.
-                            pre_promise.accumulate_rout(curnode_in_rel)
-                            pre_promise.trigger_promise_completion()
-
-                    if not DEBUG:
-                        curnode.metadata["pre_promise"].clear_args_and_rout()
-                    del curnode.metadata["pre_promise"]
-
-                    tail_nodes = list(pre_promise.promise["tail_nodes"])
-                    if curnode in tail_nodes:
-                        tail_nodes.remove(curnode)
-                    if tail_nodes:
-                        # Don't know if the promise is complete yet, so put on the promise queue.
-                        # If any are done, they will be traversed with priority.
-                        promise_queue += tail_nodes
-                        continue
-                    else:
-                        # If the pre-promise is a singleton, i.e. the node is the tail of its own pre-promise,
-                        # just collect the computed rin and re-traverse this node with a tensor rin input like normal.
-                        curnode_in_rel = pre_promise.rin
-
-                ####### END PRE-PROMISE RETRIEVAL
 
 
                 if promise_traversal_mode:
@@ -509,8 +519,8 @@ def lrp_engine(
                 else:
                     try:
                         res = fcn_map[type(node).__name__](node, rel)
-                    except RuntimeError as e:
-                        print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind].shape)
+                    except (AttributeError, RuntimeError) as e:
+                        print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind])
                         raise e
                     # Distribute the relevance the same way as first pass
                     if not isinstance(res, tuple):

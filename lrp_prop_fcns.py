@@ -27,16 +27,15 @@ def output_relevances(func):
         res = func(*args, **kwargs)
         grad_fn = args[1]
         r = args[2]
+        print(f"{grad_fn}:", end="") 
         if type(grad_fn).__name__ == "AddBackward0":
-            print(f"{grad_fn}:", end="") 
             if isinstance(r, Promise):
-                print(r.rout.nansum())
+                print(r.rout.nansum(), end=" ")
             else:
-                print(r.nansum())
+                print(r.nansum(), end=" ")
         if (not isinstance(r, Promise)) and \
                 not isinstance(res, Promise) \
                 and (not isinstance(res, tuple) or not isinstance(res[0], Promise)):
-            print(f"{grad_fn}: ", end="")
             rout = r.nansum()
             rins = None
             if isinstance(res, tuple):
@@ -44,7 +43,8 @@ def output_relevances(func):
                         (res[1].nansum() if isinstance(res[1], torch.Tensor) else res[1]))
             else:
                 rins = res.sum()
-            print(rout, rins)
+            print(rout, rins, end=" ")
+        print(memused := torch.cuda.memory_allocated("cuda:0"), memres := torch.cuda.memory_reserved("cuda:0"), memres - memused)
         return res
     return wrapper
 
@@ -541,13 +541,23 @@ class LRPPropFunctions:
             else:
                 # If this is the first branch of the promise
                 return r # We will check if the promise is complete in the graph traversal
+        
+        # Optimized to avoid creating large intermediates
+        tmp = r / z_stabilized   # s o
 
-        contribs = x.unsqueeze(2) * weights.unsqueeze(0) # s d o
-        z_uns = z_stabilized.unsqueeze(1) # s d o
-        ratio = contribs / z_uns
+        rin_input = x * (tmp @ weights.t()) # s d
+        rin_input = rin_input / 2
+
+        rin_weight = weights * (x.t() @ tmp) # s o
+        rin_weight = rin_weight / 2
+
+        # if (next_fcn := grad_fn.next_functions[1][0]) is not None \
+        #         and (type(next_fcn).__name__ == "AccumulateGrad"
+        #              or type(next_fcn.next_functions[0][0]).__name__ == "AccumulateGrad"):
+        #     return torch.einsum('sdo,so->sd', ratio, r), torch.zeros_like(weights)
 
         # propagate relevance in parallel for input and weight, as specified by A.3.2 (Bilinear matmul) of AttnLRP: https://arxiv.org/pdf/2402.05602
-        return torch.einsum('sdo,so->sd', ratio, r) / 2, torch.einsum('sdo,so->do', ratio, r) / 2
+        return rin_input, rin_weight
 
     @classmethod
     @output_relevances
@@ -568,13 +578,23 @@ class LRPPropFunctions:
             else:
                 # If this is the first branch of the promise
                 return r # We will check if the promise is complete in the graph traversal
+            
+        # Same optimization as MmBackward
+        tmp = r / z_stabilized # b s o
 
-        contribs = mat1.unsqueeze(3) * mat2.unsqueeze(1) # b s d o
-        z_uns = z_stabilized.unsqueeze(2) # b s d o
-        ratio = contribs / z_uns
+        rin_mat1 = mat1 * (tmp @ mat2.permute(0, 2, 1))
+        rin_mat1 = rin_mat1 / 2
+
+        rin_mat2 = mat2 * (mat1.permute(0, 2, 1) @ tmp)
+        rin_mat2 = rin_mat2 / 2
+
+        # if (next_fcn := grad_fn.next_functions[1][0]) is not None \
+        #         and (type(next_fcn).__name__ == "AccumulateGrad"
+        #              or type(next_fcn.next_functions[0][0]).__name__ == "AccumulateGrad"):
+        #     return torch.einsum('bsdo,bso->bsd', ratio, r), torch.zeros_like(mat2)
 
         # propagate relevance in parallel for mat1 and mat2
-        return torch.einsum('bsdo,bso->bsd', ratio, r) / 2, torch.einsum('bsdo,bso->bdo', ratio, r) / 2
+        return rin_mat1, rin_mat2
 
     @classmethod
     @output_relevances

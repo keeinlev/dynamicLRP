@@ -69,6 +69,10 @@ class Promise:
         if DEBUG:
             Promise.all_promises.append(self)
     
+    @property
+    def id(self):
+        return (self.start_ind, self.arg_node_ind)
+
     def add_to_path(self, node_ind):
         self.path.add(node_ind)
     
@@ -278,7 +282,8 @@ class Promise:
             for parent in self.parents:
                 if self in parent.children: # Edge case for early promise propagation
                     parent.promise["tail_nodes"].union(self.promise["tail_nodes"])
-                parent.setarg(self.op_result, fwd_only=fwd_only, recompile=recompile)
+                if parent.arg is None:
+                    parent.setarg(self.op_result, fwd_only=fwd_only, recompile=recompile)
 
     @abstractmethod
     def _setarg(self, value):

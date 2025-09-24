@@ -9,12 +9,23 @@ class SumBackwardPromise(Promise):
     def __init__(self, promise, traversal_ind, saved_dim, keepdim):
         super().__init__(promise, traversal_ind)
 
-        #### TODO: Need to handle negative indices (also in CatBackwardPromise)
-        self.dim = saved_dim
-        if isinstance(saved_dim, int):
-            self.dim = (saved_dim,)
+        if saved_dim is not None:
+            if isinstance(saved_dim, int):
+                saved_dim = [saved_dim]
+            elif isinstance(saved_dim, tuple):
+                saved_dim = list(saved_dim)
+            
+            for i in range(len(saved_dim)):
+                # Negative indices -i get saved as 2**32 - i
+                if saved_dim[i] > len(self.fwd_shape) - 1:
+                    saved_dim[i] -= 2**32
+
+            self.dim = tuple(saved_dim)
+            self.sum_type = 1
+        else:
+            self.dim = None
+            self.sum_type = 0
         self.keepdim = keepdim
-        self.sum_type = int(saved_dim is not None)
 
     @property
     def arg(self):
@@ -56,7 +67,7 @@ class SumBackwardPromise(Promise):
                 unsqueezed_shape = [1 if i in self.dim else s for i, s in enumerate(self.arg.shape)]
                 contribs = ratios * self.rout.reshape(unsqueezed_shape)
         
-        self.set_rin(renormalize_epsilon_scalar(self.rout, contribs, 0.0)[0])
+        self.set_rin(renormalize_epsilon_scalar(self.rout, contribs, torch.zeros_like(contribs))[0])
         
         # arg1, arg2 = self.promise["args"]
         # r = self.promise["rout"]

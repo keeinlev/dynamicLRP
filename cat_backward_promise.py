@@ -7,9 +7,12 @@ class CatBackwardPromise(Promise):
     """
     def __init__(self, promise, traversal_ind, saved_dim, idx):
         super().__init__(promise, traversal_ind)
+        
+        # Negative indices -i get saved as 2**32 - i
+        if saved_dim > len(self.fwd_shape) - 1:
+            saved_dim -= 2**32
+
         self.dim = saved_dim
-        if isinstance(saved_dim, int):
-            self.dim = (saved_dim,)
         self.idx = idx
 
     @property
@@ -18,7 +21,7 @@ class CatBackwardPromise(Promise):
     
     @property
     def op_result(self):
-        return torch.cat(self.promise["args"])
+        return torch.cat(self.promise["args"], dim=self.dim)
 
     @property
     def rin(self):
@@ -37,7 +40,9 @@ class CatBackwardPromise(Promise):
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
         assert self.ready and self.pending_parents == 0
-        self.set_rin(Promise.ind_to_node[self.start_ind](self.rout)[self.idx])
+        split_fcn = Promise.ind_to_node[self.start_ind]
+        for i, split in enumerate(split_fcn(self.rout)):
+            self.promise["rins"][i] = split
 
     def _setarg(self, value):
         self.promise["args"][self.idx] = value

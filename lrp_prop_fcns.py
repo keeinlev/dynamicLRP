@@ -33,6 +33,8 @@ def output_relevances(func):
                 print(r.rout.nansum(), end=" ")
             else:
                 print(r.nansum(), end=" ")
+        elif type(grad_fn).__name__ == "AccumulateGrad":
+            return res
         if (not isinstance(r, Promise)) and \
                 not isinstance(res, Promise) \
                 and (not isinstance(res, tuple) or not isinstance(res[0], Promise)):
@@ -108,7 +110,7 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             r.arg_node_ind = traversal_ind
-            r.children = [(promise1, promise2)]
+            r.children.append((promise1, promise2))
 
         grad_fn.metadata["promise"] = promise
 
@@ -144,7 +146,7 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             r.arg_node_ind = traversal_ind
-            r.children = [promise]
+            r.children.append(promise)
 
         grad_fn.metadata["promise"] = promise
 
@@ -164,10 +166,13 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def CatBackwardProp(cls, grad_fn, r):
         if isinstance(r, Promise):
+            rout_placeholder = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype)
+            shapes = [ out.shape for out in grad_fn(rout_placeholder) ]
+            num_args = len(shapes)
             promise = {
-                "rout": torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype),
-                "args": [None],
-                "rins": [None],
+                "rout": rout_placeholder,
+                "args": [ None for _ in range(num_args) ],
+                "rins": [ None for _ in range(num_args) ],
                 "ready": False,
                 "complete": False,
                 "parents": [r],
@@ -175,23 +180,27 @@ class LRPPropFunctions:
             
             traversal_ind = grad_fn.metadata["topo_ind"]
 
-            promise1 = CatBackwardPromise(promise, traversal_ind, getattr(grad_fn, "_saved_dim"), 0)
-            promise2 = CatBackwardPromise(promise, traversal_ind, getattr(grad_fn, "_saved_dim"), 1)
-
-            promise1.other_branch = promise2
-            promise2.other_branch = promise1
-
-            # The shape of each branch must be split immediately
-            shape1, shape2 = [ out.shape for out in grad_fn(promise["rout"]) ]
-            promise1.fwd_shape = shape1
-            promise2.fwd_shape = shape2
+            prev_promise_branch = None
+            promise_branches = []
+            # Since you can cat an arbitrary number of tensors, we need to get a bit creative and turn other_branch into a cyclic connection
+            for i in range(num_args):
+                new_branch = CatBackwardPromise(promise, traversal_ind, grad_fn._saved_dim, i)
+                new_branch.fwd_shape = shapes[i]
+                promise_branches.append(new_branch)
+                if prev_promise_branch is not None:
+                    prev_promise_branch.other_branch = new_branch
+                prev_promise_branch = new_branch
+            
+            # Create the last-first connection
+            if num_args > 1:
+                promise_branches[-1].other_branch = promise_branches[0]
 
             r.arg_node_ind = traversal_ind
-            r.children = [(promise1, promise2)]
+            r.children.append(tuple(promise_branches))
 
             grad_fn.metadata["promise"] = promise
 
-            return promise1, promise2
+            return tuple(promise_branches)
         
         return grad_fn(r)
 
@@ -296,7 +305,7 @@ class LRPPropFunctions:
             def fwd_factory(node):
                 expected_fwd_shape = node._input_metadata[0].shape
                 def fwd_slice(x):
-                    return torch.ops.aten.slice((x, dim := node._saved_dim, start := node._saved_start, start + expected_fwd_shape[dim]))
+                    return torch.ops.aten.slice(x, dim := node._saved_dim, start := node._saved_start, start + expected_fwd_shape[dim])
                 return fwd_slice
             
             def bwd_factory(node):
@@ -431,12 +440,7 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def NegBackwardProp(cls, grad_fn, r):
-        if isinstance(r, Promise):
-            r.nest_fwd("self", grad_fn.metadata["topo_ind"])
-            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
-            return r
-
-        return grad_fn(r)
+        return r
     
     @classmethod
     @output_relevances
@@ -679,7 +683,7 @@ class LRPPropFunctions:
             r.setarg(get_result(grad_fn), grad_fn, get_result)
             if r.complete:
                 r = r.rin
-        return r.reciprocal()
+        return r
     
     @classmethod
     @output_relevances

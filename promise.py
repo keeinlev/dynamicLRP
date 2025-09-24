@@ -1,7 +1,7 @@
 import torch
 from abc import abstractmethod
 from torch.autograd.graph import Node
-from typing import Callable, Union
+from typing import Callable, Union, Self
 from util import (
     DEBUG,
 )
@@ -30,7 +30,7 @@ class Promise:
         
     """
     all_inner_nodes : set[int] = set()
-    start_nodes_to_promise = {}
+    start_nodes_to_promise : dict[int, Self] = {}
     leaf_promises = []
     all_promises = []
     ind_to_node = {}
@@ -52,7 +52,6 @@ class Promise:
         self.arg_node_retrieval_fcn : Union[str, Callable[[Node]]] = None
         self.start_ind : int = traversal_ind
         self.path : set[int] = set()
-        # self.ind_to_node = {}
 
         if traversal_ind not in Promise.start_nodes_to_promise:
             # This implicitly makes it so that if a Node had a pre-promise associated to it, but also receives
@@ -68,7 +67,7 @@ class Promise:
 
         if DEBUG:
             Promise.all_promises.append(self)
-    
+
     @property
     def id(self):
         return (self.start_ind, self.arg_node_ind)
@@ -142,8 +141,6 @@ class Promise:
         for i in range(len(self.promise["args"])):
             self.promise["args"][i] = None
         self.set_rout(torch.zeros_like(self.rout))
-        self.promise["complete"] = False
-        self.promise["ready"] = False
     
     @classmethod
     def clear_args_and_rout_raw(cls, promise_dict):
@@ -151,13 +148,13 @@ class Promise:
         for i in range(len(promise_dict["args"])):
             promise_dict["args"][i] = None
         promise_dict["rout"] = torch.zeros_like(promise_dict["rout"])
-        promise_dict["complete"] = False
-        promise_dict["ready"] = False
     
     @classmethod
     def clear_all(cls):
         for p in list(cls.start_nodes_to_promise.values()):
             p.clear_args_and_rout()
+            p.promise["complete"] = False
+            p.promise["ready"] = False
 
     @property
     def inner_nodes(self):
@@ -246,35 +243,32 @@ class Promise:
             # Either reached root of a promise tree, or we are in the exec_bwd call of a child of a completed promise.
             self.compute_rins()
             res1 = self.exec_bwd()
-            res2 = None
+            all_branch_res = [res1]
             if self.other_branch is not None:
-                res2 = self.other_branch.exec_bwd()
+                curr_branch = self.other_branch
+                while curr_branch != self:
+                    all_branch_res.append(curr_branch.exec_bwd())
+                    curr_branch = curr_branch.other_branch
 
             if self.parents:
-                assert (self.rout.nansum() - sum([ float(r.nansum()) for r in self.promise["rins"] ])) / self.rout.nansum() < 0.001, \
-                    f"Expected child promise to have rout {self.rout.nansum()} equal to sum of rins {sum([ float(r.nansum()) for r in self.promise['rins'] ])}"
+                assert (rout := self.rout.nansum()) == (rinsum := sum([ float(r.nansum()) for r in self.promise["rins"] ])) or (rout - rinsum) / self.rout.nansum() < 0.001, \
+                    f"Expected child promise to have rout {rout} equal to sum of rins {rinsum}"
 
             self.set_complete()
 
-            # Now that we have calculated the end relevance_in of this branch, we can feed it to the children promises.
-            for child_promise in self.children:
-                if isinstance(child_promise, tuple): # Branches of the same child promise
-                    child_promise[0].accumulate_rout(res1)
-                    child_promise[0].trigger_promise_completion()
-                else:
-                    child_promise.accumulate_rout(res1)
-                    child_promise.trigger_promise_completion()
-
-
-            if self.other_branch is not None and self.other_branch.children:
-                # Do the same for the other branch in this promise. (I should really make Promise and Branch two different classes...)
-                for child_promise in self.other_branch.children:
+            # Now that we have calculated the end relevance_in of all branches, we can feed them to the children promises.
+            curr_branch = self
+            i = 0
+            while (curr_branch != self or i == 0) and curr_branch is not None:
+                for child_promise in curr_branch.children:
                     if isinstance(child_promise, tuple): # Branches of the same child promise
-                        child_promise[0].accumulate_rout(res2)
+                        child_promise[0].accumulate_rout(all_branch_res[i])
                         child_promise[0].trigger_promise_completion()
                     else:
-                        child_promise.accumulate_rout(res2)
+                        child_promise.accumulate_rout(all_branch_res[i])
                         child_promise.trigger_promise_completion()
+                curr_branch = curr_branch.other_branch
+                i += 1
 
         else:
             # If there is a parent promise, but it is not complete yet, we can now set its arg with this promise's result.
@@ -328,22 +322,22 @@ class Promise:
         else:
             raise ValueError("Saved Promise arg_node_retrieval_fcn was neither a callable nor a string attribute name.")# 
 
-    def propagate_fwd_shape(self, shape, leaf_promises_accumulator: set):
-        """Recursive function that should start at the root of a Promise tree and end at the leaf Promises of the tree.
-        Assumes shape is the correct shape for rout at this Promise on the given run.
-        This prepares the entire Promise tree for fwd propagation of args."""
-        self.fwd_shape = shape
-        self.compile_fwd_bwd() # Will update self.fwd_shape to the end-of-branch shape.
+    # def propagate_fwd_shape(self, shape, leaf_promises_accumulator: set):
+    #     """Recursive function that should start at the root of a Promise tree and end at the leaf Promises of the tree.
+    #     Assumes shape is the correct shape for rout at this Promise on the given run.
+    #     This prepares the entire Promise tree for fwd propagation of args."""
+    #     self.fwd_shape = shape
+    #     self.compile_fwd_bwd() # Will update self.fwd_shape to the end-of-branch shape.
 
-        if not self.children:
-            leaf_promises_accumulator.add(self)
+    #     if not self.children:
+    #         leaf_promises_accumulator.add(self)
 
-        for child in self.children:
-            if isinstance(child, tuple):
-                child[0].propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
-                child[1].propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
-            else:
-                child.propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
+    #     for child in self.children:
+    #         if isinstance(child, tuple):
+    #             child[0].propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
+    #             child[1].propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
+    #         else:
+    #             child.propagate_fwd_shape(self.fwd_shape, leaf_promises_accumulator)
     
     @classmethod
     def repair_all_parent_child_connections(cls):
@@ -352,3 +346,30 @@ class Promise:
                 for parent in p.parents:
                     if p not in parent.children:
                         parent.children.append(p)
+
+    @classmethod
+    def update_all_starting_fwd_shapes(cls):
+        """Use the input metadata of the Node at which each Promise starts at to update the fwd_shape member
+        at each Promise branch."""
+        for node_ind, p in list(cls.start_nodes_to_promise.items()):
+            # One branch of each Promise is saved in this lookup
+            node : Node = cls.ind_to_node[node_ind]
+            
+            start_promise : Promise = None
+            curr_promise : Promise = p
+            while curr_promise != start_promise and curr_promise is not None:
+                # Go around the branches cyclically
+                if start_promise is None:
+                    start_promise = curr_promise
+                
+                if type(node).__name__ == "CatBackward0":
+                    if "shapes" not in node.metadata:
+                        # Refresh the shapes of the cat arguments
+                        node.metadata["shapes"] = [ out.shape for out in node(torch.rand(node._input_metadata[0].shape)) ]
+                    curr_promise.fwd_shape = node.metadata["shapes"][curr_promise.idx]
+                else:
+                    curr_promise.fwd_shape = node._input_metadata[0].shape
+                
+                curr_promise.compile_fwd_bwd()
+
+                curr_promise = curr_promise.other_branch

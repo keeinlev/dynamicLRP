@@ -152,20 +152,17 @@ def lrp_engine(
                     stack = stack[1:]
                     promise_traversal_mode = False
                     promise_fulfillment_mode = False
+                else:
+                    raise RuntimeError("No valid curnode candidate was found.")
 
                 ####### END RUN MODE DETERMINATION
 
-
-                ####### INPUT MERGING
-
-                curnode_inputs = input_tracker[curnode]
-
-                visited.add(curnode) # For debugging
-
-                # According to next_functions
-                children = out_adj_list[curnode]
-
                 if not promise_fulfillment_mode:
+
+                    ####### INPUT MERGING
+
+                    curnode_inputs = input_tracker[curnode]
+                    visited.add(curnode) # For debugging
 
                     # Categorize all inputs into either pending promises, complete promises, or tensors
                     pending_promise_inputs : list[Promise] = []
@@ -220,7 +217,11 @@ def lrp_engine(
                                 pending_promise.children.append(pre_promise)
                             pending_promise.arg_node_ind = curnode.metadata["topo_ind"]
 
-                        pre_promise.trigger_promise_completion()
+                        try:
+                            pre_promise.trigger_promise_completion()
+                        except RuntimeError as e:
+                            return curnode, pre_promise, in_adj_list, out_adj_list, e
+
 
                         if not pre_promise.complete:
                             # Pre-Promise now stalls waiting for its parents.
@@ -232,7 +233,7 @@ def lrp_engine(
                         else:
                             ready_tail_nodes = []
                             for tail_node in tail_nodes:
-                                if tail_node not in stack and nodes_pending[tail_node] == 0:
+                                if tail_node not in promise_queue and tail_node not in stack and nodes_pending[tail_node] == 0:
                                     ready_tail_nodes.append(tail_node)
                             stack = ready_tail_nodes + stack
                             continue
@@ -255,24 +256,17 @@ def lrp_engine(
                     else:
                         curnode_in_rel += sum([ p.rin for p in complete_promise_inputs ])
 
+                    ####### END INPUT MERGING
+
+
                 else:
                     # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
                     curnode_in_rel = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
-                    if not DEBUG:
-                        Promise.clear_args_and_rout_raw(curnode.metadata["promise"])
-                    del curnode.metadata["promise"], curnode.metadata["promise_idx"]
-
-                ####### END INPUT MERGING
 
 
                 if promise_traversal_mode:
                     # We want to save this so later we'll know we've already traversed this node.
                     curnode.metadata["pre_promise"] = curnode_in_rel
-                elif not DEBUG:
-                    # We can free up some memory because we will no longer need to access these inputs
-                    # Chained promises will maintain their relationships via their class instance members.
-                    if nodes_pending[curnode] == 0:
-                        del input_tracker[curnode]
 
 
                 ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
@@ -282,8 +276,7 @@ def lrp_engine(
                     curnode_outputs = fcn_map[type(curnode).__name__](curnode, curnode_in_rel)
                 except Exception as e:
                     print(e)
-                    raise e
-                    return curnode, curnode_in_rel, in_adj_list, out_adj_list
+                    return curnode, curnode_in_rel, in_adj_list, out_adj_list, e
 
                 if isinstance(curnode_outputs, Promise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
                     # Node is waiting on Promise to be completed, add to promise queue and come back later.
@@ -291,6 +284,17 @@ def lrp_engine(
                     curnode.metadata["promise_idx"] = 0 if not isinstance(curnode_outputs, AddBackwardPromise) else curnode_outputs.idx
                     promise_queue.append(curnode)
                     continue
+
+                if promise_fulfillment_mode:
+                    if not DEBUG:
+                        Promise.clear_args_and_rout_raw(curnode.metadata["promise"])
+                    del curnode.metadata["promise"], curnode.metadata["promise_idx"]
+
+                if not promise_traversal_mode and not DEBUG:
+                    # We can free up some memory because we will no longer need to access these inputs
+                    # Chained promises will maintain their relationships via their class instance members.
+                    if curnode in input_tracker and nodes_pending[curnode] == 0:
+                        del input_tracker[curnode]
 
                 ####### END PROPAGATION FCN AND PROMISE QUEUE HANDLING
 
@@ -308,6 +312,8 @@ def lrp_engine(
 
                 # curnode_outputs = prop_fcn(node_0, rel_out) -> rel_in_1, rel_in_2, rel_in_3
 
+                # According to next_functions
+                children = out_adj_list[curnode]
 
                 # Children may contain None, like grad_fn.next_functions, to keep integrity of input tracking
                 if len(children) == 0 or all(child is None for child in children):
@@ -328,9 +334,12 @@ def lrp_engine(
                         continue
                     input_tracker[child].append(curnode_outputs[i])
                     nodes_pending[child] -= 1
-                    assert nodes_pending[child] >= 0, f"Negative pending count for node {child}"
-                    assert len(input_tracker[child]) <= len(in_adj_list[child]), \
-                        f"Too many inputs landed for {child}"
+                    try:
+                        assert nodes_pending[child] >= 0, f"Negative pending count for node {child} while running PTM {promise_traversal_mode} PFM {promise_fulfillment_mode} NTM {not promise_fulfillment_mode and not promise_traversal_mode}"
+                        assert len(input_tracker[child]) <= len(in_adj_list[child]), \
+                            f"Too many inputs landed for {child}"
+                    except AssertionError as e:
+                        return curnode, curnode_outputs, in_adj_list, out_adj_list, e
 
                 ####### END OUTPUT PROPAGATION TO CHILDREN
 
@@ -358,36 +367,40 @@ def lrp_engine(
             if DEBUG:
                 print(f"propagation took {end_time - start_time} seconds")
 
-            # Checking conservation holds across the entire propagation
-            # The frontier includes:
-            # a) true leaf nodes (no children)
-            # b) nodes which received inputs but were never traversed due to computation ending early
+                # Checking conservation holds across the entire propagation
+                # The frontier includes:
+                # a) true leaf nodes (no children)
+                # b) nodes which received inputs but were never traversed due to computation ending early
 
-            frontier = [ node 
-                        for node, out_nodes in list(out_adj_list.items())
-                        if len(out_nodes) == 0
-                    ]
+                # Note: this must be run in Debug mode or else there will be relevance that gets lost from clearing of cached inputs/Promise values.
 
-            frontier += [ node for node in stack if input_tracker[node] ]
+                frontier = [ node 
+                            for node, out_nodes in list(out_adj_list.items())
+                            if len(out_nodes) == 0
+                        ]
 
-            frontier = list(set(frontier))
+                frontier += [ node for node in stack if input_tracker[node] ]
 
-            # Tally the total relevance at the frontier
-            total_frontier_in = 0.0
-            for node in frontier:
-                total_in = 0.0
-                if node not in input_tracker:
-                    continue
-                for input_ in input_tracker[node]:
-                    if isinstance(input_, AddBackwardPromise):
-                        if input_.complete:
-                            total_in += input_.rin.sum()
-                        else:
-                            continue
-                    elif isinstance(input_, torch.Tensor):
-                        total_in += input_.sum()
-                total_frontier_in += total_in
-            print(total_frontier_in)
+                frontier = list(set(frontier))
+
+                # Tally the total relevance at the frontier
+                total_frontier_in = 0.0
+                for node in frontier:
+                    total_in = 0.0
+                    if node not in input_tracker:
+                        continue
+                    for input_ in input_tracker[node]:
+                        if isinstance(input_, Promise):
+                            if input_.complete:
+                                total_in += input_.rin.sum()
+                            else:
+                                continue
+                        elif isinstance(input_, torch.Tensor):
+                            total_in += input_.sum()
+                        elif isinstance(input_, float):
+                            total_in += input_
+                    total_frontier_in += total_in
+                print("TOTAL FRONTIER RELEVANCE AFTER PROPAGATION: ", total_frontier_in)
 
             # Checkpoints sorted in desc because they are indexed in the order that we save them in (going backwards).
             checkpoints = sorted(checkpoints, key=lambda c: c.metadata["checkpoint_ind"], reverse=True)
@@ -429,22 +442,21 @@ def lrp_engine(
             # Setup first iteration
             input_frontier[hidden_states.grad_fn.metadata["topo_ind"]] = relevance
 
+            # First pre-process all Promises by updating the starting fwd_shapes and setting every leaf Promise arg
+            Promise.update_all_starting_fwd_shapes()
+            leaf_promise: Promise
+            for leaf_promise in Promise.leaf_promises:
+                if leaf_promise.arg_node_ind is not None:
+                    arg_node_grad_fn = ind_to_node.get(leaf_promise.arg_node_ind)
 
-            if no_recompile:
-                # First pre-process all Promises by setting every leaf Promise arg
-                leaf_promise: Promise
-                for leaf_promise in Promise.leaf_promises:
-                    if leaf_promise.arg_node_ind is not None:
-                        arg_node_grad_fn = ind_to_node.get(leaf_promise.arg_node_ind)
-
-                        leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
-                    else:
-                        # Case where leaf Promise ended in a None Node
-                        leaf_promise.setarg(0.0)
-            
-                # All promises that are required for the checkpoints should be ready now, as
-                # we have set the args of all leaf promises. Now all we need to do is call the
-                # bwd() functions as we traverse by each promise.
+                    leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
+                else:
+                    # Case where leaf Promise ended in a None Node
+                    leaf_promise.setarg(0.0)
+        
+            # All promises that are required for the checkpoints should be ready now, as
+            # we have set the args of all leaf promises. Now all we need to do is call the
+            # bwd() functions as we traverse by each promise.
 
             fulfilled_promises : set[Promise] = set()
 
@@ -454,38 +466,7 @@ def lrp_engine(
 
                 rel = input_frontier[node_ind]
 
-                if (promise := Promise.start_nodes_to_promise.get(node_ind)) is not None and isinstance(promise, Promise) \
-                    and not promise.parents and not no_recompile:
-
-                    # When we hit a Node that starts a Promise, and the Promise is the root of its Promise tree,
-                    # we need to update its entire Promise tree's rout values to be of the correct shapes, since
-                    # they may have changed with the input.
-                    # First set this Promise's rout to rel, as this is correct for sure.
-                    promise.set_rout(rel)
-                    # Now call the recursive shape propagation function
-                    leaf_promises = set()
-                    promise.propagate_fwd_shape(rel.shape, leaf_promises)
-
-                    # And of course do this for the other branch too, if it exists
-                    if promise.other_branch is not None:
-                        promise.other_branch.propagate_fwd_shape(rel.shape, leaf_promises)
-
-                    # Now do the arg fwd-prop from the leaf Promises of just THIS Promise tree.
-                    leaf_promise: Promise
-                    for leaf_promise in list(leaf_promises):
-                        if leaf_promise.arg_node_ind is not None:
-                            arg_node_grad_fn = ind_to_node[leaf_promise.arg_node_ind]
-
-                            try:
-                                leaf_promise.retrieve_and_set_new_arg(arg_node_grad_fn)
-                            except RuntimeError as e:
-                                print(node_ind, leaf_promise.fwd_shape)
-                                raise e
-                        else:
-                            # Case where leaf Promise ended in a None Node
-                            leaf_promise.setarg(0.0, fwd_only=True, recompile=False)
-
-                if isinstance(promise, Promise) and promise not in fulfilled_promises and \
+                if (promise := Promise.start_nodes_to_promise.get(node_ind)) and isinstance(promise, Promise) and promise not in fulfilled_promises and \
                         promise.start_ind != promise.arg_node_ind:
                     if not promise.ready:
                         print(node_ind, promise.start_ind, promise.arg_node_ind)

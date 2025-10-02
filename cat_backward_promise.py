@@ -30,16 +30,12 @@ class CatBackwardPromise(Promise):
     def set_rout(self, new_rout):
         self.promise["rout"] = new_rout
 
-    def accumulate_rout(self, new_rout):
-        assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
-        self.promise["rout"] = self.rout + new_rout
-
     def set_rin(self, new_rin):
         self.promise["rins"][self.idx] = new_rin
 
     def compute_rins(self):
-        """Compute base branch relevances based on sum of squares ratios."""
-        assert self.ready and self.pending_parents == 0
+        """Compute using the internal grad_fn at the CatBackward Node."""
+        assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
         split_fcn = Promise.ind_to_node[self.start_ind]
         for i, split in enumerate(split_fcn(self.rout)):
             self.promise["rins"][i] = split

@@ -45,16 +45,12 @@ class SumBackwardPromise(Promise):
     def set_rout(self, new_rout):
         self.promise["rout"] = new_rout
 
-    def accumulate_rout(self, new_rout):
-        assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
-        self.promise["rout"] = self.rout + new_rout
-
     def set_rin(self, new_rin):
         self.promise["rins"][0] = new_rin
 
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
-        assert self.ready and self.pending_parents == 0
+        assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
         argsquared = self.arg ** 2
         if self.sum_type == 0:
             ratios = argsquared / (argsquared.sum() + epsilon)

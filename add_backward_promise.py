@@ -41,7 +41,7 @@ class AddBackwardPromise(Promise):
 
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
-        assert self.ready and self.pending_parents == 0
+        assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
         arg1, arg2 = self.promise["args"]
         r = self.promise["rout"]
         denom = arg1 ** 2 + arg2 ** 2 + epsilon

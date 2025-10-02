@@ -44,31 +44,60 @@ class InputMetadata():
     def __init__(self, shape):
         self.shape = shape
 
-class AddBackward0:
-    def __init__(self, next_functions, sequence_nr, shape):
-        self.name = "AddBackward0"
+class DecomposedNode:
+    def __init__(self, next_functions, sequence_nr, shapes):
         self.next_functions = next_functions
         self.metadata = {}
         self.sequence_nr = sequence_nr
-        self._input_metadata = (InputMetadata(shape),)
-    
+        self.grad_fn = None
+
+        if isinstance(shapes, (tuple, list)):
+            if isinstance(shapes[0], int):
+                shapes = [shapes]
+        elif isinstance(shapes, torch.Size):
+            shapes = [shapes]
+        else:
+            raise TypeError(f"Decomposed Node with sequence number {sequence_nr} was given an invalid shapes type {type(shapes)}. Either supply one tensor shape as tuple/torch.Size or a list/tuple of those types.")
+
+        self._input_metadata = tuple(InputMetadata(shape) for shape in shapes)
+
+    def __call__(self, *args):
+        # grad_fn needs to be set by child class init, if we expect to use the grad_fn instead of custom functionality
+        return self.grad_fn(*args)
+
     def _sequence_nr(self):
         return self.sequence_nr
-class MmBackward0:
-    def __init__(self, next_functions, mat1, mat2, sequence_nr, shape):
+
+class AddBackward0(DecomposedNode):
+    def __init__(self, next_functions, sequence_nr, shape):
+        super().__init__(next_functions, sequence_nr, shape)
+        self.name = "AddBackward0"
+
+class MmBackward0(DecomposedNode):
+    def __init__(self, next_functions, sequence_nr, shape, mat1, mat2):
+        super().__init__(next_functions, sequence_nr, shape)
         self.name = "MmBackward0"
-        self.next_functions = next_functions
         self._saved_self = mat1
         self._saved_self_sym_sizes = mat1.shape
         self._saved_mat2 = mat2
         self._saved_mat2_sym_sizes = mat2.shape
-        self.metadata = {}
-        self.sequence_nr = sequence_nr
-        self._input_metadata = (InputMetadata(shape),)
-    
-    def _sequence_nr(self):
-        return self.sequence_nr
 
+class DecomposedConvolutionBackward0(DecomposedNode):
+    def __init__(self, next_functions, sequence_nr, shape, x, weight, stride, padding, dilation, groups):
+        super().__init__(next_functions, sequence_nr, shape)
+        self.name = "ConvolutionBackward0"
+        self._saved_input = x
+        self._saved_weight = weight
+        self._saved_stride = stride
+        self._saved_padding = padding
+        self._saved_dilation = dilation
+        self._saved_groups = groups
+
+class AccumulateGrad(DecomposedNode):
+    def __init__(self, sequence_nr, shape, variable):
+        super().__init__([], sequence_nr, shape)
+        self.name = "AccumulateGrad"
+        self.variable = variable
 
 class LRPCheckpoint(torch.autograd.Function):
     """Identity autograd fcn for marking where to capture relevance."""
@@ -85,7 +114,7 @@ class LRPCheckpoint(torch.autograd.Function):
 
     @classmethod
     def save_val(cls, grad_fn, val):
-        grad_fn.metadata["checkpoint_relevance"] = val
+        grad_fn.metadata["relevance"] = val
         grad_fn.metadata["checkpoint_ind"] = cls.num_checkpoints_reached
         cls.num_checkpoints_reached += 1
 
@@ -94,12 +123,33 @@ create_checkpoint = LRPCheckpoint.apply
 
 def decompose_addmmbackward(grad_fn):
     """Assuming grad_fn is an instance of AddMmBackward, returns an AddBackward0 instance that is the parent
-    of an MmBackward0 instance and the first function in grad_fn.next_functions.
+    of a new MmBackward0 instance and the first function in grad_fn.next_functions.
     The MmBackward0 is then the parent of the last two functions in grad_fn.next_functions."""
-    mat1_shape = list(grad_fn._saved_mat1.shape)
-    mat2_shape = list(grad_fn._saved_mat2.shape)
-    result_shape = mat1_shape[:-2] + [mat1_shape[-2]] + [mat2_shape[-1]]
-    mm_fn = MmBackward0(grad_fn.next_functions[1:], grad_fn._saved_mat1, grad_fn._saved_mat2, grad_fn._sequence_nr(), result_shape)
+    result_shape = grad_fn._input_metadata[0].shape
+    mm_fn = MmBackward0(grad_fn.next_functions[1:], grad_fn._sequence_nr(), result_shape, grad_fn._saved_mat1, grad_fn._saved_mat2)
     add_fn = AddBackward0((grad_fn.next_functions[0], (mm_fn, 0)), grad_fn._sequence_nr(), result_shape)
 
     return add_fn
+
+
+def decompose_convbackward(grad_fn):
+    """Assuming grad_fn is an instance of ConvolutionBackward0, returns an AddBackward0 instance that is the parent
+    of a new ConvolutionBackward0 instance and the third function in grad_fn.next_functions.
+    The MmBackward0 is then the parent of the first two functions in grad_fn.next_functions."""
+    result_shape = grad_fn._input_metadata[0].shape
+    bias_shape = (result_shape[1], *[ 1 for _ in result_shape[2:] ])
+    conv_fn = DecomposedConvolutionBackward0((*grad_fn.next_functions[:2], (None, 0)), grad_fn._sequence_nr(), result_shape, grad_fn._saved_input, grad_fn._saved_weight, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+    bias_accumulate = AccumulateGrad(grad_fn._sequence_nr(), bias_shape, grad_fn.next_functions[2][0].variable.reshape((bias_shape)))
+    add_fn = AddBackward0(((bias_accumulate, 0), (conv_fn, 0)), grad_fn._sequence_nr(), result_shape)
+
+    return add_fn
+
+
+def merge_input_shapes(grad_fn):
+    shapes = [ im.shape for im in grad_fn._input_metadata ]
+    dim = grad_fn._saved_dim
+    out_shape = list(shapes[0])
+    out_shape = out_shape[:dim] + [len(shapes)] + out_shape[dim:]
+
+    return out_shape
+

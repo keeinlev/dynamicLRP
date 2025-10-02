@@ -1,7 +1,11 @@
 import torch
 from abc import abstractmethod
 from torch.autograd.graph import Node
-from typing import Callable, Union, Self
+from typing import Callable, Union#, Self
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
 from util import (
     DEBUG,
 )
@@ -36,7 +40,8 @@ class Promise:
     ind_to_node = {}
     def __init__(self, promise, traversal_ind, *args, **kwargs):
         self.promise : dict = promise
-        self.parents : list[Promise] = promise["parents"]
+        self.parent_idxs : dict[Promise, int] = { p : 0 for p in self.parents }
+        self.promise["pending_parents"] = len(self.parents)
         self.children : list[Promise | tuple[Promise]] = [] # Will be added to if further nested promise Nodes are found.
 
         # These are where the fwd/bwd factory functions will be stored
@@ -69,11 +74,44 @@ class Promise:
             Promise.all_promises.append(self)
 
     @property
+    def parents(self):
+        return self.promise["parents"]
+
+    @parents.setter
+    def parents(self, new_parents):
+        self.promise["parents"] = new_parents
+
+    @property
+    def pending_parents(self):
+        """Returns number of parents of promise which are not complete."""
+        return self.promise["pending_parents"]
+    
+    @pending_parents.setter
+    def pending_parents(self, new_pending_parents):
+        self.promise["pending_parents"] = new_pending_parents
+
+    @property
     def id(self):
         return (self.start_ind, self.arg_node_ind)
 
     def add_to_path(self, node_ind):
         self.path.add(node_ind)
+
+    def arg_node_input_index(self, out_adj_list):
+        """Returns the index at which this Promise's relevance should land at the arg node."""
+        if self.arg_node_ind == self.start_ind:
+            if self.parents:
+                return self.parents[0].arg_node_input_index(out_adj_list)
+            else:
+                return 0
+        path = sorted(list(self.path.union({self.start_ind, self.arg_node_ind})))
+        second_last_node = path[1]
+        last_node = self.arg_node_ind
+        for (outneighbour, i) in out_adj_list[second_last_node]:
+            if outneighbour == last_node:
+                return i
+        raise ValueError(f"Promise id {self.id} : {self} path resolution could not determine the landing index at the arg node.")
+
     
     def compile_fwd_bwd(self):
         """The main driver of the input-agnostic specification of this framework.
@@ -153,17 +191,14 @@ class Promise:
     def clear_all(cls):
         for p in list(cls.start_nodes_to_promise.values()):
             p.clear_args_and_rout()
+            p.promise["rins"] = [ None ] * len(p.promise["rins"])
             p.promise["complete"] = False
             p.promise["ready"] = False
+            p.promise["pending_parents"] = len(p.parents)
 
     @property
     def inner_nodes(self):
         return self.path - set([self.arg_node_ind, self.start_ind])
-
-    @property
-    def pending_parents(self):
-        """Returns number of parents of promise which are not complete."""
-        return len([ parent for parent in self.parents if not parent.complete ])
 
     @property
     def ready(self):
@@ -214,9 +249,9 @@ class Promise:
     def set_rin(self, new_rin):
         ...
 
-    def accumulate_rout(self, new_rout):
+    def accumulate_rout(self, new_rout, parent_idx=None):
         assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
-        self.promise["rout"] += new_rout
+        self.promise["rout"] = self.rout + new_rout # Important to do it this way to broadcast
 
     def exec_bwd(self) -> torch.Tensor:
         """Perform the saved backward execution chain to propagate relevance back down the branch."""
@@ -262,22 +297,30 @@ class Promise:
             while (curr_branch != self or i == 0) and curr_branch is not None:
                 for child_promise in curr_branch.children:
                     if isinstance(child_promise, tuple): # Branches of the same child promise
-                        child_promise[0].accumulate_rout(all_branch_res[i])
-                        child_promise[0].trigger_promise_completion()
+                        child_promise[0].pending_parents -= 1
+                        child_promise[0].accumulate_rout(all_branch_res[i], child_promise[0].parent_idxs.get(self))
+                        if child_promise[0].pending_parents == 0:
+                            child_promise[0].trigger_promise_completion()
                     else:
-                        child_promise.accumulate_rout(all_branch_res[i])
-                        child_promise.trigger_promise_completion()
+                        child_promise.pending_parents -= 1
+                        child_promise.accumulate_rout(all_branch_res[i], child_promise.parent_idxs.get(self))
+                        if child_promise.pending_parents == 0:
+                            child_promise.trigger_promise_completion()
                 curr_branch = curr_branch.other_branch
                 i += 1
 
         else:
             # If there is a parent promise, but it is not complete yet, we can now set its arg with this promise's result.
             # This is what triggers the propagation of the arguments back to the root of the promise tree.
-            for parent in self.parents:
-                if self in parent.children: # Edge case for early promise propagation
-                    parent.promise["tail_nodes"].union(self.promise["tail_nodes"])
+            op_result = self.op_result
+            for i, parent in enumerate(self.parents):
+                # if self in parent.children: # Edge case for early promise propagation
+                parent.promise["tail_nodes"].update(self.promise["tail_nodes"])
                 if parent.arg is None:
-                    parent.setarg(self.op_result, fwd_only=fwd_only, recompile=recompile)
+                    if isinstance(op_result, tuple):
+                        parent.setarg(op_result[self.parent_idxs[parent]], fwd_only=fwd_only, recompile=recompile)
+                    else:
+                        parent.setarg(self.op_result, fwd_only=fwd_only, recompile=recompile)
 
     @abstractmethod
     def _setarg(self, value):
@@ -369,6 +412,8 @@ class Promise:
                     curr_promise.fwd_shape = node.metadata["shapes"][curr_promise.idx]
                 else:
                     curr_promise.fwd_shape = node._input_metadata[0].shape
+                
+                curr_promise.set_rout(torch.zeros(node._input_metadata[0].shape, dtype=curr_promise.rout.dtype, device=curr_promise.rout.device))
                 
                 curr_promise.compile_fwd_bwd()
 

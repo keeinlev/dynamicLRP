@@ -1,0 +1,154 @@
+%--------------------
+% PACKAGES
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+
+\usepackage[pagebackref]{hyperref} % hyperlinks
+\usepackage{url}            % simple URL typesetting
+
+\usepackage[dvipsnames,table]{xcolor} % colors
+
+\usepackage{graphicx}       % Required for inserting images
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{multicol}       % cells spanning multiple columns
+\usepackage{multirow}       % cells spanning multiple rows
+\usepackage{makecell}       % multiline cells, etc
+\usepackage{colortbl}       % colours in tables
+\usepackage{caption}        % caption package
+\usepackage{subcaption}     % make subfigures with their own graphics and own captions (a), (b), etc.
+\usepackage{wrapfig}        % can make a figure only use part of the column width, text wraps around it
+\usepackage{adjustbox}      % nice package for shrinking too-wide tables down (cleaner than using \resizebox)
+\usepackage{titletoc}       % table-of-contents management, allowing a TOC for just appendix matter
+
+\usepackage{mathtools}
+\usepackage{amsmath,amsthm} % nice mathematics display
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{amssymb}        % for the checkmark symbol
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+
+\usepackage{algorithm,algorithmicx,algpseudocode}
+
+%\usepackage{pdflscape}      % support for landscape PDF pages (rotated pages)
+\usepackage{comment}        % provides comment environment (use to suppress LaTeX)
+\usepackage{array}
+% \usepackage{times}         % Set default font to Adobe Times Roman
+
+\usepackage{doi}            % provides nice \doi command
+\usepackage[normalem]{ulem} % provides strikeout with \sout
+\usepackage{placeins}       % provides \FloatBarrier
+\usepackage[detect-all]{siunitx} % provides \num, \SI and other SI unit commands
+
+% Configure packages
+%~~~~~~~~~~
+% Configure captions to be small, with label in italic
+\captionsetup{font=small,labelfont=it}
+% You can configure DOIs to be in smallcaps with a thin space, instead of lowercase without a space
+% \renewcommand{\doitext}{{\scshape doi:\,}}
+
+%--------------------
+% SYMBOLS
+
+% For frozen/unfrozen icons
+%
+% If you are not using the "unfrozen" icon, please comment out its code and delete file icons/SPB_flame.pdf
+%
+% Snowflake: U+008acd
+\usepackage{bbding}         % provides some symbols
+\definecolor{cold}{HTML}{008acd}
+\def\frozen{\raisebox{-.15ex}{\color{cold}\SnowflakeChevron}}
+\DeclareUnicodeCharacter{2744}{\frozen}% ❄, you can use the unicode in latex source, but it looks like * so don't - just use \frozen instead
+%
+% Fire: U+1F525
+% https://commons.wikimedia.org/wiki/File:SPB_flame.svg
+% CC BY-SA 4.0 Anton Landao, editted by Scott C. Lowe (change: colourized, #cd1600)
+\def\unfrozen{\raisebox{-.15ex}{\includegraphics[height=1em]{icons/SPB_flame.pdf}}}
+\DeclareUnicodeCharacter{1F525}{\unfrozen}% ��, unicode symbol not currently supported on overleaf; just use \unfrozen instead
+
+% Cross-mark (xmark) to use in tables like \checkmark
+\usepackage{pifont}         % provides some symbols
+\def\cmark{\ding{51}} % Alternative to \checkmark
+\def\xmark{\ding{55}}
+\definecolor{vlightgray}{gray}{0.87}
+\def\myxmark{{\color{vlightgray}\xmark{}}}
+\def\correctmark{{\color{ForestGreen}\cmark{}}}
+\def\incorrectmark{{\color{red}\xmark{}}}
+
+%--------------------
+% COLOURS
+
+% Tableau colors
+\definecolor{tblue}{HTML}{1F77B4}
+\definecolor{torange}{HTML}{FF7F0E}
+\definecolor{tgreen}{HTML}{2CA02C}
+\definecolor{tred}{HTML}{FF0000}
+
+% Change links to be signified by text colour instead of in boxes
+% We use colours that are similar to the default box colours by link type
+%
+% Colours based on Phelype Oleinik's colours
+% https://tex.stackexchange.com/a/525297/108091
+% but with modifications to those by Scott
+\definecolor{linkcolor}{HTML}{991408}  % red
+\definecolor{citecolor}{HTML}{2E7E2A}  % green
+\definecolor{filecolor}{HTML}{131877}  % dark blue
+\definecolor{menucolor}{HTML}{727500}  % yellow
+\definecolor{runcolor} {HTML}{137776}  % teal
+\definecolor{urlcolor} {HTML}{0a2bbf}  % blue
+%
+% Just comment out this \hypersetup command if you want to revert to boxes
+\hypersetup{colorlinks=true,linkcolor=linkcolor,citecolor=citecolor,filecolor=filecolor,menucolor=menucolor,runcolor=runcolor,urlcolor=urlcolor}
+%
+% An alternative option is to make all links blue:
+%\hypersetup{colorlinks=true,linkcolor=urlcolor,citecolor=urlcolor,filecolor=urlcolor,menucolor=urlcolor,runcolor=urlcolor,urlcolor=urlcolor}
+
+%--------------------
+% SPACE ADJUSTMENTS
+
+% less space for equations
+%\expandafter\def\expandafter\normalsize\expandafter{%
+%    \normalsize%
+%    \setlength\abovedisplayskip{2pt}%
+%    \setlength\belowdisplayskip{2pt}%
+%    \setlength\abovedisplayshortskip{-8pt}%
+%    \setlength\belowdisplayshortskip{2pt}%
+%}
+
+%--------------------
+% MACROS
+
+% Referring to sections nicely
+\renewcommand{\sectionautorefname}{Section}
+\let\subsectionautorefname\sectionautorefname
+\let\subsubsectionautorefname\sectionautorefname
+\newcommand{\appref}[1]{\hyperref[#1]{Appendix~\ref*{#1}}}% For referencing subsections of the appendix
+
+% Concise references
+\def\Snospace~{\S{}}% Provides § without a space after it, so it butts up against section numbers
+% Uncomment these commands to save space, or if you just like using the section symbol (§)
+%\renewcommand*{\sectionautorefname}{\Snospace}
+%\renewcommand*{\subsectionautorefname}{\Snospace}
+%\renewcommand*{\subsubsectionautorefname}{\Snospace}
+%\renewcommand*{\appref}[1]{\hyperref[#1]{App.~\ref*{#1}}}
+%\renewcommand*{\figureautorefname}{Fig.}
+%\renewcommand*{\equationautorefname}{Eq.}
+%\renewcommand*{\tableautorefname}{Tab.}
+
+% A paragraph command that is like a subsubsubsection
+\newcommand{\mypara}[1]{\noindent\textbf{#1}}
+
+% Writing links with the URL written out in a footnote
+\newcommand{\hreffoot}[2]{\href{#1}{#2}\footnote{\url{#1}}}
+
+% Results highlighting
+\newcommand{\best}[1]{\textbf{#1}}
+\newcommand{\secbest}[1]{\underline{#1}}
+\newcommand{\runnerup}[1]{\secbest{#1}}
+
+% Proofing
+\newcommand{\hider}[1]{}
+\newcommand{\TODO}[1]{\textcolor{red}{[\textbf{TODO}: #1]}}
+
+\newtheorem{theorem}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}

@@ -1,0 +1,358 @@
+% Share this document for others to view with this URL
+% https://www.overleaf.com/read/cvfmtqkfphmr#384bf0
+%
+\documentclass{article}
+
+\input{preamble}
+\input{math_commands}
+
+\usepackage{etoolbox}       % Provides toggle
+\newtoggle{arxiv}% Swap between arXiv and journal/conference version
+\toggletrue{arxiv}% Enable arXiv version --- change this to swap between arXiv and journal/conference
+\iftoggle{arxiv}{
+  % Things just for the arXiv version go here
+  \usepackage[parfill]{parskip}
+
+  \usepackage[%
+    a4paper,
+    inner=25mm,
+    outer=25mm,% = marginparsep + marginparwidth + 5mm (between marginpar and page border)
+    top=25mm,
+    bottom=25mm,
+    marginparsep=5mm,
+    marginparwidth=40mm,
+    %showframe% to show your page design, normally not used
+  ]{geometry}
+
+  \usepackage{tikz}
+  \usetikzlibrary{positioning,arrows.meta}
+
+  \tikzset{
+  maincircle/.style={circle, draw, minimum size=13mm, inner sep=2pt, font=\footnotesize, align=center},
+  fwd/.style={->, thick, >=Latex},
+  promise/.style={->, dashed, thick, >=Latex,
+                  preaction={draw, white, line width=3pt}}, % halo for visibility
+}
+  \newlength{\defbaselineskip}
+  \setlength{\defbaselineskip}{\baselineskip}
+  % \setlength{\marginparwidth}{0.8in}
+  \setlength{\parskip}{6pt}%
+  \setlength{\parindent}{0pt}%
+
+  % If you find the font is not Libertine, move this block lower down the preamble, to just before \begin{document}
+  % If other packages later also import fonts, that will override the fonts introduced here.
+  \RequirePackage[T1]{fontenc}
+  \RequirePackage[tt=false, type1=true]{libertine}
+  \RequirePackage[varqu]{zi4}
+  \RequirePackage[libertine]{newtxmath}
+
+  \usepackage{fancyhdr}
+  \pagestyle{fancy}
+  \fancyhead[L]{PAPER SHORTNAME}
+  \fancyhead[R]{FIRST AUTHOR, et al. (YEAR)}
+
+  \usepackage{authblk}% alternative author layout that supports symbols to indicate affiliations
+  \renewcommand*{\Affilfont}{\normalsize}
+}{
+  % Things just for the journal/conference version go here
+}
+
+\title{Make sure to always keep your promises: A model-agnostic attribution algorithm for Neural Networks}
+
+\author[1]{FIRST AUTHOR NAME}
+\affil[1]{FIRST AFFILIATION}
+\affil[ ]{%
+\texttt{AUTHOR1@EMAIL.ADDRESS}\quad
+\texttt{AUTHOR2@EMAIL.ADDRESS}
+}
+
+\date{}% Suppress date
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+TBC
+\end{abstract}
+
+\section{Introduction}
+
+The rapid advancements in deep learning over the past decade have revolutionized numerous domains, from computer vision and natural language processing to healthcare and scientific discovery. However, the increasing complexity and opacity of high-performing models have raised significant concerns about their interpretability and trustworthiness. As these models are deployed in critical applications, understanding their decision-making processes has become a pressing need.
+
+To address this, the field of interpretability has seen a surge of interest, leading to the development of various tools and techniques for explaining the behavior of deep neural networks. Modern interpretability methods can be broadly categorized into gradient-based approaches, perturbation-based methods, and propagation-based techniques:
+- \textbf{Gradient-based methods} (e.g., Integrated Gradients \cite{sundararajan2017axiomatic}) compute attributions by analyzing the gradients of the model's output with respect to its input features.
+- \textbf{Perturbation-based methods} (e.g., SHAP \cite{lundberg2017unified}) estimate feature importance by systematically perturbing input features and observing the impact on the model's predictions.
+- \textbf{Propagation-based methods} (e.g., Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}) distribute the model's output relevance backward through the network using custom propagation rules.
+
+While these methods have been instrumental in advancing our understanding of neural networks, they often fall short when applied to modern architectures. For instance, gradient-based methods can suffer from saturation effects, perturbation-based methods are computationally expensive, and propagation-based methods are often tailored to specific architectures, limiting their generalizability. Moreover, the scalability of these methods remains a challenge as model sizes continue to grow.
+
+Amidst these challenges, there has been notable progress in adapting classic interpretability methods to modern architectures. For example, recent implementations of Integrated Gradients and Deep SHAP have been extended to handle transformer-based models and other complex architectures. In particular, Layer-wise Relevance Propagation has been modified to be attention-aware, enabling it to explain the behavior of transformer models effectively. Achitbat et al. (2024) demonstrated that LRP could faithfully explain transformer models like Vision Transformers (ViT) and LLaMA 2 by introducing custom attribution rules for the components of the attention mechanism.
+
+Building on these findings, we propose a novel algorithm that addresses the limitations of existing methods. Our approach scales efficiently with model size and provides faithful attributions without compromising computational efficiency. By leveraging operation-level granularity and a promise-based system, our method achieves broad compatibility with modern architectures while maintaining high attribution quality.
+
+\section{Background}
+
+Modern transformer architectures, powered by the attention mechanism \cite{vaswani2017attention}, have revolutionized machine learning by enabling models to handle multimodal data and scale to massive datasets. However, their complexity introduces challenges in interpretability, particularly in understanding latent reasoning processes. Attention maps, while useful for visualizing token interactions \cite{clark2019does, caron2021emerging}, fail to provide a holistic view of model behavior \cite{wiegreffe2019attention}. Recent studies \cite{geva2021transformer, dai2022knowledge} reveal that critical information, such as factual knowledge, is often stored in feed-forward network neurons, separate from attention layers.
+
+Existing attribution methods can be broadly categorized into perturbation-based, gradient-based, and rule-based approaches. Perturbation-based methods, such as SHAP \cite{lundberg2017unified}, require extensive computational resources, making them impractical for large models. Gradient-based methods, like Input $\times$ Gradient \cite{simonyan2014deep}, are efficient but suffer from noisy gradients and low faithfulness. Rule-based methods, including Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer a promising alternative by allowing customization of propagation rules. However, applying LRP to transformers has been challenging due to unique operations like softmax and layer normalization \cite{ding2017saliency, voita2021analyzing}.
+
+\paragraph{Background: Classic LRP via Taylor Approximation}
+
+
+Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
+
+For a function $f_j(x)$, the first-order Taylor expansion around a root point $x_0$ is:
+\begin{equation}
+f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})
+\end{equation}
+The conservation rule requires that the sum of input relevances equals the output relevance:
+\begin{equation}
+\sum_i R_{i \leftarrow j} = R_j
+\end{equation}
+Assuming $R_{i \leftarrow j}$ is proportional to the Taylor term for input $i$:
+\begin{equation}
+R_{i \leftarrow j} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j
+\end{equation}
+For a linear layer $y_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
+\begin{equation}
+R_{i \leftarrow j} = \frac{x_i w_{ji}}{y_j + \epsilon} R_j
+\end{equation}
+where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$. This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle, linking the mathematical definition of LRP to its practical implementation.
+
+
+Our work builds on these insights to address the limitations of existing methods, providing a scalable and efficient solution for interpreting transformer models.
+
+\subsection{Computation Graphs in Deep Learning Frameworks}
+
+Deep learning frameworks rely on computation graphs to represent the sequence of operations performed during the forward and backward passes of a neural network. Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing operations (e.g., matrix multiplication, activation functions), and $E$ is the set of directed edges representing data flow between operations.
+
+Each node $v \in V$ in the graph corresponds to a function $f_v$ that maps its inputs to outputs. For example, a linear layer can be represented as $f_v(x) = Wx + b$, where $W$ and $b$ are the weights and biases, respectively. The edges $e \in E$ capture the dependencies between these operations, ensuring that the graph is acyclic and can be traversed in topological order.
+
+The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
+\begin{equation}
+\frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
+\end{equation}
+where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
+
+The promise-based attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers. By leveraging the DAG structure, the algorithm ensures that relevance is propagated efficiently and faithfully, adhering to the conservation principle:
+\begin{equation}
+\sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
+\end{equation}
+where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
+
+This theoretical foundation underscores the flexibility and scalability of the promise-based approach, making it well-suited for modern deep learning models.
+
+\section{Methods}
+
+\subsection{Computation Graph Processing}
+
+The computation graph is a directed acyclic graph (DAG) representing the sequence of operations in a neural network. However, the autograd graph only has one entrypoint at the Node representing the model output, and tracks only the backward edges from output to input. Algorithm~\ref{alg:graph-construction} outlines the process of constructing an auxiliary graph from the autograd graph of a PyTorch model. This graph will allow access to any Node's in- and out-adjacencies, and will be used in the traversal algorithm.
+
+\begin{algorithm}[t]
+  \caption{Computation Graph Construction}
+  \label{alg:graph-construction}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$
+    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
+    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
+    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
+    \State $root \gets hidden\_states.grad\_fn$
+    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+    \Return $in\_adj$, $out\_adj$, $topo\_stack$
+    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \If{$fcn = \text{None}$ or $fcn \in visited$}
+        \State \Return
+      \EndIf
+      \State $visited \gets visited \cup \{fcn\}$
+      \For{each $child \in fcn.next\_functions$}
+        \State $out\_adj[fcn].append(child)$
+        \State $in\_adj[child].append(fcn)$
+        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \EndFor
+      \State $topo\_stack.push(fcn)$
+    \EndFunction
+  \end{algorithmic}
+\end{algorithm}
+
+\subsection{Operation-Level Relevance Propagation}
+
+We implement propagation rules for each type of autograd Node (a Node in this case maps to an operation call), then traverse the auxiliary graph in a style similar to Kahn's Algorithm (link to Appendix), but using a Depth-First heuristic instead of Breadth-First.
+The operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental tensor operations. Algorithm~\ref{alg:operation-propagation} describes the propagation process.
+
+\begin{algorithm}[H]
+  \caption{Operation-Level Relevance Propagation}
+  \label{alg:operation-propagation}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
+    \Ensure Input relevance $R_{in}$
+    \State Initialize $stack \gets [hidden\_states.grad\_fn]$
+    \State Initialize $nodes\_pending \gets \{ node : len(parents)$ for $node, parents \in in\_adj.items() \}$
+    \State Initialize $node\_inputs \gets \{ node : [ null$ for $parent$ in $parents$ ] for $node, parents \in in\_adj.items() \}$
+    \State Initialize $fcn\_map$ which maps $type(node)$ to its corresponding propagation function.
+    \State Set $node\_inputs[hidden\_states.grad\_fn] = [R\_out]$
+
+    \While{$stack$}
+      \State $curnode \gets stack.pop()$
+      \State $curnode\_in\_rel = node\_inputs[curnode]$
+      \If{$curnode == target\_node$}
+        \Return $R_{in} := curnode\_in\_rel$
+      \EndIf
+      \State $prop\_fcn \gets fcn\_map[type(curnode)]$
+      \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
+        \If{$nodes\_pending[child] == 0$}
+          \State $stack.push(child)$
+        \EndIf
+      \EndFor
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
+
+\subsection{A Caveat to Autograd}
+
+While the above solution seems sound, a subtle issue lies within defining the propagation functions for each Node type.
+
+Consider a simple approach for backpropagating $R_{c}$ to $R_{a}$ and $R_{b}$ for $c = a + b$ as follows:
+
+\begin{equation}
+  R_{a} = R_{c} \times \frac{a^2}{a^2 + b^2} \quad\text{and}\quad R_{b} = R_{c} \times \frac{b^2}{a^2 + b^2}
+\end{equation}
+
+or alternatively,
+
+\begin{equation}
+  R_{a} = R_{c} \times \frac{a.abs()}{a.abs() + b.abs()} \quad\text{and}\quad R_{b} = R_{c} \times \frac{b.abs()}{a.abs() + b.abs()}
+\end{equation}
+
+We suggest this because we want to attribute relevance to each tensor component proportionally to the magnitude of its contribution to the operation result.
+
+Since autograd is a differentiation library, it only caches within its Nodes information necessary for computing the gradients w.r.t. its arguments.
+
+But for $c = a + b$, we see that $\frac{\partial a}{\partial c} = \frac{\partial b}{\partial c} = 1$. This implies that $a$ and $b$ need not be stored in any autograd `AddBackward0' Node, which indeed is the case.
+
+This poses a critical problem for us, since without $a$ and $b$, we are then unable to compute $R_{a}$ and $R_{b}$ faithfully when we traverse the `AddBackward0` Node.
+
+\subsection{The Promise System}
+
+The idea of the Promise System is to allow traversal to continue when a missing input case is encountered, but \textbf{we switch the objective of the traversal} from relevance propagation to a local DFS starting at the Node in question. While we search a way to recover these activations, we still store the information required to perform the propagations for each intermittent Node, making use of the traversal to the fullest. Once the activations are found, we can then compute the propagations for each Node that was covered in the search, starting at the search root. We will now formally define this system.
+
+\begin{definition}[Promise]
+  A Promise is a mutable metadata object that is attached to a Node which requires some uncached forward pass input to compute its relevance propagation.
+  The core structure of a Promise object is defined below:
+  \begin{verbatim}
+    {
+      "rout": R_out_curnode,
+      "args": [ None ] * num_missing_inputs,
+      "rins": [ None ] * num_missing_inputs
+    }
+  \end{verbatim}
+\end{definition}
+
+\begin{definition}[Promise Origin Node]
+  A Promise's Origin Node refers to the Node for which the Promise was created.\\
+\end{definition}
+
+\begin{definition}[Promise Branch]
+  A Promise branch is a sub-object to a Promise, corresponding to exactly 1 of the Origin Node's missing forward call inputs. Sibling Promise Branches all share full access to their corresponding Promise object.\\
+\end{definition}
+
+The objective of a Promise is to act as a placeholder while we continue traversing the graph in search of the Origin Node's missing forward call inputs.
+\\
+\begin{definition}[Promise Branch Arg Node]
+  A Promise Branch's Arg Node refers to the first Node along a Promise Branch in its forward pass output is retrievable from its own cached tensors.\\
+\end{definition}
+
+We effectively delay the computation of subsequent relevance propagations until we can resolve the entire Branch from the Origin Node to the Arg Node.
+
+
+\subsection{Theoretical Analysis}
+
+\paragraph{Scalability in Memory and Computational Complexity}
+
+We now prove that the Promise Attribution Framework scales efficiently in terms of both memory and computational complexity.
+
+\begin{theorem}
+Let $n$ be the number of operations in the computation graph $G$ and $m$ be the number of edges. The Promise Attribution Framework has a time complexity of $O(n + m)$ and a space complexity of $O(n + m)$.
+\end{theorem}
+
+\begin{proof}
+The forward pass constructs the computation graph $G = (V, E)$, where $|V| = n$ and $|E| = m$. Constructing $G$ requires $O(n + m)$ operations, as each operation and its dependencies are recorded once.
+
+During the backward pass, the algorithm traverses $G$ in reverse topological order. Each node $v \in V$ resolves its promise object $P_v$, which involves a constant amount of work per edge $e \in E$. Thus, the total time complexity is $O(n + m)$.
+
+The space complexity is determined by the storage of $G$ and the promise objects. Since $G$ contains $n$ nodes and $m$ edges, and each promise object is associated with a node, the total space complexity is $O(n + m)$.
+\end{proof}
+
+This analysis demonstrates that the Promise Attribution Framework is both memory-efficient and computationally efficient, making it suitable for large-scale neural networks.
+
+\subsection{Experimental Setup}
+\bibliography{main}
+\iftoggle{arxiv}{
+  % arXiv references in a generic style, or ICLR style
+  \bibliographystyle{iclr2025_conference}
+}{
+  % bst style for the journal/conference version goes here
+  % For NeurIPS there is no house bst file; you can use ICLR bst instead
+  % \bibliographystyle{iclr2025_conference}
+}
+
+\appendix
+% Appendix TOC
+\section*{Appendices}
+%\startcontents[sections]
+%\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}
+\subsection{Implementation Details}
+Our implementation uses PyTorch hooks to record operations during the forward pass and constructs the computation graph dynamically. Each operation creates a promise object, which stores the propagation rule and tracks readiness and completeness.
+
+\textbf{Python Example: Promise-based LRP Engine}
+Below is a simplified Python pseudocode that captures the core logic of the promise-based LRP engine:
+
+\begin{verbatim}
+class Promise:
+  def __init__(self, op_type, inputs):
+    self.op_type = op_type
+    self.inputs = inputs
+    self.ready = False
+    self.complete = False
+    self.relevance = None
+
+  def resolve(self, output_relevance):
+    # Custom propagation rule for each op_type
+    self.relevance = propagate_relevance(self.op_type, self.inputs, output_relevance)
+    self.ready = True
+    return self.relevance
+
+def lrp_engine(graph, output_relevance):
+  # Traverse graph in reverse topological order
+  for node in reversed(graph.topo_order()):
+    promise = node.promise
+    if all(child.promise.complete for child in node.outputs):
+      input_relevance = promise.resolve(node.output_relevance)
+      for inp in node.inputs:
+        inp.promise.relevance = input_relevance[inp]
+      promise.complete = True
+  return [node.promise.relevance for node in graph.input_nodes()]
+\end{verbatim}
+
+\textbf{Explicit Steps in the Algorithm}
+\begin{enumerate}
+  \item \textbf{Forward Pass:} Register hooks to record each operation and build the computation graph.
+  \item \textbf{Promise Creation:} For each operation, instantiate a promise object with its propagation rule.
+  \item \textbf{Backward Pass:} Starting from the output, traverse the graph in reverse topological order. Each promise is resolved when all output relevance is received, and marked complete when it distributes relevance to its inputs.
+  \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
+\end{enumerate}
+
+\textbf{Readiness and Completeness}
+\begin{itemize}
+  \item \textbf{Readiness:} A promise is ready when all output relevance (from downstream nodes) has been received.
+  \item \textbf{Completeness:} A promise is complete when it has distributed its relevance to all inputs according to its propagation rule.
+\end{itemize}
+
+This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
+
+
+\end{document}

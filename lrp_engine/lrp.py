@@ -54,7 +54,9 @@ class LRPEngine:
                  use_gamma=False,
                  use_z_plus=False,
                  relevance_filter=1.0,
-                 starting_relevance=None,):
+                 starting_relevance=None,
+                 topk=1,):
+        assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
         self.out_adj_list : Union[set[Node], set[int]] = None
         self.topo_exec_order : list[int] = None
         self.fcn_map : dict[str, Callable] = None
@@ -68,6 +70,7 @@ class LRPEngine:
         self.conv_counter = 0
         self.mm_counter = 0
         self.starting_relevance = starting_relevance
+        self.topk = topk
     
     @staticmethod
     def group_and_categorize_inputs(input_tracker_list: list[tuple[Union[Promise, torch.Tensor], int]], run_mode: RunMode):
@@ -116,44 +119,60 @@ class LRPEngine:
             curnode.metadata["relevance_filter"] = self.relevance_filter
             self.mm_counter += 1
 
-    def run(self, hidden_states: torch.Tensor):
+    def run(self, output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor]):
         """Runs LRP by using the computation graph rooted at hidden_states"""
         self.conv_counter = 0
         self.mm_counter = 0
         with torch.no_grad():
+            if isinstance(output_tuple_or_tensor, torch.Tensor):
+                output_tuple_or_tensor = (output_tuple_or_tensor,)
+            elif not isinstance(output_tuple_or_tensor, tuple) or not all(isinstance(ot, torch.Tensor) for ot in output_tuple_or_tensor):
+                raise TypeError("LRPEngine.run(output) expects output to be of type torch.Tensor or tuple[torch.Tensor]")
             if self.starting_relevance is None:
-                m = hidden_states.max(-1)
-                relevance = torch.zeros_like(hidden_states)
-                if m.indices.dim() == 0:
-                    relevance[0] = 1.0
-                else:
-                    s = hidden_states.shape[-2]
-                    dim = relevance.dim()
-                    
-                    for i, inds in enumerate(m.indices):
-                        if dim == 2:
-                            relevance[list(range(s)),inds] = torch.ones_like(m.values[0])
-                        elif dim == 3:
-                            relevance[i,list(range(s)),inds] = torch.ones_like(m.values[0])
-                        else:
-                            raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
+                # Create starting relevances from scratch using top logit
+                relevances = []
+                for ot in output_tuple_or_tensor:
+                    if self.topk == 1:
+                        m = ot.max(-1)
+                    else:
+                        m = ot.topk(self.topk, dim=-1) # TODO: Throws an error if k is larger than the dimension
+                    r = torch.zeros_like(ot)
+                    if m.indices.dim() == 0:
+                        r[0] = 1.0
+                    else:
+                        s = ot.shape[-2]
+                        dim = r.dim()
+                        
+                        for i, inds in enumerate(m.indices):
+                            if dim == 2:
+                                r[list(range(s)),inds] = torch.ones_like(m.values[0])
+                            elif dim == 3:
+                                r[i,list(range(s)),inds] = torch.ones_like(m.values[0])
+                            else:
+                                raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
+                    relevances.append(r)
+                relevances = tuple(relevances)
+                
             else:
-                assert self.starting_relevance.shape == hidden_states.shape, f"If overriding starting relevance, its shape ({self.starting_relevance.shape}) must match that of the model output given, {hidden_states.shape}"
-                relevance = self.starting_relevance
+                relevances = (self.starting_relevance,)
+                assert len(relevances) == len(output_tuple_or_tensor), \
+                    f"Starting relevance mismatched model outputs on length (given {len(relevances)}, expected {len(output_tuple_or_tensor)}."
+                assert all( sr is None or sr.shape == ot.shape for sr, ot in zip(relevances, output_tuple_or_tensor)), \
+                    f"If overriding starting relevances, their shapes must match those of the model outputs, given {[ sr.shape for sr in relevances ]}, expected {[ ot.shape for ot in output_tuple_or_tensor ]}."
             start_time = time.time()
 
             # TODO: Add a graph hashing system to evaluate if a new model architecture has been given.
             if self.out_adj_list is None or self.topo_exec_order is None or self.fcn_map is None:
-                res = self._run_lrp_first_pass(hidden_states, relevance)
+                res = self._run_lrp_first_pass(output_tuple_or_tensor, relevances)
             else:
-                res = self._run_lrp_subsequent_pass(hidden_states, relevance)
+                res = self._run_lrp_subsequent_pass(output_tuple_or_tensor, relevances)
 
             if DEBUG:
                 print(f"Propagation took {time.time() - start_time}s")
 
             return res
 
-    def _run_lrp_first_pass(self, hidden_states: torch.Tensor, starting_relevance: torch.Tensor):
+    def _run_lrp_first_pass(self, root_nodes: tuple[torch.Tensor], starting_relevances: tuple[torch.Tensor]):
         """Runs LRP from first principles, i.e. generates and sorts the graph for the first time, marks attributable
         parameter Nodes, constructs Promise subgraphs for activation retrieval, assumes a non-deterministic graph
         traversal state and as such traverses greedily, prioritizing Promise completions.
@@ -161,7 +180,7 @@ class LRPEngine:
         Sets the necessary input-agnostic state in the class instance for a future run on the same model architecture:
         - out_adj_list: the graph saved as { node_topo_ind : [ outneighb1_topo_ind, outneighb2_topo_ind, ... ], ... }
         - topo_exec_order: the reverse topological ordering of the graph, saved as a list of integer indices,
-            descending from the topological index of the hidden_states Node, going to the indices of the input and
+            descending from the topological index of the model output Node(s), going to the indices of the input and
             parameter Nodes.
         - fcn_map: a mapping from autograd Node type names to their corresponding LRP propagation function, stored in
             the LRPPropFunctions class
@@ -179,11 +198,9 @@ class LRPEngine:
         param_node_inds = self.param_node_inds
         promise_bucket = self.promise_bucket
 
-        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_root, param_nodes = make_graph(hidden_states, params_to_interpret, return_topo_dict=True)
+        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes = make_graph(root_nodes, params_to_interpret, return_topo_dict=True)
 
-        root = hidden_states.grad_fn
-        if updated_root is not None:
-            root = updated_root[0]
+        root_nodes = updated_roots
 
         promise_bucket.ind_to_node = ind_to_node
 
@@ -197,9 +214,12 @@ class LRPEngine:
         visited = set()
 
         # Setup the first iteration
-        input_tracker[root] = [ (starting_relevance, 0) ]
-        stack : list[Node] = [root]
-        in_adj_list[root] = []
+        for root, sr in zip(root_nodes, starting_relevances):
+            input_tracker[root] = [ (sr, 0) ]
+            in_adj_list[root] = []
+
+        stack : list[Node] = root_nodes
+
         nodes_pending = { k : len(v) for k, v in list(in_adj_list.items()) }
 
         promise_queue : list[Node] = []
@@ -592,7 +612,7 @@ class LRPEngine:
 
         return checkpoint_vals, param_node_vals
 
-    def _run_lrp_subsequent_pass(self, hidden_states: torch.Tensor, starting_relevance: torch.Tensor):
+    def _run_lrp_subsequent_pass(self, root_nodes: tuple[torch.Tensor], starting_relevances: tuple[torch.Tensor]):
         """Runs LRP by reusing the state saved by the first pass.
         Only concerned with topological traversal of Nodes only found in the ancestor graph of the checkpoint and
         interpretable parameter Nodes. Does not construct new Promises, but may recompile their fwd/bwd chains, and
@@ -613,12 +633,9 @@ class LRPEngine:
         promise_bucket = self.promise_bucket
 
         # Need to re-map the graph to all the indices based on topo sort
-        _, _, _, ind_to_node, _, updated_root, _ = make_graph(hidden_states, return_topo_dict=True)
+        _, _, _, ind_to_node, _, updated_roots, _ = make_graph(root_nodes, return_topo_dict=True)
 
-        root = hidden_states.grad_fn
-        if updated_root is not None:
-            root = updated_root[0]
-
+        root_nodes = updated_roots
         # Refresh the map in our Promise Bucket as well
         promise_bucket.ind_to_node = ind_to_node
 
@@ -627,7 +644,8 @@ class LRPEngine:
         input_frontier : dict[int, list[torch.Tensor]] = { ind : {0: 0.0} for ind in topo_exec_order }
 
         # Setup first iteration
-        input_frontier[root.metadata["topo_ind"]] = {0: starting_relevance}
+        for root, sr in zip(root_nodes, starting_relevances):
+            input_frontier[root.metadata["topo_ind"]] = {0: sr}
 
         # First pre-process all Promises by updating the starting fwd_shapes and setting every leaf Promise arg
         promise_bucket.update_all_starting_fwd_shapes()

@@ -336,6 +336,48 @@ class LRPPropFunctions:
             return p
         else:
             return grad_fn(*r)
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
+    def SplitBackwardProp(grad_fn, r):
+        # r is a list of inputs, with positions corresponding to the grad_fn inputs.
+        if any(isinstance(elem, Promise) for elem in r):
+            dtype = parents[0].rout.dtype
+            device = parents[0].rout.device
+            parents = [ (i, elem) for i, elem in enumerate(r) if isinstance(elem, Promise) ]
+            promise = {
+                "rout": None,
+                "args": [None],
+                "rins": [None],
+                "ready": False,
+                "complete": False,
+                "parents": [ t[1] for t in parents ],
+            }
+
+            traversal_ind = grad_fn.metadata["topo_ind"]
+            bucket = grad_fn.metadata["bucket"]
+
+            split_size = getattr(grad_fn, "_saved_split_size", None)
+            p = SplitBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim, split_size)
+            for i, parent in parents:
+                p.parent_idxs[parent] = i
+                parent.arg_node_ind = traversal_ind
+
+            if any(elem is None for elem in r):
+                # We don't want to accumulate any tensor rout until we come back around in NTM, for consistency (see lrp.py line 267).
+                grad_fn.metadata["pre_promise"] = p
+                promise["rout"] = torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device)
+            else:
+                # If we are processing for the first time in NTM anyway, then it's fine.
+                for i, elem in r:
+                    if isinstance(elem, torch.Tensor):
+                        p.accumulate_rout(elem, i)
+
+            return p
+        else:
+            return grad_fn(*r)
 
     @staticmethod
     @output_relevances
@@ -1149,7 +1191,31 @@ class LRPPropFunctions:
 
         # next_functions will correspond to input, weights, bias
         # We only care about propagating through the input for LayerNorm.
+        # We can try some denoising here
         return r, 0.0, 0.0
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def NativeBatchNormBackwardProp(grad_fn, r):
+
+        def batchNorm(fcn):
+            x = fcn._saved_input.detach()
+            mean = fcn._saved_result1.detach()
+            rec_stddev = fcn._saved_result2.detach()
+            normalized = (x - mean) * rec_stddev
+            return normalized
+
+        if isinstance(r, Promise):
+            r.setarg(batchNorm(grad_fn), grad_fn, batchNorm)
+            if r.complete:
+                r = r.rin
+            else:
+                # If this is the first branch of the promise
+                return r # We will check if the promise is complete in the graph traversal
+
+        return r, 0.0, 0.0
+
     
     @staticmethod
     @output_relevances
@@ -1190,6 +1256,12 @@ class LRPPropFunctions:
             rin = result * (r - result * r.sum(dim=-1, keepdim=True))
 
         return renormalize_epsilon(r, rin, torch.zeros_like(rin))[0]
+    
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def SafeSoftmaxBackwardProp(cls, grad_fn, r):
+        return cls.SoftmaxBackwardProp(grad_fn, r)
     
     @staticmethod
     @output_relevances

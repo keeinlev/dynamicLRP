@@ -1,12 +1,21 @@
 import torch
 from torch.autograd.graph import Node
+from typing import Union
 from .util import (
     decompose_addmmbackward,
     decompose_convbackward,
+    decompose_addcmulbackward,
     LRPCheckpoint,
 )
 
-def make_graph(hidden_states: torch.Tensor, params_to_interpret: list[torch.Tensor] = None, return_topo_dict: bool = False):
+DECOMPOSABLE_FUNCTIONS = (
+    # Nodes that must be decomposed
+    "AddmmBackward0",
+    "ConvolutionBackward0",
+    "AddcmulBackward0",
+)
+
+def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor], params_to_interpret: list[torch.Tensor] = None, return_topo_dict: bool = False):
     """Creates an auxiliary graph from the autograd graph starting at hidden_states
     and going backward.
 
@@ -21,21 +30,22 @@ def make_graph(hidden_states: torch.Tensor, params_to_interpret: list[torch.Tens
     out_adj = {}
     in_adj = {}
 
-    root = hidden_states.grad_fn
+    if isinstance(output_tuple_or_tensor, torch.Tensor):
+        roots = [ output_tuple_or_tensor.grad_fn ]
+    elif isinstance(output_tuple_or_tensor, tuple):
+        roots = [ output.grad_fn for output in output_tuple_or_tensor ]
     visited = set()
     names = set()
     topo_stack = []
-    update_root = None
+    updated_roots = [ root for root in roots ]
     param_nodes = []
 
-    if type(root).__name__ in ["AddmmBackward0", "ConvolutionBackward0"]:
-        update_root = [root]
-
-    make_graph_topo_dfs(root, in_adj, out_adj, visited, names, topo_stack, update_root, params_to_interpret, param_nodes)
+    for root in roots:
+        make_graph_topo_dfs(root, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
     if return_topo_dict:
-        return in_adj, out_adj, names, dict(topo_stack), len(topo_stack), update_root, param_nodes
+        return in_adj, out_adj, names, dict(topo_stack), len(topo_stack), updated_roots, param_nodes
     else:
-        return in_adj, out_adj, names, None, len(topo_stack), update_root, param_nodes
+        return in_adj, out_adj, names, None, len(topo_stack), updated_roots, param_nodes
 
     # idea: dynamically init relevance variables when branching occurs, assign them to the corresponding
     # downstream nodes they should belong to using next_functions and visited table. Requires 2 passes.
@@ -49,29 +59,39 @@ def make_graph(hidden_states: torch.Tensor, params_to_interpret: list[torch.Tens
     # 2. Decompose AddmmBackward0's with AddBackward0 leading back to MmBackward0.
     # 3. Assign each grad_fn node to its unique integer id based on traversal order
 
-def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, update_root, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
+def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
     """
-    visited, topo_stack, update_root, and param_nodes are all accumulators and must be set and provided by the caller.
+    visited, topo_stack, updated_roots, and param_nodes are all accumulators and must be set and provided by the caller.
+
+    - topo_stack: a list of tuples [ (fcn, topo_ind), ... ] ordered in reverse topological order (desc indices), with the roots at the highest indices.
+    - updated_roots: a list of either None or DecomposedNode, indicating if any of the root Nodes were replaced via a decomposition.
+    - param_nodes: a list of AccumulateGrad Nodes which match model parameters given by the user to interpret and all EmbeddingBackward0 Nodes.
     """
     if fcn is None or fcn in visited:
         return
     visited.add(fcn)
 
-    if (fcn_name := type(fcn).__name__) in (
-        # Nodes that must be decomposed
-        "AddmmBackward0",
-        "ConvolutionBackward0"
-    ):
+    if (fcn_name := type(fcn).__name__) in DECOMPOSABLE_FUNCTIONS:
         if fcn_name == "AddmmBackward0":
             # Decompose the function into an Add + Mm.
             decomposed_root = decompose_addmmbackward(fcn)
         elif fcn_name == "ConvolutionBackward0":
             # Decompose the function into an Add + Conv.
             decomposed_root = decompose_convbackward(fcn)
+        elif fcn_name == "AddcmulBackward0":
+            # Decompose the function into an Add + Mm.
+            decomposed_root = decompose_addcmulbackward(fcn)
         else:
             raise ValueError(f"{fcn_name} is marked as needing decomposition but does not have a decomposition handler.")
-        if update_root is not None and fcn == update_root[0]:
-            update_root[0] = decomposed_root
+        
+        try:
+            fcn_root_ind = updated_roots.index(fcn)
+            # Set the updated root to the decomposed root
+            updated_roots[fcn_root_ind] = decomposed_root
+        except ValueError as e:
+            # fcn is not a root
+            pass
+
         if fcn in in_adj:
             # Assign new Add's in-neighbours to the AddMm's in-neighbours.
             in_adj[decomposed_root] = in_adj[fcn]
@@ -123,7 +143,7 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack,
             in_adj[child] = []
         in_adj[child].append(fcn)
 
-        make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, update_root, params_to_interpret, param_nodes)
+        make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
     
     # We can directly store the index in each node's metadata dict, so we only need to return
     # the reverse lookup dict from ind to node.

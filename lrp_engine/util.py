@@ -99,6 +99,13 @@ class AccumulateGrad(DecomposedNode):
         self.name = "AccumulateGrad"
         self.variable = variable
 
+class MulBackward0(DecomposedNode):
+    def __init__(self, next_functions, sequence_nr, shape, t1, t2):
+        super().__init__(next_functions, sequence_nr, shape)
+        self.name = "MulBackward0"
+        self._saved_self = t1
+        self._saved_other = t2
+
 class LRPCheckpoint(torch.autograd.Function):
     """Identity autograd fcn for marking where to capture relevance."""
     num_checkpoints_reached = 0
@@ -141,6 +148,17 @@ def decompose_convbackward(grad_fn):
     conv_fn = DecomposedConvolutionBackward0((*grad_fn.next_functions[:2], (None, 0)), grad_fn._sequence_nr(), result_shape, grad_fn._saved_input, grad_fn._saved_weight, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
     bias_accumulate = AccumulateGrad(grad_fn._sequence_nr(), bias_shape, grad_fn.next_functions[2][0].variable.reshape((bias_shape)))
     add_fn = AddBackward0(((bias_accumulate, 0), (conv_fn, 0)), grad_fn._sequence_nr(), result_shape)
+
+    return add_fn
+
+
+def decompose_addcmulbackward(grad_fn):
+    """Assuming grad_fn is an instance of AddcmulBackward, returns an AddBackward0 instance that is the parent
+    of a new MulBackward0 instance and the first function in grad_fn.next_functions.
+    The MulBackward0 is then the parent of the last two functions in grad_fn.next_functions."""
+    result_shape = max((im.shape for im in grad_fn._input_metadata), key=lambda shape: (len(shape), tuple(shape))) # Largest dimensionality and largest dimensions, to account for broadcasting
+    mul_fn = MulBackward0(grad_fn.next_functions[1:], grad_fn._sequence_nr(), result_shape, grad_fn._saved_tensor1, grad_fn._saved_tensor2)
+    add_fn = AddBackward0((grad_fn.next_functions[0], (mul_fn, 0)), grad_fn._sequence_nr(), result_shape)
 
     return add_fn
 

@@ -202,7 +202,7 @@ The operation-level approach modularizes relevance propagation, reducing any mod
       \State $prop\_fcn \gets fcn\_map[type(curnode)]$
       \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
       \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$
+        \State $node\_inputs[child].add(output)$ \footnotemark
         \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
         \If{$nodes\_pending[child] == 0$}
           \State $stack.push(child)$
@@ -211,6 +211,7 @@ The operation-level approach modularizes relevance propagation, reducing any mod
     \EndWhile
   \end{algorithmic}
 \end{algorithm}
+\footnotetext{Extra implementation details hidden, assume we can access the number of total inputs landed and later aggregate the inputs according to the propagation function signature.}
 
 \subsection{A Caveat to Autograd}
 
@@ -238,7 +239,7 @@ This poses a critical problem for us, since without $a$ and $b$, we are then una
 
 \subsection{The Promise System}
 
-The idea of the Promise System is to allow traversal to continue when a missing input case is encountered, but \textbf{we switch the objective of the traversal} from relevance propagation to a local DFS starting at the Node in question. While we search a way to recover these activations, we still store the information required to perform the propagations for each intermittent Node, making use of the traversal to the fullest. Once the activations are found, we can then compute the propagations for each Node that was covered in the search, starting at the search root. We will now formally define this system.
+The idea of the Promise System is to allow traversal to continue when a missing input case is encountered, but \textbf{we switch the objective of the traversal} from relevance propagation to a local DFS starting at the Node in question. While we search a way to recover these activations, we still store the information required to perform the propagations for each intermittent Node, making use of the traversal to the fullest. Once the activations are found, we can then compute the propagations for each Node that was covered in the search, starting at the search root. We will now formally define this system.\\
 
 \begin{definition}[Promise]
   A Promise is a mutable metadata object that is attached to a Node which requires some uncached forward pass input to compute its relevance propagation.
@@ -268,6 +269,84 @@ The objective of a Promise is to act as a placeholder while we continue traversi
 
 We effectively delay the computation of subsequent relevance propagations until we can resolve the entire Branch from the Origin Node to the Arg Node.
 
+This leads to an amended version of the previous propagation algorithm, Algorithm~\ref{alg:promise-propagation} (Note that this algorithm is simplified from the algorithm used in practice for the sake of understanding).
+
+\begin{algorithm}[H]
+  \caption{Operation-Level Relevance Propagation With Promises}
+  \label{alg:promise-propagation}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
+    \Ensure Input relevance $R_{in}$
+    \State Initialize as in Algorithm 2
+
+    \While{$stack$}
+      \State $curnode \gets stack.pop()$
+      \State $curnode\_in\_rel = node\_inputs[curnode]$
+      \If{$curnode == target\_node$}
+        \Return $R_{in} := curnode\_in\_rel$
+      \ElsIf{$curnode$ requires Promise}
+        \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
+        \State $curnode\_outputs \gets curnode.promise.branches$
+      \Else
+        \State $prop\_fcn \gets fcn\_map[type(curnode)]$
+        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+      \EndIf
+      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
+        \If{$nodes\_pending[child] == 0$}
+          \State $stack.push(child)$
+        \EndIf
+      \EndFor
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
+
+Meanwhile, we make the following changes to each Node type's propagation function to accept Promise-type inputs:
+
+\begin{algorithm}[H]
+  \caption{Non-Arg Node Propagation Function Promise Handling}
+  \label{alg:non-argnode-propagation}
+  \begin{algorithmic}[1]
+    \Require Autograd Node $node$, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
+
+    \If{$R_{out}$ is a Promise Branch}
+      \State Define $fwd$ as a closure of $node$'s forward pass.
+      \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
+      \State $R_{out}.record(fwd, bwd)$
+      \Return $R_{out}$
+    \EndIf
+
+    \State \textit{// Propagate $R_{out}$...}
+    \Return $R_{in}$
+  \end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+  \caption{Arg Node Propagation Function Promise Handling}
+  \label{alg:argnode-propagation}
+  \begin{algorithmic}[1]
+    \Require Autograd Node $node$, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
+
+    \If{$R_{out}$ is a Promise Branch}
+      \State Define $retrieve_fwd_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
+      \State $activation = retrieve_fwd_output(node)$
+      \State $R_{out}.set_arg(activation)$
+      \State $R_{out}.trigger_promise_completion()$
+      \If{$R_{out}.promise_is_complete$}
+        $R_{out} = R_{out}.propagated_relevance$
+      \Else
+        \State \textit{// Signal for queueing this Node until the Promise is complete}
+        \Return
+      \EndIf
+    \EndIf
+
+    \State \textit{// Propagate $R_{out}$...}
+    \Return $R_{in}$
+  \end{algorithmic}
+\end{algorithm}
 
 \subsection{Theoretical Analysis}
 

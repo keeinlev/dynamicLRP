@@ -1,6 +1,6 @@
 import torch
 from torch.autograd.graph import Node
-from util import (
+from .util import (
     decompose_addmmbackward,
     decompose_convbackward,
     LRPCheckpoint,
@@ -23,18 +23,19 @@ def make_graph(hidden_states: torch.Tensor, params_to_interpret: list[torch.Tens
 
     root = hidden_states.grad_fn
     visited = set()
+    names = set()
     topo_stack = []
     update_root = None
     param_nodes = []
 
-    if type(root).__name__ == "AddmmBackward0":
+    if type(root).__name__ in ["AddmmBackward0", "ConvolutionBackward0"]:
         update_root = [root]
 
-    make_graph_topo_dfs(root, in_adj, out_adj, visited, topo_stack, update_root, params_to_interpret, param_nodes)
+    make_graph_topo_dfs(root, in_adj, out_adj, visited, names, topo_stack, update_root, params_to_interpret, param_nodes)
     if return_topo_dict:
-        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), dict(topo_stack), len(topo_stack), update_root, param_nodes
+        return in_adj, out_adj, names, dict(topo_stack), len(topo_stack), update_root, param_nodes
     else:
-        return in_adj, out_adj, set([ type(f).__name__ for f in visited ]), None, len(topo_stack), update_root, param_nodes
+        return in_adj, out_adj, names, None, len(topo_stack), update_root, param_nodes
 
     # idea: dynamically init relevance variables when branching occurs, assign them to the corresponding
     # downstream nodes they should belong to using next_functions and visited table. Requires 2 passes.
@@ -48,7 +49,7 @@ def make_graph(hidden_states: torch.Tensor, params_to_interpret: list[torch.Tens
     # 2. Decompose AddmmBackward0's with AddBackward0 leading back to MmBackward0.
     # 3. Assign each grad_fn node to its unique integer id based on traversal order
 
-def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack, update_root, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
+def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, update_root, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
     """
     visited, topo_stack, update_root, and param_nodes are all accumulators and must be set and provided by the caller.
     """
@@ -67,6 +68,8 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack, update
         elif fcn_name == "ConvolutionBackward0":
             # Decompose the function into an Add + Conv.
             decomposed_root = decompose_convbackward(fcn)
+        else:
+            raise ValueError(f"{fcn_name} is marked as needing decomposition but does not have a decomposition handler.")
         if update_root is not None and fcn == update_root[0]:
             update_root[0] = decomposed_root
         if fcn in in_adj:
@@ -94,6 +97,9 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack, update
         fcn.metadata["save_relevance"] = True
         param_nodes.append(fcn)
 
+    # Add processed node's name to the names set
+    if (fcn_name := type(fcn).__name__) not in names:
+        names.add(fcn_name)
     # Assign adjacencies
     # NOTE: Out-adjacencies will account for None, but in-adjacencies will not.
     # This is because we use out_adj for verifying number of expected fwd inputs 
@@ -117,7 +123,7 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, topo_stack, update
             in_adj[child] = []
         in_adj[child].append(fcn)
 
-        make_graph_topo_dfs(child, in_adj, out_adj, visited, topo_stack, update_root, params_to_interpret, param_nodes)
+        make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, update_root, params_to_interpret, param_nodes)
     
     # We can directly store the index in each node's metadata dict, so we only need to return
     # the reverse lookup dict from ind to node.

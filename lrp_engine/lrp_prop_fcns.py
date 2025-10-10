@@ -2,13 +2,8 @@ import math
 import time
 import torch
 import torch.nn.functional as F
-from dummy_promise import DummyPromise
-from add_backward_promise import AddBackwardPromise
-from sum_backward_promise import SumBackwardPromise
-from cat_backward_promise import CatBackwardPromise
-from unbind_backward_promise import UnbindBackwardPromise
-from promise import Promise
-from util import (
+from .promises import *
+from .util import (
     epsilon,
     renormalize_epsilon,
     renormalize_epsilon_scalar,
@@ -17,6 +12,7 @@ from util import (
     LRPCheckpoint,
     merge_input_shapes,
 )
+from .relevance_filter import relevance_filter
 
 """
 For all these functions, grad_fn is the autograd Node returned from traversing the autograd graph.
@@ -81,6 +77,7 @@ def skip_redundant_promise(func):
         assert isinstance(res, tuple) and all(isinstance(elem, Promise) for elem in res), f"Error encountered in skip_redundant_promise, expected tuple result of Promises, instead got: {res}"
 
         for i, in_promise in enumerate(r):
+            # Cut out redundant DummyPromise via reassigning links
             if isinstance(in_promise, DummyPromise) and in_promise.start_ind == grad_fn.metadata["topo_ind"]:
                 for parent in in_promise.parents:
                     # Reassign all parents to point to children of the DummyPromise and remove the DummyPromise from their children
@@ -95,7 +92,9 @@ def skip_redundant_promise(func):
                 res[0].parents = list(set(res[0].parents).union(set(in_promise.parents)))
                 in_promise.children = []
                 in_promise.parents = []
-        Promise.start_nodes_to_promise[grad_fn.metadata["topo_ind"]] = res[0]
+
+        # Replace the old Promise with the outputted promise wherever else it is tracked
+        res[0].bucket.start_nodes_to_promise[grad_fn.metadata["topo_ind"]] = res[0]
         if "pre_promise" in grad_fn.metadata:
             grad_fn.metadata["pre_promise"] = res[0]
 
@@ -106,13 +105,17 @@ def skip_redundant_promise(func):
 
 
 def add_node_to_promise_path(func):
+    """When a prop fcn is passed any Promise input, adds the curnode's index to each input Promise's path,
+    and updates the Promises' fwd_shape to the shape of this Node's forward output."""
     def wrapper(*args, **kwargs):
         r = args[-1]
         grad_fn = args[-2]
-        if isinstance(r, Promise):
-            r.add_to_path(grad_fn.metadata["topo_ind"])
-            r.fwd_shape = grad_fn._input_metadata[0].shape
-            # r.ind_to_node[grad_fn.metadata["topo_ind"]] = grad_fn
+        if not isinstance(r, tuple):
+            r = (r,)
+        for input_ in r:
+            if isinstance(input_, Promise):
+                input_.add_to_path(grad_fn.metadata["topo_ind"])
+                input_.fwd_shape = grad_fn._input_metadata[0].shape
         return func(*args, **kwargs)
     return wrapper
 class LRPPropFunctions:
@@ -122,27 +125,11 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     @skip_redundant_promise
     def AddBackwardProp(grad_fn, r):
-        # IMPORTANT: AddBackward0 does not actually store any operands of the addition, so we have
-        # to get a bit tricky.
-        # The idea is to return a "promise", a dict wrapped in a class which contains the outgoing relevance, and
-        # placeholders for the operands and their respective relevances.
-        # From what I know right now, AddBackward0 is the only math-op grad_fn that does this, so the hope is
-        # that we pass this promise down the graph, and we encounter one of:
-        # 1. AccumulateGrad or another math-op that we can get the result from
-        # 2. A function that follows the identity or uniform rule like GeluBackward0 or LayerNormBackward0
-        # 3. A mutation function like SliceBackward0 or ReshapeBackward0
-        # 4. (worst case) Another AddBackward0
-        # For case 2 and 3, we would have to keep an arbitrarily composable function which progressively
-        # nests the operations that must be done on the result, once it is found, to make it equivalent
-        # to the downstream addition operand. When we find a node with the result, we simply apply f(result)
-        # to get the actual operand for the original addition.
-        # However, we will also need to keep a similar function but for going backwards from the addition
-        # back to the result node, but this time for the relevance.
-        # If at this time, both operands have been found, compute and store the relevances for both in the
-        # promise. If not, move this node to the back of the queue.
-        # For case 4, we would simply have to nest a promise within the existing promise.
-        # So the only time this algorithm will branch is if there are multiple additions with no result-
-        # yielding grad_fn's in between.
+        """Creates two new AddBackwardPromise objects tied to the same Promise.
+        If given a Promise input, the two new objects will be children of the input Promise, and the input
+        Promise a parent to the two new objects.
+        Otherwise, the relevance is saved as the rout of the new Promise.
+        See promise.py for an explanation on Promises."""
 
         promise = {
             "rout": r,
@@ -157,9 +144,10 @@ class LRPPropFunctions:
             promise["rout"] = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype) # Placeholder for shape
 
         traversal_ind = grad_fn.metadata["topo_ind"]
+        bucket = grad_fn.metadata["bucket"]
 
-        promise1 = AddBackwardPromise(promise, traversal_ind, 0)
-        promise2 = AddBackwardPromise(promise, traversal_ind, 1)
+        promise1 = AddBackwardPromise(promise, traversal_ind, bucket, 0)
+        promise2 = AddBackwardPromise(promise, traversal_ind, bucket, 1)
 
         promise1.other_branch = promise2
         promise2.other_branch = promise1
@@ -198,8 +186,9 @@ class LRPPropFunctions:
             promise["rout"] = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype) # Placeholder for shape
         
         traversal_ind = grad_fn.metadata["topo_ind"]
+        bucket = grad_fn.metadata["bucket"]
 
-        promise = SumBackwardPromise(promise, traversal_ind, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"))
+        promise = SumBackwardPromise(promise, traversal_ind, bucket, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"))
 
         if isinstance(r, Promise):
             r.arg_node_ind = traversal_ind
@@ -235,12 +224,13 @@ class LRPPropFunctions:
             }
             
             traversal_ind = grad_fn.metadata["topo_ind"]
+            bucket = grad_fn.metadata["bucket"]
 
             prev_promise_branch = None
             promise_branches = []
             # Since you can cat an arbitrary number of tensors, we need to get a bit creative and turn other_branch into a cyclic connection
             for i in range(num_args):
-                new_branch = CatBackwardPromise(promise, traversal_ind, grad_fn._saved_dim, i)
+                new_branch = CatBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim, i)
                 new_branch.fwd_shape = shapes[i]
                 promise_branches.append(new_branch)
                 if prev_promise_branch is not None:
@@ -280,12 +270,13 @@ class LRPPropFunctions:
             }
             
             traversal_ind = grad_fn.metadata["topo_ind"]
+            bucket = grad_fn.metadata["bucket"]
 
             prev_promise_branch = None
             promise_branches = []
             # Same cyclic connections as CatBackwardPromise
             for i in range(num_args):
-                new_branch = CatBackwardPromise(promise, traversal_ind, stack_dim, i)
+                new_branch = CatBackwardPromise(promise, traversal_ind, bucket, stack_dim, i)
                 new_branch.fwd_shape = unstacked_shape
                 promise_branches.append(new_branch)
                 if prev_promise_branch is not None:
@@ -323,8 +314,11 @@ class LRPPropFunctions:
                 "complete": False,
                 "parents": [ t[1] for t in parents ],
             }
+
             traversal_ind = grad_fn.metadata["topo_ind"]
-            p = UnbindBackwardPromise(promise, traversal_ind, grad_fn._saved_dim)
+            bucket = grad_fn.metadata["bucket"]
+
+            p = UnbindBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim)
             for i, parent in parents:
                 p.parent_idxs[parent] = i
                 parent.arg_node_ind = traversal_ind
@@ -675,7 +669,7 @@ class LRPPropFunctions:
         x = grad_fn._saved_self.detach() # s d
         weights = grad_fn._saved_mat2.detach() # d o
 
-        def gamma_lrp(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, gamma):
+        def gamma_lrp(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, gamma, filter_val=1.0):
             """Masked Gamma-LRP approximation using clamped input and weights"""
 
             x_pos = x.clamp(min=0.0)
@@ -708,7 +702,7 @@ class LRPPropFunctions:
 
             r_w = w_pos * tmp + w_neg * QA_neg
 
-            return r_x / 2, r_w / 2
+            return relevance_filter(r_x / 2, filter_val), r_w / 2
             
 
         #### TODO: (Aug 21, 2025) There is an overlooked case of when one of x, weights is None because one of them does not have requires_grad=True
@@ -718,10 +712,6 @@ class LRPPropFunctions:
 
         #### TODO: Add an ablation for Attn-LRP vs traditional LRP
 
-        # if "pre_promise" in grad_fn.metadata and len((pre_promise := grad_fn.metadata["pre_promise"]).fwd_list) == 0:
-        #     assert pre_promise.ready, f"Traversed Node after already placing a Pre-Promise, but the Promise is not ready, at {grad_fn}, topo-ind {grad_fn.metadata['topo_ind']}"
-        #     z = pre_promise.arg
-        # else:
         z = x @ weights # s o
 
         if isinstance(r, Promise):
@@ -731,13 +721,17 @@ class LRPPropFunctions:
             else:
                 # If this is the first branch of the promise
                 return r # We will check if the promise is complete in the graph traversal
-            
-        # return gamma_lrp(x, weights, z, r, 4)
+        
+        filter_val = grad_fn.metadata["relevance_filter"]
+
         if grad_fn.metadata["use_gamma"]:
-            return gamma_lrp(x, weights, z, r, 0)
+            return gamma_lrp(x, weights, z, r, 0, filter_val)
+
+        if grad_fn.metadata["use_z_plus"]:
+            weights = weights.clamp(min=0.0)
+            z = x @ weights
 
         z_stabilized = z + epsilon * z.sign()
-        # Optimized to avoid creating large intermediates
         tmp = r / z_stabilized   # s o
 
         rin_input = x * (tmp @ weights.t()) # s d
@@ -746,13 +740,8 @@ class LRPPropFunctions:
         rin_weight = weights * (x.t() @ tmp) # s o
         rin_weight = rin_weight / 2
 
-        # if (next_fcn := grad_fn.next_functions[1][0]) is not None \
-        #         and (type(next_fcn).__name__ == "AccumulateGrad"
-        #              or type(next_fcn.next_functions[0][0]).__name__ == "AccumulateGrad"):
-        #     return torch.einsum('sdo,so->sd', ratio, r), torch.zeros_like(weights)
-
         # propagate relevance in parallel for input and weight, as specified by A.3.2 (Bilinear matmul) of AttnLRP: https://arxiv.org/pdf/2402.05602
-        return rin_input, rin_weight
+        return relevance_filter(rin_input, filter_val), rin_weight
 
     @staticmethod
     @output_relevances
@@ -789,11 +778,6 @@ class LRPPropFunctions:
         rin_mat2 = mat2 * (mat1.permute(0, 2, 1) @ tmp)
         rin_mat2 = rin_mat2 / 2
 
-        # if (next_fcn := grad_fn.next_functions[1][0]) is not None \
-        #         and (type(next_fcn).__name__ == "AccumulateGrad"
-        #              or type(next_fcn.next_functions[0][0]).__name__ == "AccumulateGrad"):
-        #     return torch.einsum('bsdo,bso->bsd', ratio, r), torch.zeros_like(mat2)
-
         # propagate relevance in parallel for mat1 and mat2
         return rin_mat1, rin_mat2
     
@@ -801,9 +785,10 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def DecomposedConvolutionBackwardProp(grad_fn, r):
+        # TODO: This whole thing is a bit of an AI generated mess, apologies, was very tired when working on this, but I WILL come back make sure it is proper. So far it is working :D
 
         def gamma_lrp_conv2d_output_chunked(x, weight, z, r, stride=(1, 1), padding=(0, 0), 
-                                   dilation=(1, 1), gamma=0.25, out_channel_chunk_size=16):
+                                   dilation=(1, 1), gamma=0.25, out_channel_chunk_size=16, filter_val=1.0):
             """
             Optimized: Chunk by output channels with precomputed unfold.
             """
@@ -888,7 +873,7 @@ class LRPPropFunctions:
                                     kernel_size=(kH, kW), stride=stride, 
                                     padding=padding, dilation=dilation))
             
-            return x_relevance / (2 * gamma), weight_relevance / (2 * gamma), 0.0
+            return relevance_filter(x_relevance / (2 * gamma), filter_val), weight_relevance / (2 * gamma), 0.0
 
         def conv_out(node):
             num_dims = len(node._saved_stride)
@@ -929,11 +914,15 @@ class LRPPropFunctions:
         x = grad_fn._saved_input.detach()
         weights = grad_fn._saved_weight.detach()
 
-        if grad_fn.metadata["use_gamma"]:
-            return gamma_lrp_conv2d_output_chunked(x, weights, z, r, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, gamma=8, out_channel_chunk_size=16)
+        filter_val = grad_fn.metadata["relevance_filter"]
 
+        if grad_fn.metadata["use_gamma"]:
+            return gamma_lrp_conv2d_output_chunked(x, weights, z, r, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, gamma=8, out_channel_chunk_size=16, filter_val=filter_val)
+
+        if grad_fn.metadata["use_z_plus"]:
+            weights = weights.clamp(min=0.0)
         s = r / (z + z.sign() * epsilon)
-        c = conv_T(s, weights, None, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        c = conv_T(s, weights, None, grad_fn._saved_stride, grad_fn._saved_padding, 0, grad_fn._saved_groups, grad_fn._saved_dilation)
 
         if c.shape != x.shape:
             # Assume c is larger due to padding, center-crop down to input H, W
@@ -947,7 +936,68 @@ class LRPPropFunctions:
         r_weight = weights * grad_w  # elementwise, scales by weight itself
         r_weight = r_weight / 2
 
-        return r_input, r_weight, 0.0
+        return relevance_filter(r_input, filter_val), r_weight, 0.0
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def MaxPool2DWithIndicesBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            r.setarg(grad_fn._saved_result1, grad_fn, "_saved_result1")
+            if r.complete:
+                r = r.rin
+            else:
+                return r
+        return relevance_filter(grad_fn(r))
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def MaxPool3DWithIndicesBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            r.setarg(grad_fn._saved_result1, grad_fn, "_saved_result1")
+            if r.complete:
+                r = r.rin
+            else:
+                return r
+        return relevance_filter(grad_fn(r))
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def AdaptiveAvgPool2DBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            def apply_adaptive_avg_pool(fcn):
+                pool_shape = tuple(list(fcn._input_metadata[0].shape)[-2:])
+                return F.adaptive_avg_pool2d(fcn._saved_self, pool_shape)
+            r.setarg(apply_adaptive_avg_pool(grad_fn), grad_fn, apply_adaptive_avg_pool)
+            if r.complete:
+                r = r.rin
+            else:
+                return r
+
+        # ChatGPT'd this, TODO: come back and understand the math
+        x = grad_fn._saved_self
+        N, C, H_in, W_in = x.shape
+        H_out, W_out = tuple(list(grad_fn._input_metadata[0].shape)[-2:])
+
+        rin = torch.zeros_like(x)
+
+        for oh in range(H_out):
+            h_start = int(torch.floor(torch.tensor(oh * H_in / H_out)))
+            h_end   = int(torch.ceil(torch.tensor((oh + 1) * H_in / H_out)))
+            for ow in range(W_out):
+                w_start = int(torch.floor(torch.tensor(ow * W_in / W_out)))
+                w_end   = int(torch.ceil(torch.tensor((ow + 1) * W_in / W_out)))
+
+                region_size = (h_end - h_start) * (w_end - w_start)
+
+                # Distribute R[:, :, oh, ow] equally over the region
+                rin[:, :, h_start:h_end, w_start:w_end] += (
+                    r[:, :, oh:oh+1, ow:ow+1] / region_size
+                )
+
+        return relevance_filter(rin)
     
     @staticmethod
     @output_relevances

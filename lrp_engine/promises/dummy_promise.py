@@ -1,9 +1,9 @@
 import torch
-from promise import Promise
+from .promise import Promise
 
 class DummyPromise(Promise):
-    def __init__(self, promise, traversal_ind):
-        super().__init__(promise, traversal_ind)
+    def __init__(self, promise, traversal_ind, bucket):
+        super().__init__(promise, traversal_ind, bucket)
 
     @property
     def arg(self):
@@ -32,7 +32,7 @@ class DummyPromise(Promise):
     def _setarg(self, value):
         self.promise["args"][0] = value
 
-def compound_promises(promises: list[Promise], traversal_ind, single_promise_override=False, parent_only_connection=False) -> DummyPromise:
+def compound_promises(promises: list[Promise], traversal_ind, bucket, single_promise_override=False, parent_only_connection=False) -> DummyPromise:
     """Returns a new DummyPromise instance where all input promises are the new
     instance's parents (and it is each of their child).
     The promise dict of the returned instance is only missing arg1 and rin1,
@@ -59,7 +59,7 @@ def compound_promises(promises: list[Promise], traversal_ind, single_promise_ove
     for promise in promises:
         promise.arg_node_ind = traversal_ind
 
-    new_promise = DummyPromise(p, traversal_ind)
+    new_promise = DummyPromise(p, traversal_ind, bucket)
 
     if not parent_only_connection:
         for promise in promises:

@@ -1,15 +1,15 @@
-from util import (
+from ..util import (
     epsilon,
     renormalize_epsilon,
 )
-from promise import Promise
+from .promise import Promise
 
 class AddBackwardPromise(Promise):
     """
     idx: specifies which argument/operand the branch is looking for.
     """
-    def __init__(self, promise, traversal_ind, idx):
-        super().__init__(promise, traversal_ind)
+    def __init__(self, promise, traversal_ind, bucket, idx):
+        super().__init__(promise, traversal_ind, bucket)
         self.idx = idx
 
     @property

@@ -1,13 +1,13 @@
 import torch
-from util import (
+from ..util import (
     epsilon,
     renormalize_epsilon_scalar,
 )
-from promise import Promise
+from .promise import Promise
 
 class SumBackwardPromise(Promise):
-    def __init__(self, promise, traversal_ind, saved_dim, keepdim):
-        super().__init__(promise, traversal_ind)
+    def __init__(self, promise, traversal_ind, bucket, saved_dim, keepdim):
+        super().__init__(promise, traversal_ind, bucket)
 
         if saved_dim is not None:
             if isinstance(saved_dim, int):
@@ -64,13 +64,6 @@ class SumBackwardPromise(Promise):
                 contribs = ratios * self.rout.reshape(unsqueezed_shape)
         
         self.set_rin(renormalize_epsilon_scalar(self.rout, contribs, torch.zeros_like(contribs))[0])
-        
-        # arg1, arg2 = self.promise["args"]
-        # r = self.promise["rout"]
-        # denom = arg1 ** 2 + arg2 ** 2 + epsilon
-        # r1 = (arg1 ** 2 / denom) * r
-        # r2 = (arg2 ** 2 / denom) * r
-        # self.promise["rins"][0], self.promise["rins"][1] = renormalize_epsilon(r, r1, r2)
 
     def _setarg(self, value):
         self.promise["args"][0] = value

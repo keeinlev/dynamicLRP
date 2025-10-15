@@ -368,7 +368,22 @@ The space complexity is determined by the storage of $G$ and the promise objects
 
 This analysis demonstrates that the Promise Attribution Framework is both memory-efficient and computationally efficient, making it suitable for large-scale neural networks.
 
-\subsection{Experimental Setup}
+\section{Experimental Setup}
+We aim to show through the following experiments that our proposed LRP solution remains mathematically sound while producing
+ faithful and interpretable attributions consistent with existing methods. We also demonstrate that the
+ Promise-based LRP maintains a predictable and efficient memory footprint and sufficient computation speed for
+ research applications on large (100s of millions - 1 billion parameters) models of various architectures
+ using consumer-grade hardware acceleration.
+
+\subsection{Model and Dataset Selection}
+We used RoBERTa-large finetuned on the SQuAD-v2 question-answering dataset, DNABERT-2 finetuned on the GUE
+ epigenetic marker prediction (EMP) task and H3 target, Llama-3.2-1B finetuned on the IMDB movie review dataset,
+ and the ViT-b-16 base model to evaluate on the CIFAR-10 ImageNet dataset. Finetuned models were then used to
+ evaluate examples from their respective datasets' validation splits.
+
+\subsection{}
+We test for a different metric or result using each of these model-dataset combinations, showing that our LRP is
+ capable of providing meaningful attributions to a wide range of AI architectures and applications.
 \bibliography{main}
 \iftoggle{arxiv}{
   % arXiv references in a generic style, or ICLR style

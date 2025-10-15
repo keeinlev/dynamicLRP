@@ -227,10 +227,9 @@ class LRPEngine:
         promise_traversal_stack : list[Node] = []
 
         RUN_MODE = RunMode.NORMAL
+        curnode = None
 
         while (stack or promise_traversal_stack or promise_queue) and (num_checkpoints_reached < len(checkpoints) or num_params_reached < len(param_nodes)):
-            
-            curnode = None
 
             ####### RUN MODE DETERMINATION
             
@@ -275,7 +274,8 @@ class LRPEngine:
                 stack = stack[1:]
                 RUN_MODE = RunMode.NORMAL
             else:
-                raise RuntimeError("No valid curnode candidate was found.")
+                print("No valid curnode candidate was found.")
+                return curnode, promise_queue, visited, out_adj_list, in_adj_list
 
             ####### END RUN MODE DETERMINATION
 
@@ -525,8 +525,14 @@ class LRPEngine:
                     continue
                 if nodes_pending[child] == 0 and child not in promise_queue:
                     ready_children.append(child)
-                elif isinstance(curnode_outputs[i], Promise) and not curnode_outputs[i].complete and "pre_promise" not in child.metadata:
-                    promise_depends_on.append(child)
+                elif isinstance(curnode_outputs[i], Promise) and not curnode_outputs[i].complete:
+                    if "pre_promise" not in child.metadata:
+                        promise_depends_on.append(child)
+                    else:
+                        child.metadata["pre_promise"].parents.append(curnode_outputs[i])
+                        curnode_outputs[i].arg_node_ind = child.metadata["topo_ind"]
+                        child.metadata["pre_promise"].pending_parents += 1
+                        child.metadata["pre_promise"].trigger_promise_completion()
 
             promise_traversal_stack = promise_depends_on + promise_traversal_stack
             stack = ready_children + stack

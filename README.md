@@ -1,5 +1,5 @@
 # Dynamic Layerwise Relevance Propagation
-## By Kevin Lee and Pablo M. Arias
+## By Kevin Lee and Dr. Pablo M. Arias
 ## June - October 2025
 A framework based on <a href="#ref1">Bach et al.'s 2015 LRP method</a>, incorporating work done by <a href="#ref2">Achtibat et al. (2024) in extending LRP to Transformers</a>, and applied to methodologies inspired by <a href="#ref3">Michel et al.</a> and <a href="#ref4">Voita et al.</a>'s work in analyzing disproportionate importance across heads in multi-head attention.
 

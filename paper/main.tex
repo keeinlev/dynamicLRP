@@ -79,24 +79,55 @@ TBC
 
 \section{Introduction}
 
-The rapid advancements in deep learning over the past decade have revolutionized numerous domains, from computer vision and natural language processing to healthcare and scientific discovery. However, the increasing complexity and opacity of high-performing models have raised significant concerns about their interpretability and trustworthiness. As these models are deployed in critical applications, understanding their decision-making processes has become a pressing need.
+The rapid advancement of deep learning has revolutionized numerous domains, yet the increasing complexity of high-performing models has raised significant concerns about their interpretability and trustworthiness. Modern transformer architectures \cite{vaswani2017attention}, while achieving impressive performance, present unique challenges for understanding their decision-making processes. Attention maps, though useful for visualizing token interactions \cite{clark2019does, caron2021emerging}, fail to provide holistic explanations \cite{wiegreffe2019attention}, as critical information is often stored in feed-forward neurons separate from attention layers \cite{geva2021transformer, dai2022knowledge}.
 
-To address this, the field of interpretability has seen a surge of interest, leading to the development of various tools and techniques for explaining the behavior of deep neural networks. Modern interpretability methods can be broadly categorized into gradient-based approaches, perturbation-based methods, and propagation-based techniques:
-- \textbf{Gradient-based methods} (e.g., Integrated Gradients \cite{sundararajan2017axiomatic}) compute attributions by analyzing the gradients of the model's output with respect to its input features.
-- \textbf{Perturbation-based methods} (e.g., SHAP \cite{lundberg2017unified}) estimate feature importance by systematically perturbing input features and observing the impact on the model's predictions.
-- \textbf{Propagation-based methods} (e.g., Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}) distribute the model's output relevance backward through the network using custom propagation rules.
+Existing attribution methods fall into three main categories: gradient-based approaches (e.g., Input $\times$ Gradient \cite{simonyan2014deep}), which suffer from noisy gradients; perturbation-based methods (e.g., SHAP \cite{lundberg2017unified}), which are computationally expensive; and rule-based techniques like Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, which offer customizable propagation rules within the Deep Taylor Decomposition framework \cite{montavon2017explaining}. Despite LRP's theoretical advantages, applying it to transformers has been challenging due to operations like softmax and layer normalization \cite{ding2017saliency, voita2021analyzing}.
 
-While these methods have been instrumental in advancing our understanding of neural networks, they often fall short when applied to modern architectures. For instance, gradient-based methods can suffer from saturation effects, perturbation-based methods are computationally expensive, and propagation-based methods are often tailored to specific architectures, limiting their generalizability. Moreover, the scalability of these methods remains a challenge as model sizes continue to grow.
+Recent work has addressed some of these technical challenges. Achtibat et al. \cite{achtibat2024attnlrp} developed AttnLRP, demonstrating that LRP can faithfully explain transformer models by deriving novel propagation rules for attention mechanisms. However, LRP methods continue to be systematically overlooked by the machine learning community. A striking example is Machiraju et al.'s \cite{machiraju2024prospector} "Prospector Heads" work, which comprehensively evaluated gradients, attention maps, SHAP, and LIME for feature attribution, but entirely omitted LRP methods—despite their proven effectiveness on transformer architectures. This reflects a broader trend where LRP's potential remains underexplored, particularly for modern architectures that could benefit from its rule-based flexibility and computational efficiency.
 
-Amidst these challenges, there has been notable progress in adapting classic interpretability methods to modern architectures. For example, recent implementations of Integrated Gradients and Deep SHAP have been extended to handle transformer-based models and other complex architectures. In particular, Layer-wise Relevance Propagation has been modified to be attention-aware, enabling it to explain the behavior of transformer models effectively. Achitbat et al. (2024) demonstrated that LRP could faithfully explain transformer models like Vision Transformers (ViT) and LLaMA 2 by introducing custom attribution rules for the components of the attention mechanism.
-
-Building on these findings, we propose a novel algorithm that addresses the limitations of existing methods. Our approach scales efficiently with model size and provides faithful attributions without compromising computational efficiency. By leveraging operation-level granularity and a promise-based system, our method achieves broad compatibility with modern architectures while maintaining high attribution quality.
+To address these limitations and demonstrate LRP's untapped potential, we propose a model-agnostic attribution algorithm that extends LRP's operation-level granularity to any neural network architecture. Our approach leverages a promise-based system to handle missing forward activations, enabling faithful relevance propagation through complex computation graphs with computational efficiency comparable to standard backpropagation. By decomposing LRP rules to individual tensor operations—analogous to how PyTorch's autograd generalized gradient computation—our method achieves broad compatibility with modern architectures while maintaining high attribution quality, positioning LRP as a competitive alternative to currently dominant attribution paradigms.
 
 \section{Background}
 
-Modern transformer architectures, powered by the attention mechanism \cite{vaswani2017attention}, have revolutionized machine learning by enabling models to handle multimodal data and scale to massive datasets. However, their complexity introduces challenges in interpretability, particularly in understanding latent reasoning processes. Attention maps, while useful for visualizing token interactions \cite{clark2019does, caron2021emerging}, fail to provide a holistic view of model behavior \cite{wiegreffe2019attention}. Recent studies \cite{geva2021transformer, dai2022knowledge} reveal that critical information, such as factual knowledge, is often stored in feed-forward network neurons, separate from attention layers.
+Modern transformer architectures, powered by the attention mechanism \cite{vaswani2017attention}, have revolutionized machine learning by enabling models to handle multimodal data and scale to massive datasets. However, their complexity introduces challenges in interpretability, particularly in understanding latent reasoning processes that span both attention layers and feed-forward networks, where factual knowledge is often stored \cite{geva2021transformer, dai2022knowledge}.
 
-Existing attribution methods can be broadly categorized into perturbation-based, gradient-based, and rule-based approaches. Perturbation-based methods, such as SHAP \cite{lundberg2017unified}, require extensive computational resources, making them impractical for large models. Gradient-based methods, like Input $\times$ Gradient \cite{simonyan2014deep}, are efficient but suffer from noisy gradients and low faithfulness. Rule-based methods, including Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer a promising alternative by allowing customization of propagation rules. However, applying LRP to transformers has been challenging due to unique operations like softmax and layer normalization \cite{ding2017saliency, voita2021analyzing}.
+\subsection{Classic LRP via Taylor Approximation}
+
+Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
+
+For a function $f_j(x)$, the first-order Taylor expansion around a root point $x_0$ is:
+\begin{equation}
+f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})
+\end{equation}
+The conservation rule requires that the sum of input relevances equals the output relevance:
+\begin{equation}
+\sum_i R_{i \leftarrow j} = R_j
+\end{equation}
+Assuming $R_{i \leftarrow j}$ is proportional to the Taylor term for input $i$:
+\begin{equation}
+R_{i \leftarrow j} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j
+\end{equation}
+For a linear layer $y_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
+\begin{equation}
+R_{i \leftarrow j} = \frac{x_i w_{ji}}{y_j + \epsilon} R_j
+\end{equation}
+where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$. This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle, linking the mathematical definition of LRP to its practical implementation.
+
+\subsection{Computation Graphs in Deep Learning Frameworks}
+
+Deep learning frameworks rely on computation graphs to represent the sequence of operations performed during the forward and backward passes of a neural network. Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing operations (e.g., matrix multiplication, activation functions), and $E$ is the set of directed edges representing data flow between operations.
+
+The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
+\begin{equation}
+\frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
+\end{equation}
+where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
+
+Our promise-based attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers while adhering to the conservation principle:
+\begin{equation}
+\sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
+\end{equation}
+where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
 
 \paragraph{Background: Classic LRP via Taylor Approximation}
 
@@ -367,23 +398,49 @@ Arg Node, the function either records the chain or resolves and completes the Pr
 
 \subsection{Theoretical Analysis}
 
-\paragraph{Scalability in Memory and Computational Complexity}
+We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.
 
-We now prove that the Promise Attribution Framework scales efficiently in terms of both memory and computational complexity.
+\begin{definition}[Promise-Generating Operations]
+Let $P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$, defined as:
+$$P = \{v \in V : \text{type}(v) \in \{\text{AddBackward}, \text{SumBackward}, \text{CatBackward}, \text{UnbindBackward}, \text{MeanBackward}, \text{StackBackward}\}\}$$
+These operations may lack required forward activations during LRP traversal, necessitating promise-based resolution.
+\end{definition}
 
-\begin{theorem}
-Let $n$ be the number of operations in the computation graph $G$ and $m$ be the number of edges. The Promise Attribution Framework has a time complexity of $O(n + m)$ and a space complexity of $O(n + m)$.
+\begin{definition}[Promise Density]
+The promise density of a neural network architecture is defined as:
+$$\rho = \frac{|P|}{|V|}$$
+where $|P|$ is the number of promise-generating operations and $|V|$ is the total number of operations in the computation graph.
+\end{definition}
+
+\begin{definition}[Promise Depth]
+For each promise-generating operation $p \in P$, let $d(p)$ be the graph distance from $p$ to the nearest operation that stores the forward activation required by $p$. The maximum promise depth is:
+$$D = \max_{p \in P} d(p)$$
+\end{definition}
+
+\begin{theorem}[Promise-Based LRP Complexity]
+Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $P$, and maximum promise depth $D$. The promise-based LRP algorithm requires $F = 1 + |P| \cdot D$ forward passes and $B = 1$ backward pass, giving total complexity $O((1 + |P| \cdot D) \cdot n + m)$.
 \end{theorem}
 
 \begin{proof}
-The forward pass constructs the computation graph $G = (V, E)$, where $|V| = n$ and $|E| = m$. Constructing $G$ requires $O(n + m)$ operations, as each operation and its dependencies are recorded once.
+We analyze the algorithm in three distinct phases:
 
-During the backward pass, the algorithm traverses $G$ in reverse topological order. Each node $v \in V$ resolves its promise object $P_v$, which involves a constant amount of work per edge $e \in E$. Thus, the total time complexity is $O(n + m)$.
+\textbf{Phase 1 - Initial Forward Pass:} The algorithm performs one forward pass to construct the computation graph $G$ and identify all promise-generating operations $P$. This requires $O(n + m)$ time.
 
-The space complexity is determined by the storage of $G$ and the promise objects. Since $G$ contains $n$ nodes and $m$ edges, and each promise object is associated with a node, the total space complexity is $O(n + m)$.
+\textbf{Phase 2 - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $p \in P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
+
+Crucially, our implementation shows that promises cannot share activations even when they require the same values. Each promise maintains independent traversal paths (via distinct \texttt{fwd\_list}, \texttt{bwd\_list}, and \texttt{arg\_node\_ind} fields) and resolves separately through individual \texttt{setarg()} calls. Therefore, each of the $|P|$ promises may require up to $D$ traversal steps, leading to $|P| \cdot D$ additional forward computations in the worst case.
+
+\textbf{Phase 3 - Backward LRP Pass:} Once all promises are resolved and forward activations are reconstructed, the algorithm performs exactly one backward pass through $G$ in reverse topological order to compute relevance propagation. This requires $O(n + m)$ time.
+
+\textbf{Architectural Dependence:} The parameters $|P|$ and $D$ are fundamentally determined by the network architecture:
+\begin{itemize}
+\item \textbf{Feed-forward architectures} (e.g., basic CNNs): $|P| \approx 0 \Rightarrow \rho \approx 0$, giving optimal $O(n + m)$ complexity.
+\item \textbf{Residual architectures} (e.g., ResNets): $|P|$ proportional to the number of skip connections, $D$ bounded by the maximum skip distance.
+\item \textbf{Transformer architectures}: $|P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
+\end{itemize}
+
+Therefore, the total complexity is $O((1 + |P| \cdot D) \cdot n + m)$, where both $|P|$ and $D$ depend on architectural choices but are independent of input size.
 \end{proof}
-
-This analysis demonstrates that the Promise Attribution Framework is both memory-efficient and computationally efficient, making it suitable for large-scale neural networks.
 
 \section{Experimental Setup}
 We aim to show through the following experiments that our proposed LRP solution remains mathematically sound and produces
@@ -467,6 +524,4 @@ def lrp_engine(graph, output_relevance):
 \end{itemize}
 
 This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
-
-
 \end{document}

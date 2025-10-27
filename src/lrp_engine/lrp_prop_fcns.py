@@ -449,14 +449,21 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def SliceBackwardProp(grad_fn, r):
-        def create_pad(node):
-            # Assumes the index corresponding to _saved_start in the forward pass is non-negative.
-            # If it was negative-indexed, i.e. x[-i:] autograd saves the index as INT_MAX - i.
+        def get_clean_start_end(node):
+            expected_fwd_shape = node._input_metadata[0].shape
             upstream_shape = node._saved_self_sym_sizes
             sliced_dim = node._saved_dim
             start = node._saved_start # TODO: Come back to take care of the negative index case.
             full_size = upstream_shape[sliced_dim]
-            end = start + r.shape[sliced_dim]
+            if start > full_size:
+                start = full_size - (2**32 - start)
+            end = start + expected_fwd_shape[sliced_dim]
+            return start, end, full_size
+
+        def create_pad(node):
+            upstream_shape = node._saved_self_sym_sizes
+            sliced_dim = node._saved_dim
+            start, end, full_size = get_clean_start_end(node)
 
             # We wish to pad r so that it becomes the correct size along the sliced dimension
             pad = []
@@ -472,9 +479,9 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             def fwd_factory(node):
-                expected_fwd_shape = node._input_metadata[0].shape
+                start, end, _ = get_clean_start_end(node)
                 def fwd_slice(x):
-                    return torch.ops.aten.slice(x, dim := node._saved_dim, start := node._saved_start, start + expected_fwd_shape[dim])
+                    return torch.ops.aten.slice(x, node._saved_dim, start, end)
                 return fwd_slice
             
             def bwd_factory(node):
@@ -595,14 +602,33 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def RepeatBackwardProp(cls, grad_fn, r):
-        return cls.SimpleShapeBackwardProp(grad_fn, r)
+
+        def fwd_factory(node):
+            repeats = node._saved_repeats
+            def fwd_repeat(x):
+                return x.repeat(*repeats)
+            return fwd_repeat
+
+        if isinstance(r, Promise):
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
+            return r
+
+        return grad_fn(r)
     
     @classmethod
     @output_relevances
     @add_node_to_promise_path
     def UnsqueezeBackwardProp(cls, grad_fn, r):
+
+        def fwd_factory(node):
+            dim = node._saved_dim
+            def fwd_unsqueeze(x):
+                return x.unsqueeze(dim=dim)
+            return fwd_unsqueeze
+
         if isinstance(r, Promise):
-            r.nest_fwd("self", grad_fn.metadata["topo_ind"])
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
             r.nest_bwd("self", grad_fn.metadata["topo_ind"])
             return r
 
@@ -612,8 +638,15 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def SqueezeBackwardProp(cls, grad_fn, r):
+
+        def fwd_factory(node):
+            dim = node._saved_dim
+            def fwd_squeeze(x):
+                return x.squeeze(dim=dim)
+            return fwd_squeeze
+
         if isinstance(r, Promise):
-            r.nest_fwd("self", grad_fn.metadata["topo_ind"])
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
             r.nest_bwd("self", grad_fn.metadata["topo_ind"])
             return r
 

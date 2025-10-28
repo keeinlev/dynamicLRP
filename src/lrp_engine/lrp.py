@@ -154,7 +154,13 @@ class LRPEngine:
                 relevances = tuple(relevances)
                 
             else:
-                relevances = (self.starting_relevance,)
+                if isinstance(self.starting_relevance, torch.Tensor):
+                    relevances = (self.starting_relevance,)
+                elif isinstance(self.starting_relevance, tuple):
+                    assert all( isinstance(sr, torch.Tensor) for sr in self.starting_relevance ), "Starting relevances must be either a single tensor or a tuple of tensors."
+                    relevances = self.starting_relevance
+                else:
+                    raise TypeError(f"Starting relevance expected type tensor or tuple[tensor], instead got {type(self.starting_relevance)}.")
                 assert len(relevances) == len(output_tuple_or_tensor), \
                     f"Starting relevance mismatched model outputs on length (given {len(relevances)}, expected {len(output_tuple_or_tensor)}."
                 assert all( sr is None or sr.shape == ot.shape for sr, ot in zip(relevances, output_tuple_or_tensor)), \

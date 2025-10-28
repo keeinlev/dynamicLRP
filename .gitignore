@@ -6,3 +6,11 @@ checkpoint-*/
 output
 data
 aclImdb
+*.log
+*.out
+*.pdf
+*.aux 
+*.fdb_latexmk
+*main.fls
+*.blg
+*.gz

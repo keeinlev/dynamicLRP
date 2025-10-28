@@ -118,45 +118,6 @@ R_{i \leftarrow j} = \frac{x_i w_{ji}}{y_j + \epsilon} R_j
 \end{equation}
 where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$. This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle, linking the mathematical definition of LRP to its practical implementation.
 
-\subsection{Computation Graphs in Deep Learning Frameworks}
-
-Deep learning frameworks rely on computation graphs to represent the sequence of operations performed during the forward and backward passes of a neural network. Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing operations (e.g., matrix multiplication, activation functions), and $E$ is the set of directed edges representing data flow between operations.
-
-The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
-\begin{equation}
-\frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
-\end{equation}
-where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
-
-Our promise-based attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers while adhering to the conservation principle:
-\begin{equation}
-\sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
-\end{equation}
-where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
-
-\paragraph{Background: Classic LRP via Taylor Approximation}
-
-
-Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
-
-For a function $f_j(x)$, the first-order Taylor expansion around a root point $x_0$ is:
-\begin{equation}
-f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})
-\end{equation}
-The conservation rule requires that the sum of input relevances equals the output relevance:
-\begin{equation}
-\sum_i R_{i \leftarrow j} = R_j
-\end{equation}
-Assuming $R_{i \leftarrow j}$ is proportional to the Taylor term for input $i$:
-\begin{equation}
-R_{i \leftarrow j} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j
-\end{equation}
-For a linear layer $y_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
-\begin{equation}
-R_{i \leftarrow j} = \frac{x_i w_{ji}}{y_j + \epsilon} R_j
-\end{equation}
-where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$. This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle, linking the mathematical definition of LRP to its practical implementation.
-
 
 Our work builds on these insights to address the limitations of existing methods, providing a scalable and efficient solution for interpreting transformer models.
 
@@ -384,12 +345,12 @@ Arg Node, the function either records the chain or resolves and completes the Pr
     \Ensure Propagation output list $R_{in}$
 
     \If{$R_{out}$ is a Promise Branch}
-      \State Define $retrieve_fwd_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
-      \State $activation = retrieve_fwd_output(node)$
-      \State $R_{out}.set_arg(activation)$
-      \State $R_{out}.trigger_promise_completion()$
-      \If{$R_{out}.promise_is_complete$}
-        $R_{out} = R_{out}.propagated_relevance$
+      \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
+      \State $activation = retrieve\_fwd\_output(node)$
+      \State $R_{out}.set\_arg(activation)$
+      \State $R_{out}.trigger\_promise_completion()$
+      \If{$R_{out}.promise\_is\_complete$}
+        $R_{out} = R_{out}.propagated\_relevance$
       \Else
         \State \textit{// Signal for queueing this Node until the Promise is complete}
         \Return
@@ -401,14 +362,27 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \end{algorithmic}
 \end{algorithm}
 
+An important detail to consider is that the internal nodes of the recorded computation paths in Promises are mutually exclusive among all Promises. % will expand on this more later
+Promises may share the same Origin or Arg nodes.
+
 \subsection{Theoretical Analysis}
 
 We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.
 
 \begin{definition}[Promise-Generating Operations]
-Let $P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$, defined as:
-$$P = \{v \in V : \text{type}(v) \in \{\text{AddBackward}, \text{SumBackward}, \text{CatBackward}, \text{UnbindBackward}, \text{MeanBackward}, \text{StackBackward}\}\}$$
+Let $P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$. A promise-generating operation is an autograd node $p$ where one of the following is true:
+\begin{itemize}
+  \item The relevance propagation function of $p$ is a mathematical function of $p$'s forward call activations, but $p$ does not store these in its saved backward pass context.
+  \item $p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
+\end{itemize}
+
 These operations may lack required forward activations during LRP traversal, necessitating promise-based resolution.
+
+For exact and/or architecture-specific analyses, we may further categorize operations satisfying one of these two conditions into separate groups of promise-generating operations, Strict and Dependent. We discuss this further in the Appendix.
+
+At the time of writing, the set of promise-generating operations is:
+
+$$P = \{v \in V : \text{type}(v) \in \{\text{AddBackward}, \text{SumBackward}, \text{CatBackward}, \text{UnbindBackward}, \text{MeanBackward}, \text{StackBackward}\}\}$$
 \end{definition}
 
 \begin{definition}[Promise Density]
@@ -422,20 +396,34 @@ For each promise-generating operation $p \in P$, let $d(p)$ be the graph distanc
 $$D = \max_{p \in P} d(p)$$
 \end{definition}
 
+
 \begin{theorem}[Promise-Based LRP Complexity]
-Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $P$, and maximum promise depth $D$. The promise-based LRP algorithm requires $F = 1 + |P| \cdot D$ forward passes and $B = 1$ backward pass, giving total complexity $O((1 + |P| \cdot D) \cdot n + m)$.
+Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $P$, and maximum promise depth $D$.
+
+Let $C_{fwd}, C_{bwd}$ be the most expensive forward and backward pass computation steps, respectively.
+
+Let $S$ be the size of the largest activation cached in the computation graph.
+
+Let $\delta = \sum_{p \in P} d(p)$
+
+Then, the promise-based LRP algorithm has runtime complexity $O((C_{fwd} + C_{bwd}) \cdot (n + m) + \delta \cdot C_{fwd})$, and memory overhead complexity $O(\delta \cdot S)$.
+% The promise-based LRP algorithm requires $F = 1 + |P| \cdot D$ forward passes and $B = 1$ backward pass, giving total complexity $O((1 + |P| \cdot D) \cdot n + m)$.
 \end{theorem}
 
 \begin{proof}
-We analyze the algorithm in three distinct phases:
+First, we consider that the memory bound is straightforward, as each Promise stores a constant number of tensors representing the \texttt{rout}, \texttt{rins}, and \texttt{args}, and all tensors are bounded above by the largest activation in the model computation.
 
-\textbf{Phase 1 - Initial Forward Pass:} The algorithm performs one forward pass to construct the computation graph $G$ and identify all promise-generating operations $P$. This requires $O(n + m)$ time.
+To prove the time complexity, we analyze the algorithm in three distinct phases:
 
-\textbf{Phase 2 - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $p \in P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
+\textbf{Phase 1 - Initial Forward Pass:} One forward pass is performed to generate the model output and construct the computation graph. This requires $O(C_{fwd} \cdot (n + m))$ time.
 
-Crucially, our implementation shows that promises cannot share activations even when they require the same values. Each promise maintains independent traversal paths (via distinct \texttt{fwd\_list}, \texttt{bwd\_list}, and \texttt{arg\_node\_ind} fields) and resolves separately through individual \texttt{setarg()} calls. Therefore, each of the $|P|$ promises may require up to $D$ traversal steps, leading to $|P| \cdot D$ additional forward computations in the worst case.
+\textbf{Phase 2 - Auxiliary Graph Construction:} The algorithm constructs the auxiliary graph $G'$ from the output's computation graph $G$, requiring only graph traversal and no numerical computation. This requires $O(n + m)$ time.
 
-\textbf{Phase 3 - Backward LRP Pass:} Once all promises are resolved and forward activations are reconstructed, the algorithm performs exactly one backward pass through $G$ in reverse topological order to compute relevance propagation. This requires $O(n + m)$ time.
+\textbf{Phase 3a - Backward LRP Pass:} The algorithm performs exactly one backward pass through $G'$ in reverse topological order to compute relevance propagation. This requires $O(C_{bwd} \cdot (n + m))$ time.
+
+\textbf{Phase 3b - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $p \in P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
+
+Crucially, our implementation shows that promises never share the same internal nodes in their computation paths. Each promise maintains independent traversal paths (via distinct \texttt{fwd\_list}, \texttt{bwd\_list}, and \texttt{arg\_node\_ind} fields) and resolves separately through individual \texttt{setarg()} calls. Therefore, each promise requires exactly $d(p)$ traversal steps, leading to $d(p) \cdot C_{fwd}$ additional forward computations in the worst case, for a total of $\delta = \sum_{p \in P} d(p)$ forward computations when considering all Promises.
 
 \textbf{Architectural Dependence:} The parameters $|P|$ and $D$ are fundamentally determined by the network architecture:
 \begin{itemize}
@@ -444,7 +432,7 @@ Crucially, our implementation shows that promises cannot share activations even 
 \item \textbf{Transformer architectures}: $|P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
 \end{itemize}
 
-Therefore, the total complexity is $O((1 + |P| \cdot D) \cdot n + m)$, where both $|P|$ and $D$ depend on architectural choices but are independent of input size.
+Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m) + \delta \cdot C_{fwd})$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
 \end{proof}
 
 \section{Experimental Setup}
@@ -460,12 +448,49 @@ epigenetic marker prediction (EMP) task and H3 target, Llama-3.2-1B finetuned on
 and the ViT-b-16 and VGG16 base models to evaluate on the CIFAR-10 ImageNet dataset. Finetuned models were then used to
 evaluate examples from their respective datasets' validation splits.
 
+
 \subsection{Visualizing Attributions for Image Models}
 \begin{figure}[h]
   \centering
   \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
   \caption{A comparison across various attribution methods and our LRP.}
 \end{figure}
+
+\subsection{Measuring Faithfulness With Area Between Perturbation Curves}
+We measure faithfulness using the Area Between Perturbation Curves (ABPC), or \textit{Degradation}, as proposed by \cite{schulz2020abpc}.
+In this metric, we first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
+Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most relevant features from each input sample. We also do this inversely,
+masking/occluding the top-i least relevant features from each input sample, to compute the Least-Relevant First (LeRF) curve.
+The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
+
+
+\section{Discussion}
+
+\subsection{Weighing the Costs of Maintainability}
+While we are optimistic that a generalized form of LRP will empower and enable researchers to explain increasingly complex model architectures, we are equally aware of skepticism surrounding its long-term feasibility.
+Specifically, because we break LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
+We therefore provide the following considerations to address such concerns:
+
+\paragraph{We concern ourselves only with shape and mathematical operators.} Although these still consititue the majority of PyTorch's operator set, they are a bounded and well-defined subset which we are interested in. 
+Each operation we handle must take some tensor input and return some tensor output as part of the its forward call. This sets a tangible and conceptual limit on our implementation scope. 
+\paragraph{Shape operations are easy.} Shape operations do not numerically transform any parts of a tensor, only its structure. Thus, the task of backpropagating relevance through such operations reduces to the task of 
+reassigning or accumulating relevance at the input positions that produced the output. Notice that in these cases, LRP and gradient backpropagation align naturally in intent and behaviour, if we replace relevance with gradients.
+Thus, this propagation pattern is already implemented in autograd, and existing autograd nodes can be reused directly, providing exactly the propagation functions we require for LRP.
+\paragraph{Activations are typically treated as identities.} In previous LRP literature, activation functions such as ReLU, GELU, etc. have established and stable propagation rules which simply pass relevance along unchanged.
+\paragraph{New operations may reuse old ones, explicitly or conceptually.} Fused operations and renamed combinations of existing primitives are common. In these cases, the cost of supporting them is minimal. They can either 
+directly reuse already-supported operators, or be decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into components we already handle.
+\paragraph{Our contribution is the framework, further theory can follow.} Even if future work extends LRP to new, more complex operations, our contribution provides a structured place for these rules to live in and be reused 
+indefinitely. While we acknowledge that the derivation and definition of such rules may be non-trivial, we believe that further work in broadening LRP's reach will be a collective effort led by those who continue to see its 
+value in model interpretability. Through this work, we aim to renew interest in LRP by providing a unified, modular framework that prioritizes compatibility, ease of use, and competitive efficiency. Our hope is that by lowering 
+the barrier to entry, we encourage others to explore, refine, and extend LRP across modern architectures.
+
+To reinforce this premise, one can look to PyTorch's own design history. Autograd itself was one such project which required countless manual definitions of functions and derivatives, living in configuration files, but it is 
+now a stable and established core to the foundation of machine learning. Likewise, the structured kernels initiative required the porting of hundreds of PyTorch operators but ended up enhancing maintainability of operator 
+variants and enabling meta-execution of computation graphs, which were big wins for scalability and performance.
+
+The takeaway is that if we want to care about extensibility and rigor of our methods, and if we deem LRP a method worth sustaining, then the effort is justified. With this framework, LRP can become as accessible as autograd, 
+but in the long run, we hope that this contribution can widen the scope of what else can be adapted to use the computation graph in future research.
+
 \bibliography{main}
 \iftoggle{arxiv}{
   % arXiv references in a generic style, or ICLR style

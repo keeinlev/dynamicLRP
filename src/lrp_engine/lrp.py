@@ -622,6 +622,8 @@ class LRPEngine:
         self.param_node_inds = param_node_inds
         self.params_to_interpret = None
 
+        torch.cuda.empty_cache()
+
         return checkpoint_vals, param_node_vals
 
     def _run_lrp_subsequent_pass(self, root_nodes: tuple[torch.Tensor], starting_relevances: tuple[torch.Tensor]):
@@ -660,7 +662,7 @@ class LRPEngine:
             input_frontier[root.metadata["topo_ind"]] = {0: sr}
 
         # First pre-process all Promises by updating the starting fwd_shapes and setting every leaf Promise arg
-        promise_bucket.update_all_starting_fwd_shapes()
+        promise_bucket.update_all_starting_fwd_shapes(recompile=(not no_recompile))
         leaf_promise: Promise
         for leaf_promise in promise_bucket.leaf_promises:
             if leaf_promise.arg_node_ind is not None:
@@ -733,7 +735,7 @@ class LRPEngine:
                     rel = rel[0]
                 try:
                     res = fcn_map[type(node).__name__](node, rel)
-                except (AttributeError, RuntimeError) as e:
+                except (AttributeError, RuntimeError, TypeError) as e:
                     print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind])
                     raise e
                 # Distribute the relevance the same way as first pass

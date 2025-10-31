@@ -11,6 +11,7 @@ from .util import (
     DEBUG,
     LRPCheckpoint,
     merge_input_shapes,
+    gamma_lrp_general,
 )
 from .relevance_filter import relevance_filter
 
@@ -744,42 +745,6 @@ class LRPPropFunctions:
         x = grad_fn._saved_self.detach() # s d
         weights = grad_fn._saved_mat2.detach() # d o
 
-        def gamma_lrp(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, gamma, filter_val=1.0):
-            """Masked Gamma-LRP approximation using clamped input and weights"""
-
-            x_pos = x.clamp(min=0.0)
-            x_neg = x.clamp(max=0.0)
-            w_pos = w.clamp(min=0.0)
-            w_neg = w.clamp(max=0.0)
-
-            # four 2-D matmuls (cost: 4 matmuls)
-            z_pp = x_pos @ w_pos
-            z_pn = x_pos @ w_neg
-            z_np = x_neg @ w_pos
-            z_nn = x_neg @ w_neg
-
-            z_pos, z_neg = z_pp + z_nn, z_pn + z_np
-
-            z_mask = z > 0
-            den = z + gamma * (z_mask * z_pos) + gamma * (~z_mask * z_neg)
-            den = den + den.sign() * epsilon
-
-            Q = r / den
-            QB_neg = Q @ w_neg.t()
-            QA_neg = x_neg.t() @ Q
-
-            # Redistribute to x (no 3-D)
-            tmp = Q @ w.t()
-            r_x = x_pos * tmp + x_neg * QB_neg
-
-            # Redistribute to B
-            tmp = x.t() @ Q
-
-            r_w = w_pos * tmp + w_neg * QA_neg
-
-            return relevance_filter(r_x / 2, filter_val), r_w / 2
-            
-
         #### TODO: (Aug 21, 2025) There is an overlooked case of when one of x, weights is None because one of them does not have requires_grad=True
         # However, this is most likely mitigated if the model is in training mode / using requires_grad as a whole.
         # Priority right now is getting the deterministic execution plan run mode working, can circle back to this later
@@ -800,13 +765,14 @@ class LRPPropFunctions:
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:
-            return gamma_lrp(x, weights, z, r, 0, filter_val)
+            return gamma_lrp_general(torch.matmul, None, {}, x, weights, z, r, 1, filter_val)[:2]
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
             z = x @ weights
 
-        z_stabilized = z + epsilon * z.sign()
+        sign = ((z == 0.).to(z) + z.sign())
+        z_stabilized = z + epsilon * sign
         tmp = r / z_stabilized   # s o
 
         rin_input = x * (tmp @ weights.t()) # s d
@@ -842,7 +808,8 @@ class LRPPropFunctions:
                     # If this is the first branch of the promise
                     return r # We will check if the promise is complete in the graph traversal
             
-        z_stabilized = z + epsilon * z.sign()
+        sign = ((z == 0.).to(z) + z.sign())
+        z_stabilized = z + epsilon * sign
 
         # Same optimization as MmBackward
         tmp = r / z_stabilized # b s o
@@ -860,95 +827,6 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def DecomposedConvolutionBackwardProp(grad_fn, r):
-        # TODO: This whole thing is a bit of an AI generated mess, apologies, was very tired when working on this, but I WILL come back make sure it is proper. So far it is working :D
-
-        def gamma_lrp_conv2d_output_chunked(x, weight, z, r, stride=(1, 1), padding=(0, 0), 
-                                   dilation=(1, 1), gamma=0.25, out_channel_chunk_size=16, filter_val=1.0):
-            """
-            Optimized: Chunk by output channels with precomputed unfold.
-            """
-            batch_size, in_channels, H_in, W_in = x.shape
-            out_channels, _, kH, kW = weight.shape
-            _, _, H_out, W_out = z.shape
-            
-            x_relevance = torch.zeros_like(x)
-            weight_relevance = torch.zeros_like(weight)
-            
-            # Precompute unfold once - this is the expensive operation
-            x_unfolded = F.unfold(x, kernel_size=(kH, kW), stride=stride, 
-                                padding=padding, dilation=dilation)
-            # (batch, in_ch*kH*kW, H_out*W_out)
-            
-            # Precompute patches view
-            x_patches = x_unfolded.view(batch_size, in_channels, kH, kW, H_out, W_out)
-            
-            # Process chunks of output channels
-            for start_ch in range(0, out_channels, out_channel_chunk_size):
-                end_ch = min(start_ch + out_channel_chunk_size, out_channels)
-                chunk_size = end_ch - start_ch
-                
-                # Get chunks (avoid copying when possible)
-                weight_chunk = weight[start_ch:end_ch]  # (chunk_ch, in_ch, kH, kW)
-                z_chunk = z[:, start_ch:end_ch]  # (batch, chunk_ch, H_out, W_out)
-                r_chunk = r[:, start_ch:end_ch]  # (batch, chunk_ch, H_out, W_out)
-                
-                # Reshape for broadcasting - minimize memory allocations
-                # (1, chunk_ch, in_ch, kH, kW, 1, 1)
-                weight_bc = weight_chunk.view(1, chunk_size, in_channels, kH, kW, 1, 1)
-                # (batch, 1, in_ch, kH, kW, H_out, W_out)
-                patches_bc = x_patches.unsqueeze(1)
-                
-                # Compute contributions efficiently
-                z_contrib = patches_bc * weight_bc
-                
-                # Vectorized positive/negative split
-                z_contrib_pos = z_contrib.clamp(min=0)
-                z_contrib_neg = z_contrib.clamp(max=0)
-                
-                # Efficient sums
-                z_pos_sum = z_contrib_pos.sum(dim=(2, 3, 4))  # (batch, chunk_ch, H_out, W_out)
-                z_neg_sum = z_contrib_neg.sum(dim=(2, 3, 4))
-                
-                # Create masks efficiently
-                pos_mask = (z_chunk > 0)
-                neg_mask = ~pos_mask
-                
-                # Compute numerator and denominator in one go
-                # Use where for efficiency instead of separate multiplications
-                z_pos_contrib = z_contrib + gamma * z_contrib_pos
-                z_neg_contrib = z_contrib + gamma * z_contrib_neg
-                
-                # Broadcast masks efficiently
-                pos_mask_bc = pos_mask.view(batch_size, chunk_size, 1, 1, 1, H_out, W_out)
-                neg_mask_bc = neg_mask.view(batch_size, chunk_size, 1, 1, 1, H_out, W_out)
-                
-                numerator = torch.where(pos_mask_bc, z_pos_contrib, z_neg_contrib)
-                
-                # Denominator calculation
-                denom_pos = z_chunk + gamma * z_pos_sum
-                denom_neg = z_chunk + gamma * z_neg_sum
-                denominator = torch.where(pos_mask, denom_pos, denom_neg)
-                denominator = denominator.clamp(min=torch.finfo(r.dtype).eps)
-                
-                # Compute attributions efficiently
-                denom_bc = denominator.view(batch_size, chunk_size, 1, 1, 1, H_out, W_out)
-                r_bc = r_chunk.view(batch_size, chunk_size, 1, 1, 1, H_out, W_out)
-                
-                attributions = numerator * (r_bc / denom_bc)
-                
-                # Accumulate results efficiently
-                weight_relevance[start_ch:end_ch] = attributions.sum(dim=(0, 5, 6))
-                
-                # Input relevance - use more efficient operations
-                input_attr_sum = attributions.sum(dim=1)  # (batch, in_ch, kH, kW, H_out, W_out)
-                input_attr_flat = input_attr_sum.view(batch_size, in_channels*kH*kW, H_out*W_out)
-                
-                # Accumulate folded result
-                x_relevance.add_(F.fold(input_attr_flat, output_size=(H_in, W_in),
-                                    kernel_size=(kH, kW), stride=stride, 
-                                    padding=padding, dilation=dilation))
-            
-            return relevance_filter(x_relevance / (2 * gamma), filter_val), weight_relevance / (2 * gamma), 0.0
 
         def conv_out(node):
             num_dims = len(node._saved_stride)
@@ -962,21 +840,21 @@ class LRPPropFunctions:
             else:
                 raise ValueError(f"Expected {grad_fn} at topo-ind {grad_fn.metadata['topo_ind']} to be either 1, 2, or 3 dim, but {num_dims} was found.")
 
-            return conv_f(node._saved_input.detach(), node._saved_weight.detach(), None, node._saved_stride, node._saved_padding, node._saved_dilation, node._saved_groups)
+            return conv_f(node._saved_input.detach(), node._saved_weight.detach(), None, node._saved_stride, node._saved_padding, node._saved_dilation, node._saved_groups), conv_f
 
-        if "pre_promise" in grad_fn.metadata and len((pre_promise := grad_fn.metadata["pre_promise"]).fwd_list) == 0:
-            assert pre_promise.ready, f"Traversed Node after already placing a Pre-Promise, but the Promise is not ready, at {grad_fn}, topo-ind {grad_fn.metadata['topo_ind']}"
-            z = pre_promise.arg
-        else:
-            z = conv_out(grad_fn)
+        # if "pre_promise" in grad_fn.metadata and len((pre_promise := grad_fn.metadata["pre_promise"]).fwd_list) == 0:
+        #     assert pre_promise.ready, f"Traversed Node after already placing a Pre-Promise, but the Promise is not ready, at {grad_fn}, topo-ind {grad_fn.metadata['topo_ind']}"
+        #     z = pre_promise.arg
+        # else:
+        z, conv_f = conv_out(grad_fn)
 
-            if isinstance(r, Promise):
-                r.setarg(z, grad_fn, conv_out)
-                if r.complete:
-                    r = r.rin
-                else:
-                    # If this is the first branch of the promise
-                    return r # We will check if the promise is complete in the graph traversal
+        if isinstance(r, Promise):
+            r.setarg(z, grad_fn, lambda node: conv_out(node)[0])
+            if r.complete:
+                r = r.rin
+            else:
+                # If this is the first branch of the promise
+                return r # We will check if the promise is complete in the graph traversal
 
         num_dims = len(grad_fn._saved_stride)
         if num_dims == 1:
@@ -992,11 +870,13 @@ class LRPPropFunctions:
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:
-            return gamma_lrp_conv2d_output_chunked(x, weights, z, r, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, gamma=8, out_channel_chunk_size=16, filter_val=filter_val)
+            return gamma_lrp_general(conv_f, conv_T, {"stride": grad_fn._saved_stride, "padding": grad_fn._saved_padding, "dilation": grad_fn._saved_dilation, "groups": grad_fn._saved_groups}, x, weights, z, r, 100, filter_val)
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
-        s = r / (z + z.sign() * epsilon)
+        
+        sign = ((z == 0.).to(z) + z.sign())
+        s = r / (z + sign * epsilon)
         c = conv_T(s, weights, None, grad_fn._saved_stride, grad_fn._saved_padding, 0, grad_fn._saved_groups, grad_fn._saved_dilation)
 
         if c.shape != x.shape:
@@ -1102,14 +982,16 @@ class LRPPropFunctions:
         else:
             enable_gqa = enable_gqa = query.shape[:-2] != key.shape[:-2] or query.shape[:-2] != value.shape[:-2]
 
+        k_zeros = torch.zeros_like(key)
+
         if enable_gqa:
             # We need to do the repeat anyway to get the values for propagating relevance,
             # so keep the grad_fns to collapse the relevances back down if GQA is enabled.
             # Note that x.repeat_interleave(repeats, dim) = x.unsqueeze(dim + 1).expand(*x.shape[:dim + 1], repeats, *x.shape[dim + 1:]).clone().view((*x.shape[:dim], x.shape[dim] * repeats, *x.shape[dim:]))
             # And the grad_fns of these intermediate steps are what gets returned by x.repeat_interleave(repeats, dim).grad_fn.
             # Since they are all shape/copy ops, we can reuse for k and v if they are the same latent size.
-            key.requires_grad_(True)
-            value.requires_grad_(True)
+            key.requires_grad_()
+            value.requires_grad_()
             key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
             value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
             repeat_interleave_grad_fn_k = key.grad_fn
@@ -1154,44 +1036,47 @@ class LRPPropFunctions:
         del biased_attn_weights
 
         # Distribute last matmul
-        tmp = r / (output + output.sign() * epsilon)
+        sign = ((output == 0.).to(output) + output.sign())
+        tmp = r / (output + sign * epsilon)
         r_attn_logits = attn_logits * (tmp @ value.transpose(-2, -1))
         r_attn_logits = r_attn_logits / 2
 
         r_v = value * (attn_logits.transpose(-2, -1) @ tmp)
         r_v = r_v / 2
 
-        # Distribute softmax
-        r_biased_attn_weights = attn_weights * (r_attn_logits - attn_weights * r_attn_logits.sum(dim=-1, keepdim=True))
-        r_biased_attn_weights = renormalize_epsilon_scalar(r_attn_logits, r_biased_attn_weights, torch.zeros_like(r_attn_logits))[0]
-        del r_attn_logits
+        # # Distribute softmax
+        # r_biased_attn_weights = attn_weights * (r_attn_logits - attn_weights * r_attn_logits.sum(dim=-1, keepdim=True))
+        # r_biased_attn_weights = renormalize_epsilon_scalar(r_attn_logits, r_biased_attn_weights, torch.zeros_like(r_attn_logits))[0]
+        # del r_attn_logits
 
-        # Distribute bias addition
-        bias_attn_denom = attn_weights ** 2 + attn_bias ** 2 + epsilon
-        del attn_bias
-        r_attn_weights = r_biased_attn_weights * (attn_weights ** 2 / bias_attn_denom)
-        del r_biased_attn_weights
+        # # Distribute bias addition
+        # bias_attn_denom = attn_weights ** 2 + attn_bias ** 2 + epsilon
+        # del attn_bias
+        # r_attn_weights = r_biased_attn_weights * (attn_weights ** 2 / bias_attn_denom)
+        # del r_biased_attn_weights
 
-        # Distribute QK^T
-        tmp = r_attn_weights / (attn_weights + attn_weights.sign() * epsilon)
-        del attn_weights, r_attn_weights
-        r_q = query * (tmp @ key)
-        r_q = r_q / 2
+        # # Distribute QK^T
+        # tmp = r_attn_weights / (attn_weights + attn_weights.sign() * epsilon)
+        # del attn_weights, r_attn_weights
+        # r_q = query * (tmp @ key)
+        # r_q = r_q / 2
 
-        r_k = key * (tmp.transpose(-2, -1) @ query)
-        r_k = r_k / 2
+        # r_k = key * (tmp.transpose(-2, -1) @ query)
+        # r_k = r_k / 2
 
-        del tmp
+        # del tmp
 
         if enable_gqa:
             # Need to collapse r_k and r_v
-            r_k = repeat_interleave_grad_fn_k(r_k)
+            # r_k = repeat_interleave_grad_fn_k(r_k)
             r_v = repeat_interleave_grad_fn_v(r_v)
         
         if is_cpu:
-            return r_q, r_k, r_v
+            return torch.zeros_like(query), k_zeros, r_v
+            # return r_q, r_k, r_v
         else:
-            return r_q, r_k, r_v, 0.0
+            return torch.zeros_like(query), torch.zeros_like(key), r_v, 0.0
+            # return r_q, r_k, r_v, 0.0
     
     @classmethod
     @output_relevances

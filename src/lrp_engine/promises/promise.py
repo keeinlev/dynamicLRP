@@ -65,7 +65,7 @@ class PromiseBucket:
                     if p not in parent.children:
                         parent.children.append(p)
 
-    def update_all_starting_fwd_shapes(self):
+    def update_all_starting_fwd_shapes(self, recompile=True):
         """Use the input metadata of the Node at which each Promise starts at to update the fwd_shape member
         at each Promise branch.
         Used for input-agnostic runs, when shapes of inputs and intermediates possibly change."""
@@ -90,7 +90,8 @@ class PromiseBucket:
                 
                 curr_promise.set_rout(torch.zeros(node._input_metadata[0].shape, dtype=curr_promise.rout.dtype, device=curr_promise.rout.device))
                 
-                curr_promise.compile_fwd_bwd()
+                if recompile:
+                    curr_promise.compile_fwd_bwd()
 
                 curr_promise = curr_promise.other_branch
 

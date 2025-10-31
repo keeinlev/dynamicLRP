@@ -1,5 +1,7 @@
-from typing import Tuple
+from typing import Tuple, Callable
 import torch
+from .relevance_filter import relevance_filter
+from functools import reduce
 
 DEBUG = False
 
@@ -171,3 +173,115 @@ def merge_input_shapes(grad_fn):
 
     return out_shape
 
+def gammma_lrp_matmul_grad(x: torch.Tensor, w: torch.Tensor, r: torch.Tensor, filter_val=1.0):
+    """Analytical Linear LRP for a single (x, w, z, r) tuple"""
+    rin_input = x * (r @ w.t()) # s d
+    rin_input = rin_input
+
+    rin_weight = w * (x.t() @ r) # s o
+    rin_weight = rin_weight / 2
+
+    return relevance_filter(rin_input, filter_val), rin_weight
+
+def gamma_lrp_conv2d_grad(conv_T: Callable, module_kwargs: dict, x: torch.Tensor, w: torch.Tensor, r: torch.Tensor):
+    """Analytical Conv2d LRP for a single (x, w, z, r) tuple"""
+    # r is already r_out / z_out from the caller
+    c = conv_T(r, w, None, **module_kwargs)
+    
+    r_input = x * c
+    
+    grad_w = torch.nn.grad.conv2d_weight(x, w.shape, r, **{k:v for k,v in list(module_kwargs.items()) if k != "output_padding"})
+    r_weight = w * grad_w
+
+    return r_input, r_weight / 2
+
+def gamma_lrp_general(module_op: Callable, module_T_op: Callable, module_kwargs: dict, x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, gamma, filter_val=1.0):
+    """Analytical Gamma-LRP using clamped input and weights"""
+    x = x.detach()
+    w = w.detach()
+    z = z.detach()
+    r = r.detach()
+
+    # Create clamped components, track each one individually for correct gamma-LRP
+    x_pos = x.clamp(min=0.0)
+    x_neg = x.clamp(max=0.0)
+    w_pos = w + w.clamp(min=0.0) * gamma
+    w_neg = w + w.clamp(max=0.0) * gamma
+
+    # matmuls/convs
+    z_pp = module_op(x_pos, w_pos, **module_kwargs)
+    z_pn = module_op(x_pos, w_neg, **module_kwargs)
+    z_np = module_op(x_neg, w_pos, **module_kwargs)
+    z_nn = module_op(x_neg, w_neg, **module_kwargs)
+
+    z_pos, z_neg = z_pp + z_nn, z_pn + z_np
+
+    z_mask = (z > 0)
+    z_neg_sign = ((z_neg == 0.).to(z_neg) + z_neg.sign())
+    den1 = z_pos + epsilon
+    den2 = z_neg + z_neg_sign * epsilon
+
+    # Only divide within pos/neg groups, as defined by Gamma-LRP
+    r_pos1 = r * z_mask / den1
+    r_pos2 = r * z_mask / den1
+    r_neg1 = r * ~z_mask / den2
+    r_neg2 = r * ~z_mask / den2
+
+    # Prep inputs
+    xs = [x_pos, x_neg, x_pos, x_neg]
+    ws = [w_pos, w_neg, w_neg, w_pos]
+    rs = [r_pos1, r_pos2, r_neg1, r_neg2]
+    if module_T_op is None:
+        rins_x_w = [ gammma_lrp_matmul_grad(*args) for args in zip(xs, ws, rs) ]
+    else:
+        # Calculate output_padding to match input size (AI code, check here if things start to not work)
+        stride = module_kwargs.get('stride', 1)
+        padding = module_kwargs.get('padding', 0)
+        dilation = module_kwargs.get('dilation', 1)
+        
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(padding, int):
+            padding = (padding, padding)
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
+        
+        _, _, H_out, W_out = z.shape
+        _, _, H_in, W_in = x.shape
+        _, _, kH, kW = w.shape
+        
+        # Calculate expected input size from conv_transpose2d formula
+        # H_in_expected = (H_out - 1) * stride + dilation * (kH - 1) + 1 - 2 * padding + output_padding
+        output_padding_h = H_in - ((H_out - 1) * stride[0] - 2 * padding[0] + dilation[0] * (kH - 1) + 1)
+        output_padding_w = W_in - ((W_out - 1) * stride[1] - 2 * padding[1] + dilation[1] * (kW - 1) + 1)
+        module_kwargs["output_padding"] = (output_padding_h, output_padding_w)
+
+        # Do the equivalent of grad calculations, without the autograd overhead
+        rins_x_w = [ gamma_lrp_conv2d_grad(module_T_op, module_kwargs, *args) for args in zip(xs, ws, rs) ]
+
+    # Sum over input/weights relevances respectively
+    rins_x_w = reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), rins_x_w)
+
+    if module_T_op is None:
+        return rins_x_w[0], rins_x_w[1]
+    else:
+        return rins_x_w[0], rins_x_w[1], 0.0
+
+    # THE ABOVE IS MEANT TO BE EQUIVALENT TO THE FOLLOWING:
+    # gradients = torch.autograd.grad(
+    #     zs,
+    #     xs,
+    #     grad_outputs=rs,
+    # )
+
+    # r_x = sum(input * gradient for (input, gradient) in zip(xs, gradients)) / 2
+
+    # w_gradients = torch.autograd.grad(
+    #     zs,
+    #     ws,
+    #     grad_outputs=rs,
+    # )
+
+    # r_w = sum(weight * gradient for (weight, gradient) in zip(ws, w_gradients)) / 2
+
+    # return relevance_filter(r_x, filter_val), r_w, 0.0

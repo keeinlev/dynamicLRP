@@ -348,7 +348,7 @@ Arg Node, the function either records the chain or resolves and completes the Pr
       \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
       \State $activation = retrieve\_fwd\_output(node)$
       \State $R_{out}.set\_arg(activation)$
-      \State $R_{out}.trigger\_promise_completion()$
+      \State $R_{out}.trigger\_promise\_completion()$
       \If{$R_{out}.promise\_is\_complete$}
         $R_{out} = R_{out}.propagated\_relevance$
       \Else
@@ -362,18 +362,20 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \end{algorithmic}
 \end{algorithm}
 
-An important detail to consider is that the internal nodes of the recorded computation paths in Promises are mutually exclusive among all Promises. % will expand on this more later
-Promises may share the same Origin or Arg nodes.
+Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
+Additionally, Promises are propagated through the graph as relevance inputs themselves. A crucial consequence of these invariants is that the internal nodes recorded
+within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes.
+Together, these properties allow us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
 
 \subsection{Theoretical Analysis}
 
 We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.
 
 \begin{definition}[Promise-Generating Operations]
-Let $P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$. A promise-generating operation is an autograd node $p$ where one of the following is true:
+Let $P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$. A promise-generating operation is an autograd node $p$ where exactly one of the following is true:
 \begin{itemize}
   \item The relevance propagation function of $p$ is a mathematical function of $p$'s forward call activations, but $p$ does not store these in its saved backward pass context.
-  \item $p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
+  \item \textbf{OR} $p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
 \end{itemize}
 
 These operations may lack required forward activations during LRP traversal, necessitating promise-based resolution.
@@ -419,7 +421,7 @@ To prove the time complexity, we analyze the algorithm in three distinct phases:
 
 \textbf{Phase 2 - Auxiliary Graph Construction:} The algorithm constructs the auxiliary graph $G'$ from the output's computation graph $G$, requiring only graph traversal and no numerical computation. This requires $O(n + m)$ time.
 
-\textbf{Phase 3a - Backward LRP Pass:} The algorithm performs exactly one backward pass through $G'$ in reverse topological order to compute relevance propagation. This requires $O(C_{bwd} \cdot (n + m))$ time.
+\textbf{Phase 3a - Backward LRP Pass:} The algorithm performs exactly one backward pass through $G'$ to compute relevance propagation. This requires $O(C_{bwd} \cdot (n + m))$ time.
 
 \textbf{Phase 3b - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $p \in P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
 
@@ -435,12 +437,26 @@ Crucially, our implementation shows that promises never share the same internal 
 Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m) + \delta \cdot C_{fwd})$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
 \end{proof}
 
+This covers, however, only the first pass of the LRP algorithm. It is worth noting that repeated runs of LRP on the same model architecture yield an identical set of saved Promise computation paths.
+As a result, caching these paths can significantly improve the scalability of the algorithm.
+Once a Promise's computation path has been defined, it can effectively be reduced to a single node, therefore eliminating the graph traversal overhead of its internal nodes.
+
+Another benefit which arises from both the caching and this reduction is that the traversal order becomes strictly determined by the topological ordering of the nodes.
+During the initial pass, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
+However, if we know the Promise chains beforehand and can reduce them to single nodes, then the order in which we perform computations becomes fully deterministic and independent of edge connections, reducing the graph traversal overhead to $O(n)$.
+
+A slight observation that can then be made is that Promises must strictly represent only non-branching computation paths, which follows from both the definition of Promise-Generating Operations and the process of collapsing Promises into single nodes for subsequent passes.
+
+A detailed algorithm describing these subsequent passes is provided in the Appendix.
+
 \section{Experimental Setup}
 We aim to show through the following experiments that our proposed LRP solution remains mathematically sound and produces
 faithful and interpretable attributions consistent with existing methods. We also demonstrate that the
 Promise-based LRP maintains a predictable and efficient memory footprint and sufficient computation speed for
 research applications on large (100s of millions - 1 billion parameters) models of various architectures
 using consumer-grade hardware.
+
+Specifically, all experiments were run on a machine with 32GB RAM and an RTX 4070 Super with 12GB VRAM, with PyTorch v2.7.1 and CUDA v12.8.
 
 \subsection{Model and Dataset Selection}
 We used RoBERTa-large finetuned on the SQuAD-v2 question-answering dataset, DNABERT-2 finetuned on the GUE
@@ -453,7 +469,7 @@ evaluate examples from their respective datasets' validation splits.
 \begin{figure}[h]
   \centering
   \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
-  \caption{A comparison across various attribution methods and our LRP.}
+  \caption{Comparing methods for VGG attributions.}
 \end{figure}
 
 \subsection{Measuring Faithfulness With Area Between Perturbation Curves}
@@ -463,8 +479,55 @@ Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most re
 masking/occluding the top-i least relevant features from each input sample, to compute the Least-Relevant First (LeRF) curve.
 The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
 
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=1.0\textwidth]{../documentation/vit_abpc_comparisons.png}
+  \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from ImageNet CIFAR-10's test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
+\end{figure}
+
+\begin{table}
+\begin{center}
+  \caption{ABPC and attribution efficiency metrics for ViT experiments.}
+  \label{vit-table}
+  \begin{tabular}{ | c | c c c c c | }
+    \hline
+    Method & ABPC ($\uparrow$) & Comprehensiveness ($\uparrow$) & Sufficiency ($\downarrow$) & Speed (it/s, $\uparrow$) & Peak VRAM ($\downarrow$) \\
+    \hline
+    Integrated Gradients & 0.10 & 0.95 & 0.85 & N/A* & >12GB \\ 
+    InputXGradient & -0.0030 & 0.90 & 0.90 & \textbf{59.89} & 2.1GB \\ 
+    GradientSHAP & 0.074 & 0.94 & 0.87 & 3.32 & 8.6GB \\
+    Random & -0.023 & 0.88 & 0.90 & - & - \\
+    AttnLRP & 1.20 & 1.59 & 0.39 & 6.02 & \textbf{0.96GB} \\
+    \hline
+    Ours & \textbf{1.36} & \textbf{1.73} & \textbf{0.36} & 9.74 & 1.6GB \\
+    \hline
+  \end{tabular}
+  \\ [0.5ex]
+\end{center}
+*N/A in the Speed column signifies that GPU memory limits caused thrashing and prevented the observation of method's true speed.
+\end{table}
 
 \section{Discussion}
+
+\subsection{Comparing the Attribution Methods of Table 1}
+We see that among all the attribution methods tested, ours and AttnLRP stand among the top of the ABPC metrics. Comprehensiveness is defined as $AUC(y = baseline) - AUC(MoRF)$ and Sufficiency as $AUC(y = baseline) - AUC(LeRF)$.
+
+While AttnLRP, which is built off of the XAI library Zennit \cite{anders2021zennit}, performs noticeably better in speed and memory usage, we demonstrate that our dynamic LRP is in fact more faithful than it in the ViT experiment,
+and much better than all other alternative methods in every category present, barring the speed of InputXGradient. We attribute this improvement to our LRP being able to capture a more holistic picture of the entire model data flow.
+The the inclusion of the residual stream's contributions to the output within the attribution computation is likely a large factor in this. Being a crucial pathway which allows the transformer architecture to shape its predictions,
+it lends itself well in nature to LRP. Later layers, which get visited first in LRP, will combine with residual outputs that are sequentially and semantically closer the final output, acting as a relevance boost to the most significant
+regions of the stream. This is an important theoretical consideration that is overlooked by the current LRP landscape, since residual connections are almost always within output classes or at the extremities of an attention module,
+never the direct focus of relevance propagation. With our framework, considering these connections is built-in.
+
+What we also demonstrate is the framework's capability to adopt rules defined by other implementations. In this experiment, we tuned our LRP to behave under the specifications defined in AttnLRP \cite{achtibat2024attnlrp}.
+We used $\gamma$-LRP for Convolutional and Linear layers ($\gamma = 100$, $\gamma = 1$, respectively), and attributed attention modules using CP-LRP, as also suggested by the AttnLRP authors for image models.
+
+The memory improvement of AttnLRP over our LRP is likely due to the fact that Zennit does not require the full autograd computation graph to be stored, only the subgraphs associated with the above mentioned layers/modules,
+as well as activations and normalization layers. Any additional operations performed do not have autograd nodes saved, and thus reduce total peak VRAM usage, as opposed to our method which tracks such operations.
+
+The difference in computation speed is likely also a result of the additional propagations taken across the entire computation graph. However, we also use a different approach to computing the propagations of Linear and
+Convolutional layers, opting for an explicit, analytical redistribution instead of using the gradient-based approach, which computes the gradients of the inputs and weights w.r.t. the relevance contributions.
+However, these two methods are mathematically equivalent.
 
 \subsection{Weighing the Costs of Maintainability}
 While we are optimistic that a generalized form of LRP will empower and enable researchers to explain increasingly complex model architectures, we are equally aware of skepticism surrounding its long-term feasibility.

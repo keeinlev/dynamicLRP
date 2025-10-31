@@ -1,11 +1,5 @@
-\backcite {sundararajan2017axiomatic}{{1}{1}{section.1}}
 \backcite {lundberg2017unified}{{1}{1}{section.1}}
 \backcite {bach2015pixel}{{1}{1}{section.1}}
-\backcite {vaswani2017attention}{{1}{2}{section.2}}
-\backcite {clark2019does, caron2021emerging}{{1}{2}{section.2}}
-\backcite {wiegreffe2019attention}{{1}{2}{section.2}}
-\backcite {geva2021transformer, dai2022knowledge}{{2}{2}{section.2}}
+\backcite {sundararajan2017axiomatic}{{2}{2}{section.2}}
 \backcite {lundberg2017unified}{{2}{2}{section.2}}
-\backcite {simonyan2014deep}{{2}{2}{section.2}}
 \backcite {bach2015pixel}{{2}{2}{section.2}}
-\backcite {ding2017saliency, voita2021analyzing}{{2}{2}{section.2}}

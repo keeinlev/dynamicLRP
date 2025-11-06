@@ -173,6 +173,22 @@ def merge_input_shapes(grad_fn):
 
     return out_shape
 
+def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, w_transposed=True):
+    sign = ((z == 0.).to(z) + z.sign())
+    z_stabilized = 2 * z + epsilon * sign
+    tmp = r / z_stabilized
+
+    if w_transposed:
+        # If the operation is x @ w, i.e. w is already transposed for matmul
+        rin_input = x * (tmp @ w.transpose(-2, -1))
+        rin_weight = w * (x.transpose(-2,-1) @ tmp)
+    else:
+        # If the operation is x @ w.T
+        rin_input = x * (tmp @ w)
+        rin_weight = w * (tmp.transpose(-2,-1) @ x)
+    
+    return rin_input, rin_weight
+
 def gammma_lrp_matmul_grad(x: torch.Tensor, w: torch.Tensor, r: torch.Tensor, filter_val=1.0):
     """Analytical Linear LRP for a single (x, w, z, r) tuple"""
     rin_input = x * (r @ w.t()) # s d

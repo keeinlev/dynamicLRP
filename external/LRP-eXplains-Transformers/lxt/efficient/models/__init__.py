@@ -8,7 +8,6 @@ import lxt.efficient.models.vit_torch as vit_torch
 from transformers import ViTForImageClassification
 
 DEFAULT_MAP = {
-    # llama.modeling_llama: llama.attnLRP,
     # qwen2.modeling_qwen2: qwen2.attnLRP,
     # qwen3.modeling_qwen3: qwen3.attnLRP,
     # gemma3.modeling_gemma3: gemma3.attnLRP,

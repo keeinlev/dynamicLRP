@@ -1,14 +1,19 @@
 import torch
 from transformers import AutoTokenizer
 
+import os
+import sys
+module_path = os.path.join(os.getcwd(), '../../')
+sys.path.append(module_path)
+
 from lxt.explicit.models.llama import LlamaForCausalLM, attnlrp
 from lxt.utils import pdf_heatmap, clean_tokens
 import transformers
 
-assert torch.__version__.startswith("2.1"), "PyTorch version must be 2.1. Code might not work with newer versions."
-assert transformers.__version__.startswith("4.46"), "Transformers version must be 4.46.2 Code might not work with newer versions."
+# assert torch.__version__.startswith("2.1"), "PyTorch version must be 2.1. Code might not work with newer versions."
+# assert transformers.__version__.startswith("4.46"), "Transformers version must be 4.46.2 Code might not work with newer versions."
 
-path = 'meta-llama/Llama-3.1-8B-Instruct'
+path = 'meta-llama/Llama-3.2-1B-Instruct'
 
 model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.bfloat16, device_map="cuda")
 tokenizer = AutoTokenizer.from_pretrained(path)

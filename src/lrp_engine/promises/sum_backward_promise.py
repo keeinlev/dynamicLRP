@@ -3,10 +3,10 @@ from ..util import (
     epsilon,
     renormalize_epsilon_scalar,
 )
-from .promise import Promise
+from .dummy_promise import DummyPromise
 
-class SumBackwardPromise(Promise):
-    def __init__(self, promise, traversal_ind, bucket, saved_dim, keepdim):
+class SumBackwardPromise(DummyPromise):
+    def __init__(self, promise, traversal_ind, bucket, saved_dim, keepdim, is_mean=False):
         super().__init__(promise, traversal_ind, bucket)
 
         if saved_dim is not None:
@@ -26,37 +26,28 @@ class SumBackwardPromise(Promise):
             self.dim = None
             self.sum_type = 0
         self.keepdim = keepdim
-
-    @property
-    def arg(self):
-        return self.promise["args"][0]
+        self.is_mean = is_mean
     
     @property
     def op_result(self):
         if self.sum_type == 1:
+            if self.is_mean:
+                return self.arg.mean(dim=self.dim, keepdim=self.keepdim)
             return self.arg.sum(dim=self.dim, keepdim=self.keepdim)
         else:
+            if self.is_mean:
+                return self.arg.mean()
             return self.arg.sum()
-
-    @property
-    def rin(self):
-        return self.promise["rins"][0]
-
-    def set_rout(self, new_rout):
-        self.promise["rout"] = new_rout
-
-    def set_rin(self, new_rin):
-        self.promise["rins"][0] = new_rin
 
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
         assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
-        argsquared = self.arg ** 2
+        argabs = self.arg.abs()
         if self.sum_type == 0:
-            ratios = argsquared / (argsquared.sum() + epsilon)
+            ratios = argabs / (argabs.sum() + epsilon)
             contribs = ratios * self.rout
         else:
-            ratios = argsquared / (argsquared.sum(dim=self.dim, keepdim=True) + epsilon)
+            ratios = argabs / (argabs.sum(dim=self.dim, keepdim=True) + epsilon)
             if self.keepdim:
                 contribs = ratios * self.rout
             else:
@@ -64,6 +55,3 @@ class SumBackwardPromise(Promise):
                 contribs = ratios * self.rout.reshape(unsqueezed_shape)
         
         self.set_rin(renormalize_epsilon_scalar(self.rout, contribs, torch.zeros_like(contribs))[0])
-
-    def _setarg(self, value):
-        self.promise["args"][0] = value

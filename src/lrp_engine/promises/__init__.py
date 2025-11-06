@@ -5,4 +5,5 @@ from .stack_backward_promise import StackBackwardPromise
 from .split_backward_promise import SplitBackwardPromise
 from .sum_backward_promise import SumBackwardPromise
 from .unbind_backward_promise import UnbindBackwardPromise
+from .softmax_backward_promise import SoftmaxBackwardPromise
 from .dummy_promise import DummyPromise, compound_promises

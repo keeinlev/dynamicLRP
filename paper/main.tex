@@ -33,6 +33,11 @@
   fwd/.style={->, thick, >=Latex},
   promise/.style={->, dashed, thick, >=Latex,
                   preaction={draw, white, line width=3pt}}, % halo for visibility
+  node/.style={circle, draw=green!60, fill=green!5, very thick, minimum size=7mm},
+  anode/.style={circle, draw=orange!60, fill=orange!5, very thick, minimum size=7mm},
+  bnode/.style={circle, draw=red!60, fill=red!5, very thick, minimum size=7mm},
+  cnode/.style={circle, draw=blue!60, fill=blue!5, very thick, minimum size=7mm},
+  dnode/.style={circle, draw=teal!60, fill=teal!5, very thick, minimum size=7mm},
 }
   \newlength{\defbaselineskip}
   \setlength{\defbaselineskip}{\baselineskip}
@@ -214,13 +219,7 @@ The operation-level approach modularizes relevance propagation, reducing any mod
 
 While the above solution seems sound, a subtle issue lies within defining the propagation functions for each Node type.
 
-Consider a simple approach for backpropagating $R_{c}$ to $R_{a}$ and $R_{b}$ for $c = a + b$ as follows:
-
-\begin{equation}
-  R_{a} = R_{c} \times \frac{a^2}{a^2 + b^2} \quad\text{and}\quad R_{b} = R_{c} \times \frac{b^2}{a^2 + b^2}
-\end{equation}
-
-or alternatively,
+Consider a simple approach for backpropagating $R_{c}$ to $R_{a}$ and $R_{b}$ for $c = a + b$ as follows using absolute value ratios:
 
 \begin{equation}
   R_{a} = R_{c} \times \frac{a.abs()}{a.abs() + b.abs()} \quad\text{and}\quad R_{b} = R_{c} \times \frac{b.abs()}{a.abs() + b.abs()}
@@ -246,6 +245,7 @@ propagation "catches up" across all the Nodes that were traversed during the sea
 of the computation graph.
 We will now formally define this system.\\
 
+\subsubsection{Basic Promise Mechanism}
 \begin{definition}[Promise]
   A Promise is a mutable metadata object that is attached to a Node which requires some uncached forward pass input to compute its relevance propagation.
   The core structure of a Promise object is defined below:
@@ -264,7 +264,8 @@ We will now formally define this system.\\
 
 \begin{definition}[Promise Branch]
   A Promise branch is always tied to a Promise, corresponding to exactly 1 missing forward input in the Origin Node.
-  Sibling Promise Branches all share full access to their corresponding Promise object.\\
+  Sibling Promise Branches all share full access to their corresponding Promise object. When we mention propagating a Promise, we are referring
+  to propagating one of its branches.\\
 \end{definition}
 
 The objective of a Promise is to act as a placeholder while we continue traversing the graph in search of the Origin Node's missing values.
@@ -281,134 +282,87 @@ all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred rele
 each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
 dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
 
+\subsubsection{Promise Nesting and Trees}
+Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
+\begin{definition}[Promise-Generating Operations]
+A Promise-Generating Operation is an autograd node $v_p$ that may potentially create a new Promise object during propagation.
+We categorize all Promise-Generating Operations as one of the following:
+\begin{itemize}
+  \item \textbf{Strict: }$v_p$ will always create a new Promise object, independent of its relevance input types.
+  \item \textbf{Dependent: }$v_p$ will create a new Promise object only if at least one of its relevance inputs is a Promise, otherwise it returns a tensor relevance.
+\end{itemize}
+
+Those which are Strict typically lack required forward activations during LRP traversal, necessitating promise-based resolution.
+Whereas Dependents do not have a mathematical dependency on the activations, but typically are operations which perform merging/splitting of data.
+We formalize and prove this generalization in the Appendix.
+
+Note that whether a Dependent Promise-Generating Node instantiates a new Promise or not is architecture-specific.
+
+When a Promise-Generating Node $v_p$ receives a Promise Branch $p$ as input, $v_p$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $p$ via parent-child connections, forming a Promise Tree.
+Promise Trees resolve bottom-up, starting with leaf Promise Branches, which encounter Arg Nodes, and forward-chain to reconstruct their
+ancestor Promises' activations via parent connections. Once all activations of the Promise at the root of the Tree have been recovered, the relevance is propagated back down the Tree via child connections
+and backward chains. See Appendix for the formal resolution algorithm.
+
+\subsubsection{Promise Deadlock}
+We show in the Appendix through a simple and common example that deadlock can occur from circular dependencies between branches of the same Promise, each waiting for the other to resolve.
+We also provide the solution to this by allowing Promises to break our defined traversal heuristic to prioritize the completion of Promise Branches over the heuristic.
+
+% Now consider some Promise Branch input $p_1$, and some node $v$ which receives it as an input. We have the following cases depending on what type of node $v$ is:
+% \begin{enumerate}
+%   \item $v$ is an Arg Node. We call \texttt{p.setarg()} with $v$'s forward output and either continue propagation or queue the node while waiting for $p_1$'s sibling branches to reach their Arg Nodes.
+%   \item $v$ is a one-to-one operation. We record the forward compute and backward relevance propagation function closures within $p_1$ at this node, then continue propagating $p_1$.
+%     If $v$ maps to a relevance-wise Identity function, we only record the forward closure.
+%   \item $v$ is a Promise-Generating Node. We go ahead and allow $v$ to create a new Promise, then we nest all of its branches as children within $p_1$, therefore creating a tree structure out of Promise Branches.
+% \end{enumerate}
+
+
+
+% \begin{itemize}
+%   \item The relevance propagation function of $v_p$ is a mathematical function of $v_p$'s forward call activations, but $v_p$ does not store these in its saved backward pass context.
+%   \item \textbf{OR} $v_p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
+% \end{itemize}
+
+
 This leads to an amended version of the previous propagation algorithm, Algorithm~\ref{alg:promise-propagation}
-(Note that this algorithm is simplified from the algorithm used in practice for the sake of understanding).
 
-\begin{algorithm}[H]
-  \caption{Operation-Level Relevance Propagation With Promises}
-  \label{alg:promise-propagation}
-  \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
-    \Ensure Input relevance $R_{in}$
-    \State Initialize as in Algorithm 2
-
-    \While{$stack$}
-      \State $curnode \gets stack.pop()$
-      \State $curnode\_in\_rel = node\_inputs[curnode]$
-      \If{$curnode == target\_node$}
-        \Return $R_{in} := curnode\_in\_rel$
-      \ElsIf{$curnode$ requires Promise}
-        \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
-        \State $curnode\_outputs \gets curnode.promise.branches$
-      \Else
-        \State $prop\_fcn \gets fcn\_map[type(curnode)]$
-        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
-      \EndIf
-      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$
-        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
-        \If{$nodes\_pending[child] == 0$}
-          \State $stack.push(child)$
-        \EndIf
-      \EndFor
-    \EndWhile
-  \end{algorithmic}
-\end{algorithm}
-
-We extend the standard propagation functions to handle Promise inputs. Depending on whether the current node is an
-Arg Node, the function either records the chain or resolves and completes the Promise.
-
-\begin{algorithm}[H]
-  \caption{Non-Arg Node Propagation Function Promise Handling}
-  \label{alg:non-argnode-propagation}
-  \begin{algorithmic}[1]
-    \Require Autograd Node $node$, Propagation input $R_{out}$
-    \Ensure Propagation output list $R_{in}$
-
-    \If{$R_{out}$ is a Promise Branch}
-      \State Define $fwd$ as a closure of $node$'s forward pass.
-      \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
-      \State $R_{out}.record(fwd, bwd)$
-      \Return $R_{out}$
-    \EndIf
-
-    \State \textit{// Propagate $R_{out}$...}
-    \Return $R_{in}$
-  \end{algorithmic}
-\end{algorithm}
-
-\begin{algorithm}[H]
-  \caption{Arg Node Propagation Function Promise Handling}
-  \label{alg:argnode-propagation}
-  \begin{algorithmic}[1]
-    \Require Autograd Node $node$, Propagation input $R_{out}$
-    \Ensure Propagation output list $R_{in}$
-
-    \If{$R_{out}$ is a Promise Branch}
-      \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
-      \State $activation = retrieve\_fwd\_output(node)$
-      \State $R_{out}.set\_arg(activation)$
-      \State $R_{out}.trigger\_promise\_completion()$
-      \If{$R_{out}.promise\_is\_complete$}
-        $R_{out} = R_{out}.propagated\_relevance$
-      \Else
-        \State \textit{// Signal for queueing this Node until the Promise is complete}
-        \Return
-      \EndIf
-    \EndIf
-
-    \State \textit{// Propagate $R_{out}$...}
-    \Return $R_{in}$
-  \end{algorithmic}
-\end{algorithm}
 
 Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
-Additionally, Promises are propagated through the graph as relevance inputs themselves. A crucial consequence of these invariants is that the internal nodes recorded
-within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes.
-Together, these properties allow us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
+Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
+within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in the Appendix.
+This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
 
 \subsection{Theoretical Analysis}
 
 We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.
 
-\begin{definition}[Promise-Generating Operations]
-Let $P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$. A promise-generating operation is an autograd node $p$ where exactly one of the following is true:
-\begin{itemize}
-  \item The relevance propagation function of $p$ is a mathematical function of $p$'s forward call activations, but $p$ does not store these in its saved backward pass context.
-  \item \textbf{OR} $p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
-\end{itemize}
-
-These operations may lack required forward activations during LRP traversal, necessitating promise-based resolution.
-
-For exact and/or architecture-specific analyses, we may further categorize operations satisfying one of these two conditions into separate groups of promise-generating operations, Strict and Dependent. We discuss this further in the Appendix.
-
+Let $V_P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$.
 At the time of writing, the set of promise-generating operations is:
 
-$$P = \{v \in V : \text{type}(v) \in \{\text{AddBackward}, \text{SumBackward}, \text{CatBackward}, \text{UnbindBackward}, \text{MeanBackward}, \text{StackBackward}\}\}$$
+$$V_P = \{v \in V : \text{type}(v) \in \{\text{AddBackward}, \text{SumBackward}, \text{CatBackward}, \text{UnbindBackward}, \text{MeanBackward}, \text{StackBackward}\}\}$$
 \end{definition}
 
 \begin{definition}[Promise Density]
 The promise density of a neural network architecture is defined as:
-$$\rho = \frac{|P|}{|V|}$$
-where $|P|$ is the number of promise-generating operations and $|V|$ is the total number of operations in the computation graph.
+$$\rho = \frac{|V_P|}{|V|}$$
+where $|V_P|$ is the number of promise-generating operations and $|V|$ is the total number of operations in the computation graph.
 \end{definition}
 
 \begin{definition}[Promise Depth]
-For each promise-generating operation $p \in P$, let $d(p)$ be the graph distance from $p$ to the nearest operation that stores the forward activation required by $p$. The maximum promise depth is:
-$$D = \max_{p \in P} d(p)$$
+For each promise-generating operation $v_p \in V_P$, let $d(p)$ be the graph distance from $v_p$ to the nearest operation that stores the forward activation required by $v_p$. The maximum promise depth is:
+$$D = \max_{v_p \in V_P} d(v_p)$$
 \end{definition}
 
 
 \begin{theorem}[Promise-Based LRP Complexity]
-Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $P$, and maximum promise depth $D$.
+Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $V_P$, and maximum promise depth $D$.
 
 Let $C_{fwd}, C_{bwd}$ be the most expensive forward and backward pass computation steps, respectively.
 
 Let $S$ be the size of the largest activation cached in the computation graph.
 
-Let $\delta = \sum_{p \in P} d(p)$
+Let $\delta = \sum_{v_p \in V_P} d(v_p)$
 
-Then, the promise-based LRP algorithm has runtime complexity $O((C_{fwd} + C_{bwd}) \cdot (n + m) + \delta \cdot C_{fwd})$, and memory overhead complexity $O(\delta \cdot S)$.
+Then, the promise-based LRP algorithm has runtime complexity $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$.
 % The promise-based LRP algorithm requires $F = 1 + |P| \cdot D$ forward passes and $B = 1$ backward pass, giving total complexity $O((1 + |P| \cdot D) \cdot n + m)$.
 \end{theorem}
 
@@ -423,18 +377,20 @@ To prove the time complexity, we analyze the algorithm in three distinct phases:
 
 \textbf{Phase 3a - Backward LRP Pass:} The algorithm performs exactly one backward pass through $G'$ to compute relevance propagation. This requires $O(C_{bwd} \cdot (n + m))$ time.
 
-\textbf{Phase 3b - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $p \in P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
+\textbf{Phase 3b - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $v_p \in V_P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
 
-Crucially, our implementation shows that promises never share the same internal nodes in their computation paths. Each promise maintains independent traversal paths (via distinct \texttt{fwd\_list}, \texttt{bwd\_list}, and \texttt{arg\_node\_ind} fields) and resolves separately through individual \texttt{setarg()} calls. Therefore, each promise requires exactly $d(p)$ traversal steps, leading to $d(p) \cdot C_{fwd}$ additional forward computations in the worst case, for a total of $\delta = \sum_{p \in P} d(p)$ forward computations when considering all Promises.
+Crucially, our implementation shows that promises never share the same internal nodes in their computation paths. Each promise maintains independent traversal paths (via distinct \texttt{fwd\_list}, \texttt{bwd\_list}, and \texttt{arg\_node\_ind} fields) and resolves separately through individual \texttt{setarg()} calls.
+Therefore, each promise requires exactly $d(v_p)$ traversal steps, leading to $d(v_p) \cdot C_{fwd}$ additional forward computations in the worst case, for a total of $\delta = \sum_{v_p \in V_P} d(v_p)$ forward computations when considering all Promises.
+Since all computation paths are mutually exclusive, we have that $\delta \leq n$, and so promise resolution overhead has time complexity $O(C_{fwd} \cdot \delta) \in O(C_{fwd} \cdot n)$.
 
-\textbf{Architectural Dependence:} The parameters $|P|$ and $D$ are fundamentally determined by the network architecture:
+\textbf{Architectural Dependence:} The parameters $|V_P|$ and $D$ are fundamentally determined by the network architecture:
 \begin{itemize}
-\item \textbf{Feed-forward architectures} (e.g., basic CNNs): $|P| \approx 0 \Rightarrow \rho \approx 0$, giving optimal $O(n + m)$ complexity.
-\item \textbf{Residual architectures} (e.g., ResNets): $|P|$ proportional to the number of skip connections, $D$ bounded by the maximum skip distance.
-\item \textbf{Transformer architectures}: $|P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
+\item \textbf{Feed-forward architectures} (e.g., basic CNNs): $|V_P| \approx 0 \Rightarrow \rho \approx 0$, giving optimal $O(n + m)$ complexity.
+\item \textbf{Residual architectures} (e.g., ResNets): $|V_P|$ proportional to the number of skip connections, $D$ bounded by the maximum skip distance.
+\item \textbf{Transformer architectures}: $|V_P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
 \end{itemize}
 
-Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m) + \delta \cdot C_{fwd})$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
+Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
 \end{proof}
 
 This covers, however, only the first pass of the LRP algorithm. It is worth noting that repeated runs of LRP on the same model architecture yield an identical set of saved Promise computation paths.
@@ -442,7 +398,7 @@ As a result, caching these paths can significantly improve the scalability of th
 Once a Promise's computation path has been defined, it can effectively be reduced to a single node, therefore eliminating the graph traversal overhead of its internal nodes.
 
 Another benefit which arises from both the caching and this reduction is that the traversal order becomes strictly determined by the topological ordering of the nodes.
-During the initial pass, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
+Recall that due to the issue of Promise Deadlock that can be encountered during initial traversal, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
 However, if we know the Promise chains beforehand and can reduce them to single nodes, then the order in which we perform computations becomes fully deterministic and independent of edge connections, reducing the graph traversal overhead to $O(n)$.
 
 A slight observation that can then be made is that Promises must strictly represent only non-branching computation paths, which follows from both the definition of Promise-Generating Operations and the process of collapsing Promises into single nodes for subsequent passes.
@@ -617,4 +573,279 @@ def lrp_engine(graph, output_relevance):
 \end{itemize}
 
 This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
+
+\textbf{Promise Deadlock}
+The introduction of Promises can cause issues with the traversal heuristic we use. Consider the following configuration of nodes. Let A be a Promise-Generating Node, and let B and E be Arg Nodes, coloured orange.
+Nodes coloured red are traversed, green are untraversed.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[anode] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[anode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west);
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+Recall that our traversal heuristic states that we may only consider a node for traversal if all of its in-neighbours have propagated to it. In this case, A creates a Promise $P$, propagates its Promise Branches
+$p_1$, $p_2$ to B and D, and we see that the number of inputs landed at B equals B's in-degree. We traverse B first, propagating the Promise Branch $p_1$ to it.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[anode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+B is an Arg Node, so the Promise Branch will retrieve its forward output and forward-chain it to obtain the activation at A, then save it to the Promise.
+We now stall traversal and enqueue B until the Promise is complete. Our only next option for traversal is D, which has received the other Promise Branch $p_2$ from A as input.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[bnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[anode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+We know that now E must be traversed, but see that we never traversed into it from the A->B->C path, so its incoming relevance inputs will never equal its in-degree, and we cannot consider it
+for traversal. This creates a circular dependency: C is stalled waiting for A's Promise $P$ to complete, but $P$ cannot complete because its second branch $p_2$ requires accessing E's activation,
+and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
+
+\textbf{Pre-Promises}
+
+The solution to Promise Deadlock is to allow Promise Branches to "reach ahead" past the traversal frontier to locate their Arg Nodes, without triggering full relevance backpropagation.
+
+When a node $v$ receives a Promise Branch input $p_1$ but is still waiting for other inputs (i.e., landed inputs < in-degree), we instantiate a \textbf{Pre-Promise}, which only has one branch $p_2$, at $v$
+(since it only has one branch, we simply refer to the Pre-Promise as its branch $p_2$). This Pre-Promise:
+
+\begin{enumerate}
+    \item Has a parent connection to $p_1$ (enabling forward-chaining of activations)
+    \item Does NOT register as a child of $p_1$ (preventing backward-chaining of relevance)
+    \item Continues traversal to find its Arg Node
+\end{enumerate}
+
+The parent-child asymmetry creates the desired behavior: $p_2$ can reach its Arg Node, forward-chain the activation back through its parent connection to satisfy $p_1$'s requirements, but relevance propagation is blocked at $v$ until the traversal heuristic naturally revisits it (when all inputs have landed).
+
+Once $v$'s in-degree is satisfied later in the traversal:
+\begin{itemize}
+    \item The Pre-Promise $p_2$ is "promoted" by establishing its child connection to $p_1$
+    \item If $p_1$'s Promise is now complete (all args resolved), backward-chaining proceeds
+    \item The traversal continues normally from $p_2$'s Arg Node after backward-chaining.
+\end{itemize}
+
+See Appendix for the formal safety proof that Pre-Promises maintain correctness.
+
+To illustrate the function of Pre-Promises, we will pick up where the last example left off. We have that D is trying to propagate a Promise Branch to E, but E does not
+have all its inputs yet. Therefore, we create a Pre-Promise $p_3$, and allow traversal to continue at E, now giving $p_3$ as E's input from D.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[bnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[bnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+$p_3$ retrieves and forward-chains the activation at E to $p_2$, which then forward-chains it to obtain A's missing activation. We now have that A, B, D, E have gone through
+forward-chaining. We colour them as teal to signify this.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[dnode] (node1) {A};
+\node[dnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[dnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[dnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+This is followed by $P$ triggering relevance backpropagation through all of its branches. Blue nodes signify that true relevance values have been propagated through them.
+Crucially, E does not continue this propagation due to the lack of a child connection from $p_2$ to $p_3$.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[cnode] (node1) {A};
+\node[cnode] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[dnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+Now, C is able to be traversed.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[cnode] (node1) {A};
+\node[cnode] (node2) [right=of node1] {B};
+\node[bnode] (node3) [right=of node2] {C};
+\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[dnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+And we propagate through it to E, finally.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[cnode] (node1) {A};
+\node[cnode] (node2) [right=of node1] {B};
+\node[cnode] (node3) [right=of node2] {C};
+\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[bnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+\textbf{Promise-Aware LRP Algorithm}
+\begin{algorithm}[H]
+  \caption{Operation-Level Relevance Propagation With Promises}
+  \label{alg:promise-propagation}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
+    \Ensure Input relevance $R_{in}$
+    \State Initialize as in Algorithm 2
+
+    \While{$stack$}
+      \State $curnode \gets stack.pop()$
+      \State $curnode\_in\_rel = node\_inputs[curnode]$
+      \If{$curnode == target\_node$}
+        \Return $R_{in} := curnode\_in\_rel$
+      \ElsIf{$curnode$ requires Promise}
+        \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
+        \State $curnode\_outputs \gets curnode.promise.branches$
+      \Else
+        \State $prop\_fcn \gets fcn\_map[type(curnode)]$
+        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+      \EndIf
+      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
+        \If{$nodes\_pending[child] == 0$}
+          \State $stack.push(child)$
+        \EndIf
+      \EndFor
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
+
+We extend the standard propagation functions to handle Promise inputs. Depending on whether the current node is an
+Arg Node, the function either records the chain or resolves and completes the Promise.
+
+\begin{algorithm}[H]
+  \caption{Non-Arg Node Propagation Function Promise Handling}
+  \label{alg:non-argnode-propagation}
+  \begin{algorithmic}[1]
+    \Require Autograd Node $node$, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
+
+    \If{$R_{out}$ is a Promise Branch}
+      \State Define $fwd$ as a closure of $node$'s forward pass.
+      \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
+      \State $R_{out}.record(fwd, bwd)$
+      \Return $R_{out}$
+    \EndIf
+
+    \State \textit{// Propagate $R_{out}$...}
+    \Return $R_{in}$
+  \end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+  \caption{Arg Node Propagation Function Promise Handling}
+  \label{alg:argnode-propagation}
+  \begin{algorithmic}[1]
+    \Require Autograd Node $node$, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
+
+    \If{$R_{out}$ is a Promise Branch}
+      \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
+      \State $activation = retrieve\_fwd\_output(node)$
+      \State $R_{out}.set\_arg(activation)$
+      \State $R_{out}.trigger\_promise\_completion()$
+      \If{$R_{out}.promise\_is\_complete$}
+        $R_{out} = R_{out}.propagated\_relevance$
+      \Else
+        \State \textit{// Signal for queueing this Node until the Promise is complete}
+        \Return
+      \EndIf
+    \EndIf
+
+    \State \textit{// Propagate $R_{out}$...}
+    \Return $R_{in}$
+  \end{algorithmic}
+\end{algorithm}
+
 \end{document}

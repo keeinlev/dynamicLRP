@@ -56,7 +56,7 @@ class PromiseBucket:
     def __init__(self):
         self.all_inner_nodes : set[int] = set()
         self.start_nodes_to_promise : dict[int, Promise] = {}
-        self.leaf_promises = []
+        self.leaf_promises : list[Promise] = []
         self.ind_to_node = {}
     
     def repair_all_parent_child_connections(self):
@@ -355,7 +355,14 @@ class Promise:
     @ensure_dtype
     def accumulate_rout(self, new_rout, parent_idx=None):
         assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
-        self.promise["rout"] = self.rout + new_rout # Important to do it this way to broadcast
+        if len(self.rout.shape) == len(new_rout.shape) and self.rout.shape[0] != new_rout.shape[0] and self.rout.shape[1:] == new_rout.shape[1:]:
+            # Broadcastable argument shape was incorrectly inferred at Promise creation, fix
+            self.promise["rout"] = self.rout.sum(dim=0)
+        if self.rout.shape == new_rout.shape[1:]:
+            # Broadcastable argument shape was incorrectly inferred for incoming relevance, fix
+            new_rout = new_rout.sum(dim=0)
+        
+        self.promise["rout"] = self.rout + new_rout # Important to do it this way to broadcast from new_rout shape to self.rout shape.
 
     def exec_bwd(self) -> torch.Tensor:
         """Perform the saved backward execution chain to propagate relevance back down the branch.
@@ -376,7 +383,7 @@ class Promise:
         Saves the results in self.promise["rins"]."""
         ...
 
-    def trigger_promise_completion(self, fwd_only=False, recompile=True):
+    def trigger_promise_completion(self, fwd_only=False, recompile=True, accumulate_leaf_promises=None):
         """Triggers the completion of a Promise tree from the bottom-up.
         If the Promise is ready, and it has parents that are not complete, it propagates its op_result as the arg for
         all of its parents, calling parent.setarg(self.op_result), and therefore triggering the completion of its parents
@@ -413,18 +420,20 @@ class Promise:
             curr_branch = self
             i = 0
             while (curr_branch != self or i == 0) and curr_branch is not None:
+                if not curr_branch.children and accumulate_leaf_promises is not None:
+                    accumulate_leaf_promises.append(curr_branch)
                 for child_promise in curr_branch.children:
                     # TODO: I think a Promise can only have one child...
                     if isinstance(child_promise, tuple): # Branches of the same child promise
                         child_promise[0].pending_parents -= 1
                         child_promise[0].accumulate_rout(all_branch_res[i], child_promise[0].parent_idxs.get(self))
                         if child_promise[0].pending_parents == 0:
-                            child_promise[0].trigger_promise_completion()
+                            child_promise[0].trigger_promise_completion(accumulate_leaf_promises=accumulate_leaf_promises)
                     else:
                         child_promise.pending_parents -= 1
                         child_promise.accumulate_rout(all_branch_res[i], child_promise.parent_idxs.get(self))
                         if child_promise.pending_parents == 0:
-                            child_promise.trigger_promise_completion()
+                            child_promise.trigger_promise_completion(accumulate_leaf_promises=accumulate_leaf_promises)
                 curr_branch = curr_branch.other_branch
                 i += 1
 
@@ -457,7 +466,7 @@ class Promise:
             # Compile the functions
             self.compile_fwd_bwd()
 
-        if not isinstance(value, float) or value != 0.0:
+        if isinstance(value, torch.Tensor):
             self._setarg(self.fwd(value))
         else:
             self._setarg(0.0)

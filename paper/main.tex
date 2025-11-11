@@ -331,6 +331,39 @@ Propagation across any given node only occurs once, either directly via tensor r
 within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in the Appendix.
 This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
 
+Input Aggregation
+When a node has multiple in-neighbours pointing to one input position, we must aggregate the incoming relevances into one object.
+For multiple tensor inputs, this is straightforward, simply sum them.
+For multiple Promise objects, we need to group them somehow while maintaining correct structure for resolution.
+
+
+Proposition 1: The computation graph traversal does not backtrack and retraverse any node once it has already propagated relevance through it.
+Proof:
+If the node is given tensor values to propagate, and it is either not a promise-generating operation or a dependent promise-generating operation, then it will return a tensor relevance.
+The value will be propagated to the node's outneighbours, which will then be possibly added to the traversal order if all their inputs have landed.
+Since the computation graph is by definition a DAG (as no instance of an operation can create a dependency for itself), there is no manner in which the traversal will come back to the starting node.
+
+If the node is given tensor values to propagate, and it is a strict promise-generating operation, the same logic applies, but we pass along a Promise object instead of a tensor relevance.
+The Promise resolution algorithm ensures that the traversal pointer will never backtrack, as it performs all necessary forward and backward propagations in-place at the frontier.
+Therefore, the graph traversal will never come back to the starting node.
+
+If the node is given a Promise to propagate, and it is a promise-generating operation, there are 2 cases to consider:
+1. If this propagation is occuring as part of the regular traversal heuristic, the same logic of the previous cases applies.
+2. If this propagation has broken the traversal heuristic, and the newly-created Promise is a Pre-Promise, there is additional reasoning to be done.
+
+In case 2, consider that the Pre-Promise resolution will always take priority over the traversal heuristic.
+Thus, we assume the Pre-Promise will be propagated until it reaches its own Arg Node and propagates activations to its Promise Tree ancestors.
+Upon backward propagation of the Promise Tree relevances, the backward chain of the Pre-Promise will not be executed, by definition of Pre-Promises.
+Therefore, the relevance has not been propagated through this node yet.
+Only once all the node's inputs land, and we traverse this node due to the traversal heuristic, will we accumulate all relevance values at this node, then execute the Pre-Promise backward chain on the accumulated relevance.
+Traversal will continue at the Pre-Promise's Arg Node, and now we can apply the same DAG argument to conclude that this node will not be traversed again after this.
+
+Claim: The internal nodes of a given Promise chain are unique to that Promise.
+Proof:
+By Prop. 1 we have that no node has relevance propagated through it more than once in our graph traversal.
+This includes propagation via Promise chains.
+
+
 \subsection{Theoretical Analysis}
 
 We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.

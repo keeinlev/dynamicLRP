@@ -6,7 +6,7 @@ from functools import reduce
 DEBUG = False
 
 # For denominator stability in relevance distribution
-epsilon = 10e-6
+epsilon = 10e-12
 
 def renormalize_epsilon(rz, rx, ry):
     """Renormalizes output relevances after dividing by a denominator with epsilon added to preserve conservation"""
@@ -173,9 +173,13 @@ def merge_input_shapes(grad_fn):
 
     return out_shape
 
-def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, w_transposed=True):
+def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, w_transposed=True, bilinear=False):
     sign = ((z == 0.).to(z) + z.sign())
-    z_stabilized = 2 * z + epsilon * sign
+
+    if bilinear:
+        z_stabilized = 2 * z + epsilon * sign
+    else:
+        z_stabilized = z + epsilon * sign
     tmp = r / z_stabilized
 
     if w_transposed:

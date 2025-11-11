@@ -174,6 +174,7 @@ class LRPEngine:
             if self.out_adj_list is None or self.topo_exec_order is None or self.fcn_map is None:
                 res = self._run_lrp_first_pass(output_tuple_or_tensor, relevances)
             else:
+                self.promise_bucket.clear_all()
                 res = self._run_lrp_subsequent_pass(output_tuple_or_tensor, relevances)
 
             if DEBUG:
@@ -211,7 +212,6 @@ class LRPEngine:
         root_nodes = updated_roots
 
         # Save these for now, param_node_inds and topo_exec_order get saved at the end.
-        # self.in_adj_list = in_adj_list
         self.out_adj_list = out_adj_list
         self.fcn_map = fcn_map
 
@@ -624,14 +624,12 @@ class LRPEngine:
             promise_bucket.all_inner_nodes,
             param_node_inds
         )
-
-        if not DEBUG:
-            promise_bucket.clear_all()
         
         promise_bucket.repair_all_parent_child_connections()
 
         # Save for subsequent passes
         self.out_adj_list = index_based_out_adj_list
+        self.in_adj_list = index_based_in_adj_list
         self.topo_exec_order = topo_exec_order
         self.param_node_inds = param_node_inds
         self.params_to_interpret = None
@@ -705,6 +703,8 @@ class LRPEngine:
 
             if (promise := promise_bucket.start_nodes_to_promise.get(node_ind)) and isinstance(promise, Promise) and promise not in fulfilled_promises and \
                     promise.start_ind != promise.arg_node_ind:
+                # if promise.parents != []:
+                #     continue
                 if not promise.ready:
                     print(node_ind, promise.start_ind, promise.arg_node_ind)
                 assert promise.ready, f"During running of execution plan, promise was missing arg(s) {promise.promise}"
@@ -720,6 +720,13 @@ class LRPEngine:
                 if isinstance(promise.rout, float):
                     print(promise.promise, promise.start_ind)
                     raise TypeError
+                
+                # leaf_promises = []
+                # promise.trigger_promise_completion(accumulate_leaf_promises=leaf_promises)
+                # print(leaf_promises)
+                # for p in leaf_promises:
+                #     rin_landing_ind = p.arg_node_input_index(out_adj_list)
+                #     input_frontier[p.arg_node_ind][rin_landing_ind] += p.rin
                 promise.compute_rins()
 
                 # Do the same for other branches if applicable
@@ -742,8 +749,9 @@ class LRPEngine:
                     is_start = False
                 
                 promise.set_complete()
-                promise.clear_args_and_rout()
-                promise.clear_rins()
+                if not DEBUG:
+                    promise.clear_args_and_rout()
+                    promise.clear_rins()
             else:
                 if len(rel) == 1:
                     rel = rel[0]
@@ -782,8 +790,5 @@ class LRPEngine:
         checkpoint_vals = [ checkpoint.metadata["relevance" ] for checkpoint in checkpoints ]
 
         param_node_vals = [ ind_to_node[node_ind].metadata["relevance"] for node_ind in param_node_inds ]
-
-        if not DEBUG:
-            promise_bucket.clear_all()
 
         return checkpoint_vals, param_node_vals

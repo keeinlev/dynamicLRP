@@ -24,31 +24,31 @@ r is the relevance tensor of the output of the given Node.
 
 
 def output_relevances(func):
+    def default_wrapper(*args, **kwargs):
+        # Clean input dtypes
+        args = list(args)
+        for i in range(len(args)):
+            if isinstance(args[i], torch.Tensor) and args[i].dtype != PromiseBucket.dtype:
+                args[i] = args[i].to(PromiseBucket.dtype)
+
+        res = func(*args, **kwargs)
+
+        # Clean output dtypes
+        if isinstance(res, tuple):
+            res = list(res)
+            for i in range(len(res)):
+                if isinstance(res[i], torch.Tensor) and LRPPropFunctions != torch.float32 and res[i].dtype != LRPPropFunctions.dtype:
+                    res[i] = res[i].to(dtype=LRPPropFunctions.dtype)
+            res = tuple(res)
+            return tuple(res)
+        elif isinstance(res, torch.Tensor) and LRPPropFunctions != torch.float32 and res.dtype != LRPPropFunctions.dtype:
+            res = res.to(dtype=LRPPropFunctions.dtype)
+        return res
     if not DEBUG:
-        def default_wrapper(*args, **kwargs):
-            # Clean input dtypes
-            args = list(args)
-            for i in range(len(args)):
-                if isinstance(args[i], torch.Tensor) and args[i].dtype != PromiseBucket.dtype:
-                    args[i] = args[i].to(PromiseBucket.dtype)
-
-            res = func(*args, **kwargs)
-
-            # Clean output dtypes
-            if isinstance(res, tuple):
-                res = list(res)
-                for i in range(len(res)):
-                    if isinstance(res[i], torch.Tensor) and LRPPropFunctions != torch.float32 and res[i].dtype != LRPPropFunctions.dtype:
-                        res[i] = res[i].to(dtype=LRPPropFunctions.dtype)
-                res = tuple(res)
-                return tuple(res)
-            elif isinstance(res, torch.Tensor) and LRPPropFunctions != torch.float32 and res.dtype != LRPPropFunctions.dtype:
-                res = res.to(dtype=LRPPropFunctions.dtype)
-            return res
         return default_wrapper
     # # TODO: Needs some refactoring to work properly
     def wrapper(*args, **kwargs):
-        res = func(*args, **kwargs)
+        res = default_wrapper(*args, **kwargs)
         grad_fn = args[-2]
         r = args[-1]
         print(f"{grad_fn.metadata['topo_ind']}, {grad_fn}:", end="") 
@@ -59,8 +59,10 @@ def output_relevances(func):
                 and (not isinstance(res, tuple) or not isinstance(res[0], Promise)):
             if isinstance(r, tuple):
                 rout = sum(elem.nansum() for elem in r)
-            else:
+            elif isinstance(r, torch.Tensor):
                 rout = r.nansum()
+            else:
+                rout = r
             rins = None
             if isinstance(res, tuple):
                 rins = ((res[0].nansum() if isinstance(res[0], torch.Tensor) else res[0]) +
@@ -434,6 +436,39 @@ class LRPPropFunctions:
                 return r
 
         return grad_fn(r) # Reuse autograd implementation
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def MaskedFillBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            def fwd_factory(node):
+                mask = node._saved_mask
+                def fwd_reshape(x: torch.Tensor):
+                    return x.masked_fill(mask, float('-inf'))
+                return fwd_reshape
+
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
+            return r
+        return grad_fn(r)
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def GatherBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            def fwd_gather(node):
+                saved_dim = node._saved_dim
+                if saved_dim > len(node._saved_self.shape) - 1:
+                    saved_dim -= 2**32
+                return torch.gather(node._saved_self, saved_dim, node._saved_index)
+            r.setarg(fwd_gather(grad_fn), grad_fn, fwd_gather)
+            if r.complete:
+                r = r.rin
+            else:
+                return r
+        return grad_fn(r)
 
     @staticmethod
     @output_relevances
@@ -807,7 +842,7 @@ class LRPPropFunctions:
             weights = weights.clamp(min=0.0)
             z = x @ weights
 
-        rin_input, rin_weight = epsilon_lrp_matmul(x, weights, z, r)
+        rin_input, rin_weight = epsilon_lrp_matmul(x, weights, z, r, bilinear=True)
 
         # propagate relevance in parallel for input and weight, as specified by A.3.2 (Bilinear matmul) of AttnLRP: https://arxiv.org/pdf/2402.05602
         return relevance_filter(rin_input, filter_val), rin_weight
@@ -836,7 +871,7 @@ class LRPPropFunctions:
                     # If this is the first branch of the promise
                     return r # We will check if the promise is complete in the graph traversal
 
-        rin_mat1, rin_mat2 = epsilon_lrp_matmul(mat1, mat2, z, r)
+        rin_mat1, rin_mat2 = epsilon_lrp_matmul(mat1, mat2, z, r, bilinear=True)
 
         # propagate relevance in parallel for mat1 and mat2
         return rin_mat1, rin_mat2
@@ -1045,23 +1080,25 @@ class LRPPropFunctions:
         attn_weights = unbiased_attn_weights + attn_bias
 
         # Compute softmax from logsumexp
-        if logsumexp.size(-1) > attn_weights.size(-1):
-            # GPU implementation might use fixed size for tiling
-            attn_logits = torch.exp(attn_weights - logsumexp[:,:,:attn_weights.size(-1)].unsqueeze(-1)).to(dtype=attn_weights.dtype)
+        if PromiseBucket.dtype != torch.float32:
+            if logsumexp.size(-1) > attn_weights.size(-1):
+                # GPU implementation might use fixed size for tiling
+                attn_logits = torch.exp(attn_weights - logsumexp[:,:,:attn_weights.size(-2)].unsqueeze(-1)).to(dtype=attn_weights.dtype)
+            else:
+                attn_logits = torch.exp(attn_weights - logsumexp.unsqueeze(-1)).to(dtype=attn_weights.dtype)
         else:
-            attn_logits = torch.exp(attn_weights - logsumexp.unsqueeze(-1)).to(dtype=attn_weights.dtype)
-        # attn_logits = attn_weights.softmax(dim=-1)
+            attn_logits = attn_weights.softmax(dim=-1)
         del attn_bias
 
         # Distribute last matmul
-        r_attn_logits, r_v = epsilon_lrp_matmul(attn_logits, value, output, r)
+        r_attn_logits, r_v = epsilon_lrp_matmul(attn_logits, value, output, r, bilinear=True)
 
         # Distribute softmax
-        r_attn_weights = unbiased_attn_weights * (r_attn_logits - attn_logits * r_attn_logits.sum(dim=-1, keepdim=True))
+        r_attn_weights = unbiased_attn_weights.tril() * (r_attn_logits - attn_logits * r_attn_logits.sum(dim=-1, keepdim=True))
         del r_attn_logits
 
         # Distribute QK^T
-        r_q, r_k = epsilon_lrp_matmul(query, key, unscaled_attn_weights, r_attn_weights, w_transposed=False)
+        r_q, r_k = epsilon_lrp_matmul(query, key, unscaled_attn_weights, r_attn_weights, w_transposed=False, bilinear=True)
         del attn_weights, r_attn_weights
 
         if enable_gqa:
@@ -1158,6 +1195,7 @@ class LRPPropFunctions:
     @staticmethod
     @output_relevances
     @add_node_to_promise_path
+    @skip_redundant_promise
     def SoftmaxBackwardProp(grad_fn, r):
         promise = {
             "rout": r,

@@ -26,18 +26,21 @@
   ]{geometry}
 
   \usepackage{tikz}
-  \usetikzlibrary{positioning,arrows.meta}
+  \usetikzlibrary{positioning,arrows.meta,shapes.geometric}
 
   \tikzset{
   maincircle/.style={circle, draw, minimum size=13mm, inner sep=2pt, font=\footnotesize, align=center},
   fwd/.style={->, thick, >=Latex},
   promise/.style={->, dashed, thick, >=Latex,
                   preaction={draw, white, line width=3pt}}, % halo for visibility
+  diamondnode/.style={diamond, draw=green!60, fill=green!5, very thick, minimum size=7mm},
   node/.style={circle, draw=green!60, fill=green!5, very thick, minimum size=7mm},
-  anode/.style={circle, draw=orange!60, fill=orange!5, very thick, minimum size=7mm},
-  bnode/.style={circle, draw=red!60, fill=red!5, very thick, minimum size=7mm},
-  cnode/.style={circle, draw=blue!60, fill=blue!5, very thick, minimum size=7mm},
-  dnode/.style={circle, draw=teal!60, fill=teal!5, very thick, minimum size=7mm},
+  orange/.style={draw=orange!60, fill=orange!5},
+  red/.style={draw=red!60, fill=red!5},
+  blue/.style={draw=blue!60, fill=blue!5},
+  teal/.style={draw=teal!60, fill=teal!5},
+  purple/.style={draw=purple!60, fill=purple!5},
+  highlight/.style={ultra thick},
 }
   \newlength{\defbaselineskip}
   \setlength{\defbaselineskip}{\baselineskip}
@@ -180,40 +183,23 @@ The computation graph is a directed acyclic graph (DAG) representing the sequenc
 
 \subsection{Operation-Level Relevance Propagation}
 
-We implement propagation rules for each type of autograd Node (a Node in this case maps to an operation call), then traverse the auxiliary graph in a style similar to Kahn's Algorithm (link to Appendix), but using a Depth-First heuristic instead of Breadth-First.
+We implement propagation rules for each type of autograd Node (a Node in this case maps to an operation call), then traverse the auxiliary graph with the following heuristic:
+
+\begin{definition}[Traversal Heuristic]
+  Given some DAG $G = (V, E)$, for all $v \in V$, let $pending(v) = indegree(v)$. Let $outadj$ be the graph defined as an out-adjacency list.
+  
+  Initialize $S$ as a stack. Push all nodes with in-degree 0 onto $S$. Traverse as follows:
+  \begin{itemize}
+    \item Pop the top node $v$ from the stack and process it.
+    \item For all $w \in outadj(v)$, decrement $pending(w) -= 1$.
+    \item For all $w' \in outadj(v)$ where $pending(w') == 0$ now, push $w'$ onto $S$.
+    \item Repeat while $S$ is non-empty.
+  \end{itemize}
+
+  This ensures traversal follows some topological ordering of $G$, since nodes are only processed once all their in-neighbours have been.
+\end{definition}
+
 The operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental tensor operations. Algorithm~\ref{alg:operation-propagation} describes the propagation process.
-
-\begin{algorithm}[H]
-  \caption{Operation-Level Relevance Propagation}
-  \label{alg:operation-propagation}
-  \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
-    \Ensure Input relevance $R_{in}$
-    \State Initialize $stack \gets [hidden\_states.grad\_fn]$
-    \State Initialize $nodes\_pending \gets \{ node : len(parents)$ for $node, parents \in in\_adj.items() \}$
-    \State Initialize $node\_inputs \gets \{ node : [ null$ for $parent$ in $parents$ ] for $node, parents \in in\_adj.items() \}$
-    \State Initialize $fcn\_map$ which maps $type(node)$ to its corresponding propagation function.
-    \State Set $node\_inputs[hidden\_states.grad\_fn] = [R\_out]$
-
-    \While{$stack$}
-      \State $curnode \gets stack.pop()$
-      \State $curnode\_in\_rel = node\_inputs[curnode]$
-      \If{$curnode == target\_node$}
-        \Return $R_{in} := curnode\_in\_rel$
-      \EndIf
-      \State $prop\_fcn \gets fcn\_map[type(curnode)]$
-      \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
-      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$ \footnotemark
-        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
-        \If{$nodes\_pending[child] == 0$}
-          \State $stack.push(child)$
-        \EndIf
-      \EndFor
-    \EndWhile
-  \end{algorithmic}
-\end{algorithm}
-\footnotetext{Implementation details omitted for brevity; assume the system tracks the number of accumulated input relevances and aggregates them when all are available.}
 
 \subsection{A Caveat to Autograd}
 
@@ -330,38 +316,6 @@ Note that this allows delayed computation to occur without the graph traversal p
 Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
 within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in the Appendix.
 This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
-
-Input Aggregation
-When a node has multiple in-neighbours pointing to one input position, we must aggregate the incoming relevances into one object.
-For multiple tensor inputs, this is straightforward, simply sum them.
-For multiple Promise objects, we need to group them somehow while maintaining correct structure for resolution.
-
-
-Proposition 1: The computation graph traversal does not backtrack and retraverse any node once it has already propagated relevance through it.
-Proof:
-If the node is given tensor values to propagate, and it is either not a promise-generating operation or a dependent promise-generating operation, then it will return a tensor relevance.
-The value will be propagated to the node's outneighbours, which will then be possibly added to the traversal order if all their inputs have landed.
-Since the computation graph is by definition a DAG (as no instance of an operation can create a dependency for itself), there is no manner in which the traversal will come back to the starting node.
-
-If the node is given tensor values to propagate, and it is a strict promise-generating operation, the same logic applies, but we pass along a Promise object instead of a tensor relevance.
-The Promise resolution algorithm ensures that the traversal pointer will never backtrack, as it performs all necessary forward and backward propagations in-place at the frontier.
-Therefore, the graph traversal will never come back to the starting node.
-
-If the node is given a Promise to propagate, and it is a promise-generating operation, there are 2 cases to consider:
-1. If this propagation is occuring as part of the regular traversal heuristic, the same logic of the previous cases applies.
-2. If this propagation has broken the traversal heuristic, and the newly-created Promise is a Pre-Promise, there is additional reasoning to be done.
-
-In case 2, consider that the Pre-Promise resolution will always take priority over the traversal heuristic.
-Thus, we assume the Pre-Promise will be propagated until it reaches its own Arg Node and propagates activations to its Promise Tree ancestors.
-Upon backward propagation of the Promise Tree relevances, the backward chain of the Pre-Promise will not be executed, by definition of Pre-Promises.
-Therefore, the relevance has not been propagated through this node yet.
-Only once all the node's inputs land, and we traverse this node due to the traversal heuristic, will we accumulate all relevance values at this node, then execute the Pre-Promise backward chain on the accumulated relevance.
-Traversal will continue at the Pre-Promise's Arg Node, and now we can apply the same DAG argument to conclude that this node will not be traversed again after this.
-
-Claim: The internal nodes of a given Promise chain are unique to that Promise.
-Proof:
-By Prop. 1 we have that no node has relevance propagated through it more than once in our graph traversal.
-This includes propagation via Promise chains.
 
 
 \subsection{Theoretical Analysis}
@@ -543,6 +497,24 @@ variants and enabling meta-execution of computation graphs, which were big wins 
 The takeaway is that if we want to care about extensibility and rigor of our methods, and if we deem LRP a method worth sustaining, then the effort is justified. With this framework, LRP can become as accessible as autograd, 
 but in the long run, we hope that this contribution can widen the scope of what else can be adapted to use the computation graph in future research.
 
+\subsection{Extensibility to Other Deep Learning Frameworks}
+While it may seem that this design is strictly PyTorch-specific, we would like to argue otherwise. While it is built for PyTorch currently,
+we claim that the Promise-based Dynamic LRP can be extended to any deep learning framework with a graph-based auto-differentiation module.
+
+We consider that differentiation is first and foremost a mathematical concept, and that in order for it to be carried out for some function,
+the set of givens required for this computation is purely characteristic to the function.
+
+Thus, all implementations of auto-differentiation will be required to store the same minimum set of data for each function they share.
+This firstly signifies to us that the concept of operation-level LRP is sound and viable in any such deep-learning framework.
+
+Having implemented this for PyTorch, there is thus little reason to believe that in another framework, there would be a lack or even difference
+in the numerical basis of computation. Even if so, the Promise System's main objective is the retrieval of information not stored during
+auto-differentiation, so our framework natively bypasses these concerns altogether.
+
+On the structural side, we do require a graph-based structure for this data. However, auto-differentiation is fundamentally graph-based.
+Without computation graphs, there is no auto-differentiation. Thus, we are secure in that our LRP design is widely extensible among deep-learning
+frameworks.
+
 \bibliography{main}
 \iftoggle{arxiv}{
   % arXiv references in a generic style, or ICLR style
@@ -558,251 +530,38 @@ but in the long run, we hope that this contribution can widen the scope of what 
 \section*{Appendices}
 %\startcontents[sections]
 %\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}
-\subsection{Implementation Details}
-Our implementation uses PyTorch hooks to record operations during the forward pass and constructs the computation graph dynamically. Each operation creates a promise object, which stores the propagation rule and tracks readiness and completeness.
+\subsection{Algorithms}
+\begin{algorithm}[H]
+  \caption{Operation-Level Relevance Propagation}
+  \label{alg:operation-propagation}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
+    \Ensure Input relevance $R_{in}$
+    \State Initialize $stack \gets [hidden\_states.grad\_fn]$
+    \State Initialize $nodes\_pending \gets \{ node : len(parents)$ for $node, parents \in in\_adj.items() \}$
+    \State Initialize $node\_inputs \gets \{ node : [ null$ for $parent$ in $parents$ ] for $node, parents \in in\_adj.items() \}$
+    \State Initialize $fcn\_map$ which maps $type(node)$ to its corresponding propagation function.
+    \State Set $node\_inputs[hidden\_states.grad\_fn] = [R\_out]$
 
-\textbf{Python Example: Promise-based LRP Engine}
-Below is a simplified Python pseudocode that captures the core logic of the promise-based LRP engine:
+    \While{$stack$}
+      \State $curnode \gets stack.pop()$
+      \State $curnode\_in\_rel = node\_inputs[curnode]$
+      \If{$curnode == target\_node$}
+        \Return $R_{in} := curnode\_in\_rel$
+      \EndIf
+      \State $prop\_fcn \gets fcn\_map[type(curnode)]$
+      \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
+        \If{$nodes\_pending[child] == 0$}
+          \State $stack.push(child)$
+        \EndIf
+      \EndFor
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
 
-\begin{verbatim}
-class Promise:
-  def __init__(self, op_type, inputs):
-    self.op_type = op_type
-    self.inputs = inputs
-    self.ready = False
-    self.complete = False
-    self.relevance = None
-
-  def resolve(self, output_relevance):
-    # Custom propagation rule for each op_type
-    self.relevance = propagate_relevance(self.op_type, self.inputs, output_relevance)
-    self.ready = True
-    return self.relevance
-
-def lrp_engine(graph, output_relevance):
-  # Traverse graph in reverse topological order
-  for node in reversed(graph.topo_order()):
-    promise = node.promise
-    if all(child.promise.complete for child in node.outputs):
-      input_relevance = promise.resolve(node.output_relevance)
-      for inp in node.inputs:
-        inp.promise.relevance = input_relevance[inp]
-      promise.complete = True
-  return [node.promise.relevance for node in graph.input_nodes()]
-\end{verbatim}
-
-\textbf{Explicit Steps in the Algorithm}
-\begin{enumerate}
-  \item \textbf{Forward Pass:} Register hooks to record each operation and build the computation graph.
-  \item \textbf{Promise Creation:} For each operation, instantiate a promise object with its propagation rule.
-  \item \textbf{Backward Pass:} Starting from the output, traverse the graph in reverse topological order. Each promise is resolved when all output relevance is received, and marked complete when it distributes relevance to its inputs.
-  \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
-\end{enumerate}
-
-\textbf{Readiness and Completeness}
-\begin{itemize}
-  \item \textbf{Readiness:} A promise is ready when all output relevance (from downstream nodes) has been received.
-  \item \textbf{Completeness:} A promise is complete when it has distributed its relevance to all inputs according to its propagation rule.
-\end{itemize}
-
-This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
-
-\textbf{Promise Deadlock}
-The introduction of Promises can cause issues with the traversal heuristic we use. Consider the following configuration of nodes. Let A be a Promise-Generating Node, and let B and E be Arg Nodes, coloured orange.
-Nodes coloured red are traversed, green are untraversed.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[bnode] (node1) {A};
-\node[anode] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[node] (node4) [below=of node3, xshift=-8mm] {D};
-\node[anode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west);
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
-\end{tikzpicture}
-\end{center}
-
-Recall that our traversal heuristic states that we may only consider a node for traversal if all of its in-neighbours have propagated to it. In this case, A creates a Promise $P$, propagates its Promise Branches
-$p_1$, $p_2$ to B and D, and we see that the number of inputs landed at B equals B's in-degree. We traverse B first, propagating the Promise Branch $p_1$ to it.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[bnode] (node1) {A};
-\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[node] (node4) [below=of node3, xshift=-8mm] {D};
-\node[anode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
-\end{tikzpicture}
-\end{center}
-
-B is an Arg Node, so the Promise Branch will retrieve its forward output and forward-chain it to obtain the activation at A, then save it to the Promise.
-We now stall traversal and enqueue B until the Promise is complete. Our only next option for traversal is D, which has received the other Promise Branch $p_2$ from A as input.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[bnode] (node1) {A};
-\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[bnode] (node4) [below=of node3, xshift=-8mm] {D};
-\node[anode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
-\end{tikzpicture}
-\end{center}
-
-We know that now E must be traversed, but see that we never traversed into it from the A->B->C path, so its incoming relevance inputs will never equal its in-degree, and we cannot consider it
-for traversal. This creates a circular dependency: C is stalled waiting for A's Promise $P$ to complete, but $P$ cannot complete because its second branch $p_2$ requires accessing E's activation,
-and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
-
-\textbf{Pre-Promises}
-
-The solution to Promise Deadlock is to allow Promise Branches to "reach ahead" past the traversal frontier to locate their Arg Nodes, without triggering full relevance backpropagation.
-
-When a node $v$ receives a Promise Branch input $p_1$ but is still waiting for other inputs (i.e., landed inputs < in-degree), we instantiate a \textbf{Pre-Promise}, which only has one branch $p_2$, at $v$
-(since it only has one branch, we simply refer to the Pre-Promise as its branch $p_2$). This Pre-Promise:
-
-\begin{enumerate}
-    \item Has a parent connection to $p_1$ (enabling forward-chaining of activations)
-    \item Does NOT register as a child of $p_1$ (preventing backward-chaining of relevance)
-    \item Continues traversal to find its Arg Node
-\end{enumerate}
-
-The parent-child asymmetry creates the desired behavior: $p_2$ can reach its Arg Node, forward-chain the activation back through its parent connection to satisfy $p_1$'s requirements, but relevance propagation is blocked at $v$ until the traversal heuristic naturally revisits it (when all inputs have landed).
-
-Once $v$'s in-degree is satisfied later in the traversal:
-\begin{itemize}
-    \item The Pre-Promise $p_2$ is "promoted" by establishing its child connection to $p_1$
-    \item If $p_1$'s Promise is now complete (all args resolved), backward-chaining proceeds
-    \item The traversal continues normally from $p_2$'s Arg Node after backward-chaining.
-\end{itemize}
-
-See Appendix for the formal safety proof that Pre-Promises maintain correctness.
-
-To illustrate the function of Pre-Promises, we will pick up where the last example left off. We have that D is trying to propagate a Promise Branch to E, but E does not
-have all its inputs yet. Therefore, we create a Pre-Promise $p_3$, and allow traversal to continue at E, now giving $p_3$ as E's input from D.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[bnode] (node1) {A};
-\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[bnode] (node4) [below=of node3, xshift=-8mm] {D};
-\node[bnode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
-\end{tikzpicture}
-\end{center}
-
-$p_3$ retrieves and forward-chains the activation at E to $p_2$, which then forward-chains it to obtain A's missing activation. We now have that A, B, D, E have gone through
-forward-chaining. We colour them as teal to signify this.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[dnode] (node1) {A};
-\node[dnode, label={\small stalled}] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[dnode] (node4) [below=of node3, xshift=-8mm] {D};
-\node[dnode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
-\end{tikzpicture}
-\end{center}
-
-This is followed by $P$ triggering relevance backpropagation through all of its branches. Blue nodes signify that true relevance values have been propagated through them.
-Crucially, E does not continue this propagation due to the lack of a child connection from $p_2$ to $p_3$.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[cnode] (node1) {A};
-\node[cnode] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
-\node[dnode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
-\end{tikzpicture}
-\end{center}
-
-Now, C is able to be traversed.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[cnode] (node1) {A};
-\node[cnode] (node2) [right=of node1] {B};
-\node[bnode] (node3) [right=of node2] {C};
-\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
-\node[dnode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
-\end{tikzpicture}
-\end{center}
-
-And we propagate through it to E, finally.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[cnode] (node1) {A};
-\node[cnode] (node2) [right=of node1] {B};
-\node[cnode] (node3) [right=of node2] {C};
-\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
-\node[bnode] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
-\end{tikzpicture}
-\end{center}
-
-\textbf{Promise-Aware LRP Algorithm}
 \begin{algorithm}[H]
   \caption{Operation-Level Relevance Propagation With Promises}
   \label{alg:promise-propagation}
@@ -880,5 +639,793 @@ Arg Node, the function either records the chain or resolves and completes the Pr
     \Return $R_{in}$
   \end{algorithmic}
 \end{algorithm}
+
+\subsection{Implementation Details}
+Our implementation uses PyTorch hooks to record operations during the forward pass and constructs the computation graph dynamically. Each operation creates a promise object, which stores the propagation rule and tracks readiness and completeness.
+
+\textbf{Python Example: Promise-based LRP Engine}
+Below is a simplified Python pseudocode that captures the core logic of the promise-based LRP engine:
+
+\begin{verbatim}
+class Promise:
+  def __init__(self, op_type, inputs):
+    self.op_type = op_type
+    self.inputs = inputs
+    self.ready = False
+    self.complete = False
+    self.relevance = None
+
+  def resolve(self, output_relevance):
+    # Custom propagation rule for each op_type
+    self.relevance = propagate_relevance(self.op_type, self.inputs, output_relevance)
+    self.ready = True
+    return self.relevance
+
+def lrp_engine(graph, output_relevance):
+  # Traverse graph in reverse topological order
+  for node in reversed(graph.topo_order()):
+    promise = node.promise
+    if all(child.promise.complete for child in node.outputs):
+      input_relevance = promise.resolve(node.output_relevance)
+      for inp in node.inputs:
+        inp.promise.relevance = input_relevance[inp]
+      promise.complete = True
+  return [node.promise.relevance for node in graph.input_nodes()]
+\end{verbatim}
+
+\textbf{Explicit Steps in the Algorithm}
+\begin{enumerate}
+  \item \textbf{Forward Pass:} Register hooks to record each operation and build the computation graph.
+  \item \textbf{Promise Creation:} For each operation, instantiate a promise object with its propagation rule.
+  \item \textbf{Backward Pass:} Starting from the output, traverse the graph in reverse topological order. Each promise is resolved when all output relevance is received, and marked complete when it distributes relevance to its inputs.
+  \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
+\end{enumerate}
+
+\textbf{Readiness and Completeness}
+\begin{itemize}
+  \item \textbf{Readiness:} A promise is ready when all output relevance (from downstream nodes) has been received.
+  \item \textbf{Completeness:} A promise is complete when it has distributed its relevance to all inputs according to its propagation rule.
+\end{itemize}
+
+This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
+
+\textbf{Promise Trees and Resolution}
+A Promise Tree is created when a promise-generating operation receives a Promise as relevance input.
+The new Promise specific to that operation is created and linked to the input Promise with parent-child connections.
+
+In this example, A and B are promise-generating operations, marked purple, and D, E, C are Arg Nodes, marked orange.
+
+We also use "->" to indicate the node at which the traversal pointer is pointing at each step.
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, purple] (node1) {A};
+  \node[node, purple] (node2) [below left=of node1] {B};
+  \node[node, orange] (node3) [below right=of node1] {C};
+  \node[node, orange] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, orange] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east);
+  \draw[dashed, ->] (node1.south east) -- (node3.north west);
+  \draw[dashed, ->] (node2.south west) -- (node4.north);
+  \draw[dashed, ->] (node2.south east) -- (node5.north);
+
+\end{tikzpicture}
+\end{center}
+
+We mark nodes as red when we have traversed them, blue when we have propagated relevance through them.
+It is important to note the difference between these two states due to the delaying of propagation through Promises.
+Node A is traversed first, and propagates Promise Branches $b_{A,1}$ and $b_{A,2}$ through to its out-neighbours.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, red, label=left:{->}] (node1) {A};
+  \node[node, purple] (node2) [below left=of node1] {B};
+  \node[node, orange] (node3) [below right=of node1] {C};
+  \node[node, orange] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, orange] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north);
+  \draw[dashed, ->] (node2.south east) -- (node5.north);
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, purple] (node1) {$P_A$};
+  \node[node] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+We traverse to node B now, and find that it receives Promise Branch $b_{A,1}$. But B is a promise-generating operation, so a new Promise $P_B$ is created.
+$P_B$ is added as a child of the branch $b_{A,1}$ and $b_{A,1}$ is added as a parent to $P_B$, creating a Promise Tree. B then propagates the branches of $P_B$, $b_{B,1}$ and $b_{B,2}$ to its out-neighbours.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red, label=left:{->}] (node2) [below left=of node1] {B};
+  \node[node, orange] (node3) [below right=of node1] {C};
+  \node[node, orange] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, orange] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, purple] (node1) {$P_A$};
+  \node[node] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, purple] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+Assume that D, E, C are the first Arg Nodes encountered by branches $b_{B,1}$, $b_{B,2}$, and $b_{A,2}$, respectively, and that they are traversed in such order.
+Traversing D causes $b_{B,1}$ to forward chain the activation upwards. We colour Promise Tree objects teal when forward chaining has occurred through them.
+Since $P_B$ is still not in Complete state after this step, we enqueue D and stall relevance propagation along its path.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [below left=of node1] {B};
+  \node[node, orange] (node3) [below right=of node1] {C};
+  \node[node, red, label=below:{\small stalled}, label=left:{->}] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, orange] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, purple] (node1) {$P_A$};
+  \node[node] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, purple] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, teal] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+Likewise, once E is traversed, it will provide its forward output to $b_{B,2}$ to forward chain upwards. Since all branches of $P_B$ will have
+forwarded their arguments, $P_B$ is now in Ready state.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [below left=of node1] {B};
+  \node[node, orange] (node3) [below right=of node1] {C};
+  \node[node, red, label=below:{\small stalled}] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, red, label=left:{->}] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, purple] (node1) {$P_A$};
+  \node[node] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, teal] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, teal] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, teal] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+When a Promise becomes Ready, this triggers the first half of the Promise Tree resolution at that Promise. It will apply its characteristic
+operation using the results materialized by its branches' forward chains as inputs, and pass this output to its parents in the Promise Tree by
+calling \texttt{parent.setarg(self.op\_result)}.
+
+However, after this step, $P_B$ is still not in Complete state, so we must also enqueue E and stall relevance propagation along this path.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [below left=of node1] {B};
+  \node[node, orange] (node3) [below right=of node1] {C};
+  \node[node, red, label=below:{\small stalled}] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, red, label=below:{\small stalled}] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, purple] (node1) {$P_A$};
+  \node[node, teal] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, teal] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, teal] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, teal] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+Now, when C is traversed, the pattern repeats. $b_{A,2}$ will forward-chain the activation from C, and it will cause $P_A$ to reach Ready state.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [below left=of node1] {B};
+  \node[node, red, label=left:{->}] (node3) [below right=of node1] {C};
+  \node[node, red, label=below:{\small stalled}] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, red, label=below:{\small stalled}] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, teal] (node1) {$P_A$};
+  \node[node, teal] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node, teal] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, teal] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, teal] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, teal] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+And since $P_A$ has no parents in the Promise Tree, it will now begin the backpropagation of relevance, now that all arguments have been resolved.
+It will do this for all of its own branches using the backward chains stored within them, and recursively do so for the children of those branches.
+
+We also colour nodes in the Promise Tree as blue when relevance has been propagated through them.
+
+Since this all occurs in one step, we label the order in which propagation occurs at each node in both the Computation Graph and Promise Tree.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, blue, label={\small 1}] (node1) {A};
+  \node[node, blue, label=left:{\small 3}] (node2) [below left=of node1] {B};
+  \node[node, red, label=left:{->}] (node3) [below right=of node1] {C};
+  \node[node, red] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, red] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, blue, label={\small 1}] (node1) {$P_A$};
+  \node[node, blue, label=left:{\small 2}] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node, blue, label=right:{\small 6}] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, blue, label=left:{\small 3}] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, blue, label=left:{\small 4}] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, blue, label=right:{\small 5}] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+Note that although the relevance has propagated through the Promise Branches $b_{A,2}$, $b_{B,1}$, and $b_{B,2}$, the propagation functions
+of the nodes at the end of their chains, D, E, C, respectively, have not been called at this moment, thus we do not say that relevance
+has been propagated through them yet. Their propagation will resume in further iterations using the relevances passed to them through
+those branches.
+
+And see that the traversal pointer has remained at C, so we simply continue propagating along its path.
+Also, since $P_B$ is Complete, D and E will also be dequeued in coming iterations to continue propagation.
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Computation Graph
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[node, blue] (node1) {A};
+  \node[node, blue] (node2) [below left=of node1] {B};
+  \node[node, blue, label=left:{->}] (node3) [below right=of node1] {C};
+  \node[node, red, label=below:{queued}] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, red, label=below:{queued}] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\vspace{0.3cm}
+Promise Tree
+
+\vspace{0.3cm}
+\begin{tikzpicture}
+  \node[diamondnode, blue] (node1) {$P_A$};
+  \node[node, blue] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node, blue] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, blue] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, blue] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, blue] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\begin{tikzpicture}
+  \node[node, blue] (node1) {A};
+  \node[node, blue] (node2) [below left=of node1] {B};
+  \node[node, blue] (node3) [below right=of node1] {C};
+  \node[node, blue, label=left:{->}] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, red] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\begin{tikzpicture}
+  \node[diamondnode, blue] (node1) {$P_A$};
+  \node[node, blue] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node, blue] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, blue] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, blue] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, blue] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\begin{tikzpicture}
+  \node[node, blue] (node1) {A};
+  \node[node, blue] (node2) [below left=of node1] {B};
+  \node[node, blue] (node3) [below right=of node1] {C};
+  \node[node, blue] (node4) [below left=of node2, xshift=0.6cm] {D};
+  \node[node, blue, label=left:{->}] (node5) [below right=of node2, xshift=-0.6cm] {E};
+
+  \draw[dashed, ->] (node1.south west) -- (node2.north east) node[midway, above, xshift=-0.1cm] {$b_{A,1}$};
+  \draw[dashed, ->] (node1.south east) -- (node3.north west) node[midway, above, xshift=0.1cm] {$b_{A,2}$};
+  \draw[dashed, ->] (node2.south west) -- (node4.north) node[midway, above, xshift=-0.1cm] {$b_{B,1}$};
+  \draw[dashed, ->] (node2.south east) -- (node5.north) node[midway, above, xshift=0.1cm] {$b_{B,2}$};
+
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+\begin{minipage}{.5\textwidth}
+\begin{center}
+
+\begin{tikzpicture}
+  \node[diamondnode, blue] (node1) {$P_A$};
+  \node[node, blue] (node2) [yshift=-1.0cm, xshift=-0.6cm] {$b_{A,1}$};
+  \node[node, blue] (node3) [yshift=-1.0cm, xshift=0.6cm] {$b_{A,2}$};
+  \node[diamondnode, blue] (node4) [below=of node2, yshift=0.3cm] {$P_B$};
+  \node[node, blue] (node5) [below left=of node4, yshift=0.62cm, xshift=1.0cm] {$b_{B,1}$};
+  \node[node, blue] (node6) [below right=of node4, yshift=0.62cm, xshift=-1.0cm] {$b_{B,2}$};
+
+  \draw (node1.south west) -- (node2.north);
+  \draw (node1.south east) -- (node3.north);
+  \draw[<->] (node2.south) -- (node4.north);
+  \draw (node4.south west) -- (node5.north);
+  \draw (node4.south east) -- (node6.north);
+\end{tikzpicture}
+\end{center}
+\end{minipage}
+
+\textbf{Promise Deadlock}
+The introduction of Promises can cause issues with the traversal heuristic we use. Consider the following configuration of nodes. Let A be a Promise-Generating Node, and let B and E be Arg Nodes, coloured orange.
+Nodes coloured red are traversed, green are untraversed.
+
+One can consider that this is exactly the pattern found in residual connections, crucial in transformer networks and ResNets.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, orange] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, orange] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west);
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+Recall that our traversal heuristic states that we may only consider a node for traversal if all of its in-neighbours have propagated to it. In this case, A creates a Promise $P$, propagates its Promise Branches
+$p_1$, $p_2$ to B and D, and we see that the number of inputs landed at B equals B's in-degree. We traverse B first, propagating the Promise Branch $p_1$ to it.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, orange] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+B is an Arg Node, so the Promise Branch will retrieve its forward output and forward-chain it to obtain the activation at A, then save it to the Promise.
+We now stall traversal and enqueue B until the Promise is complete. Our only next option for traversal is D, which has received the other Promise Branch $p_2$ from A as input.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node, red] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, orange] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+We know that now E must be traversed, but see that we never traversed into it from the A->B->C path, so its incoming relevance inputs will never equal its in-degree, and we cannot consider it
+for traversal. This creates a circular dependency: C is stalled waiting for A's Promise $P$ to complete, but $P$ cannot complete because its second branch $p_2$ requires accessing E's activation,
+and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
+
+\textbf{Pre-Promises}
+
+The solution to Promise Deadlock is to allow Promise Branches to "reach ahead" past the traversal frontier to locate their Arg Nodes, without triggering full relevance backpropagation.
+
+When a node $v$ receives a Promise Branch input $p_1$ but is still waiting for other inputs (i.e., landed inputs < in-degree), we instantiate a \textbf{Pre-Promise}, which only has one branch $p_2$, at $v$
+(since it only has one branch, we simply refer to the Pre-Promise as its branch $p_2$). This Pre-Promise:
+
+\begin{enumerate}
+    \item Has a parent connection to $p_1$ (enabling forward-chaining of activations)
+    \item Does NOT register as a child of $p_1$ (preventing backward-chaining of relevance)
+    \item Continues traversal to find its Arg Node
+\end{enumerate}
+
+The parent-child asymmetry creates the desired behavior: $p_2$ can reach its Arg Node, forward-chain the activation back through its parent connection to satisfy $p_1$'s requirements, but relevance propagation is blocked at $v$ until the traversal heuristic naturally revisits it (when all inputs have landed).
+
+Once $v$'s in-degree is satisfied later in the traversal:
+\begin{itemize}
+    \item The Pre-Promise $p_2$ is "promoted" by establishing its child connection to $p_1$
+    \item If $p_1$'s Promise is now complete (all args resolved), backward-chaining proceeds
+    \item The traversal continues normally from $p_2$'s Arg Node after backward-chaining.
+\end{itemize}
+
+To illustrate the function of Pre-Promises, we will pick up where the last example left off. We have that D is trying to propagate a Promise Branch to E, but E does not
+have all its inputs yet. Therefore, we create a Pre-Promise $p_3$, and allow traversal to continue at E, now giving $p_3$ as E's input from D.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node, red] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, red] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+$p_3$ retrieves and forward-chains the activation at E to $p_2$, which then forward-chains it to obtain A's missing activation. We now have that A, B, D, E have gone through
+forward-chaining. We colour them as teal to signify this.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, teal] (node1) {A};
+\node[node, teal, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node, teal] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, teal] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+This is followed by $P$ triggering relevance backpropagation through all of its branches. Blue nodes signify that true relevance values have been propagated through them.
+Crucially, E does not continue this propagation due to the lack of a child connection from $p_2$ to $p_3$.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, blue] (node1) {A};
+\node[node, blue] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node, blue] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, teal] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+Now, C is able to be traversed.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, blue] (node1) {A};
+\node[node, blue] (node2) [right=of node1] {B};
+\node[node, red] (node3) [right=of node2] {C};
+\node[node, blue] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, teal] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+And we propagate through it to E, finally.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, blue] (node1) {A};
+\node[node, blue] (node2) [right=of node1] {B};
+\node[node, blue] (node3) [right=of node2] {C};
+\node[node, blue] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, red] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+\textbf{Input Aggregation} When a node has multiple in-neighbours pointing to one input position, we must aggregate the incoming relevances into one object.
+For multiple tensor inputs, this is straightforward, simply sum them.
+For multiple Promise Branch objects, we need to group them somehow while maintaining correct structure for resolution.
+This can be achieved using a new Promise Branch object which becomes the child of all the Promise Branches that need to be grouped, and sees them as parents.
+Thus, whenever multiple Promise Branches encounter the same node during propagation, their respective propagations end, and a new singular Promise Branch
+will continue in their place to prevent a path from being considered more than exactly once in propagation.
+We maintain correctness in propagation through the parent-child Promise Tree resolution, as the new Promise Branch will forward activations back
+to its parent Promise Branches, and then similarly receive relevance back from them once the root of the Promise Tree begins resolving.
+
+\textbf{Proposition 1:} The computation graph traversal does not backtrack and retraverse any node once it has already propagated relevance through it.
+\begin{proof}
+  Proof:
+  By our traversal heuristic, and facilitated by the Input Aggregation process, we have that this statement will hold true in any case that
+  follows the heuristic.
+
+  We can reach this conclusion by considering that the computation graph is a DAG by definition, as no instance of an operation can create as output
+  a dependency for its own inputs. Thus, there is no manner in which any kind of traversal starting at some node will come back to that same node.
+
+  Therefore, if traversing naively with our traversal heuristic, every node will be traversed exactly once, at the time of propagation across it,
+  and it will not be retraversed. Thus, the statement holds.
+
+  However, we make known that there are cases where this heuristic is broken to prevent Promise Deadlock. We now consider such cases and show
+  that the statement still holds in this situation.
+
+  Recall that this happens only during the creation of a Pre-Promise, which is the result of a Promise Branch being propagated to an out-neighbour whose
+  other inputs have not yet all landed. As soon as a Promise Branch is propagated, we essentially call for its resolution as soon as possible.
+  So, instead of waiting for the inputs to land, we propagate this new Pre-Promise.
+
+  Thus, we have a node $v$ such that the set of incoming relevance inputs to $v$, $I$, contains exactly one Promise Branch $p$, and $|I| < indegree(v)$.
+
+  Consider that the Pre-Promise resolution will always take priority over the traversal heuristic.
+  Thus, we assume the Pre-Promise will be propagated until it reaches its own Arg Node and propagates activations to its Promise Tree ancestors.
+  Upon backward propagation of the Promise Tree relevances, the backward chain of the Pre-Promise will not be executed, by definition of Pre-Promises.
+  Therefore, the relevance has not been propagated through this node yet.
+  Only once all the node's inputs land, and we traverse this node due to the traversal heuristic, will we accumulate all relevance values at this node, then execute the Pre-Promise backward chain on the accumulated relevance.
+  Traversal will continue at the Pre-Promise's Arg Node, and now we can apply the same DAG argument to conclude that this node will not be traversed again after this.
+\end{proof}
+
+\textbf{Claim:} The internal nodes of a given Promise chain are unique to that Promise.
+\begin{proof}
+  By Prop. 1 we have that no node has relevance propagated through it more than once in our graph traversal.
+  Suppose for a contradiction, then, that there were 2 distinct Promise Branches which shared an internal node. But then, upon resolution of both branches,
+  we would see that relevance gets propagated twice, once for each branch, contradicting Prop. 1.
+\end{proof}
 
 \end{document}

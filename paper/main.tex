@@ -26,7 +26,7 @@
   ]{geometry}
 
   \usepackage{tikz}
-  \usetikzlibrary{positioning,arrows.meta,shapes.geometric}
+  \usetikzlibrary{positioning,arrows.meta,shapes.geometric,decorations.pathreplacing}
 
   \tikzset{
   maincircle/.style={circle, draw, minimum size=13mm, inner sep=2pt, font=\footnotesize, align=center},
@@ -191,7 +191,7 @@ We implement propagation rules for each type of autograd Node (a Node in this ca
   Initialize $S$ as a stack. Push all nodes with in-degree 0 onto $S$. Traverse as follows:
   \begin{itemize}
     \item Pop the top node $v$ from the stack and process it.
-    \item For all $w \in outadj(v)$, decrement $pending(w) -= 1$.
+    \item For all $w \in outadj(v)$, decrement $pending(w) = pending(w) - 1$.
     \item For all $w' \in outadj(v)$ where $pending(w') == 0$ now, push $w'$ onto $S$.
     \item Repeat while $S$ is non-empty.
   \end{itemize}
@@ -257,7 +257,7 @@ We will now formally define this system.\\
 The objective of a Promise is to act as a placeholder while we continue traversing the graph in search of the Origin Node's missing values.
 \\
 \begin{definition}[Promise Branch Arg Node]
-  A Promise Branch's Arg Node refers to the first Node along a Promise Branch in its forward pass output is retrievable from its own cached tensors.\\
+  A Promise Branch's Arg Node refers to the first Node along a Promise Branch in which its forward pass output is retrievable from its own cached tensors.\\
 \end{definition}
 
 Each intermittent Node between the Origin and Arg Nodes contributes two closures, one for its forward
@@ -267,6 +267,8 @@ function chain to reconstruct the activation at the Origin Node, which is then s
 all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred relevance can be “fast-forwarded” down
 each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
 dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
+
+We provide a full example of this mechanism in the Appendix.
 
 \subsubsection{Promise Nesting and Trees}
 Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
@@ -688,6 +690,207 @@ def lrp_engine(graph, output_relevance):
 \end{itemize}
 
 This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
+
+\textbf{Example of Basic Promise Mechanism}
+Consider the following subgraph in a computation graph. Suppose nodes A, B, C, D are all nodes which do not store
+any forward activations, and E is one which does and allows us to retrieve or recompute its forward pass output.
+Furthermore, suppose that node A is one which requires some forward activation to compute relevance propagation,
+and nodes B, C, D are all operations whose backward relevance propagations do not require any forward activations.
+
+\vspace{0.7cm}
+\begin{center}
+\begin{tikzpicture}
+  \node[node, purple] (node1) {A};
+  \node[node] (node2) [right=of node1] {B};
+  \node[node] (node3) [right=of node2] {C};
+  \node[node] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+
+  \draw[->] (node1.east) -- (node2.west);
+  \draw[->] (node2.east) -- (node3.west);
+  \draw[->] (node3.east) -- (node4.west);
+  \draw[->] (node4.east) -- (node5.west);
+  \begin{scope}[transform canvas={yshift=.3cm}]
+    \draw[->, shorten <= -0.5cm, shorten >= -0.5cm] (node5.north) -- (node1.north) node[midway, above] {Model forward};
+  \end{scope}
+  \draw [decorate,decoration={brace,amplitude=5pt,mirror,raise=2ex}]
+    (node1.south west) -- (node4.south east) node[midway,yshift=-3em]{Do not store forward activations};
+\end{tikzpicture}
+\end{center}
+\vspace{0.3cm}
+
+Thus, node A is the limiting factor here. Without this forward activation it requires, we cannot continue relevance
+propagation. But we know there is some node further down the traversal which saves some forward activation(s),
+and if we traverse to it, we will also know all the operations between it and node A, giving us a way to reconstruct
+the activation at node A (see Proposition below).
+
+\textbf{Proposition} For any node $v$ in a computation graph, there exists at least one node descendent to $v$
+which stores a forward activation, which we call an Arg Node.
+
+\begin{proof}
+  We prove this using the programming paradigm of PyTorch. We have that every model output is a function of the
+  model inputs and parameters. By the nature of backpropagation, we must compute the gradients of the loss w.r.t.
+  each parameter, but we require the values of the parameters at each layer to compute the gradients w.r.t. the
+  parameters at the preceding layer.
+  
+  Since every part of the model is a function of the inputs and parameters in some way, their nodes in the
+  computation graph must have out-degree 0. Therefore, as long as the model inputs are set to track gradients,
+  every sink node of the DAG will contain a parameter or input, which are forward activations.
+  
+  If any node did not eventually lead to such a sink node, that would imply that none of the nodes along this
+  path require gradient tracking. But then this path should not exist in the computation graph at all.
+
+  So, all other nodes in the computation graph must be ancestors of some such sink node, and this statement holds true.
+\end{proof}
+
+Now, for each node $v$, consider $fwd_v$ to be a closure of the node's forward operation, and $bwd_v$ to be a closure of
+its backward relevance propagation function.
+
+Let $y_E$ be the forward output at node E. Then, we can reconstruct the forward input at node A, $x_A$, by computing
+$x_A = fwd_B(fwd_C(fwd_D(y_E)))$.
+
+Let $R_A$ be the accumulated relevance at A from its in-neighbours. When we have recomputed $x_A$, we can then compute
+$R_{B \leftarrow A} = bwd_A(R_A, x_A)$. And similarly, we compute $R_{E \leftarrow D} = bwd_D(bwd_C(bwd_B(R_{B \leftarrow A})))$.
+
+We accomplish this during traversal with the use of Promises, enabling a lazy evaluation of these values. We colour nodes red upon
+traversing them. We also indicate the location of the traversal pointer with $\uparrow$.
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, red, label=below:{$\uparrow$}] (node1) {A};
+  \node[node] (node2) [right=of node1] {B};
+  \node[node] (node3) [right=of node2] {C};
+  \node[node] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+
+  \draw[->] (node1.east) -- (node2.west);
+  \draw[->] (node2.east) -- (node3.west);
+  \draw[->] (node3.east) -- (node4.west);
+  \draw[->] (node4.east) -- (node5.west);
+\end{tikzpicture}
+\end{center}
+
+We encounter node A, which we find requires a Promise. We instantiate the Promise metadata object $P$ and propagate its Branch $b_P$ to its out-neighbour, and continue traversal.
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [right=of node1] {B};
+  \node[align=center,anchor=north] (lab) at (node2.south) {$\uparrow$\\$b_P$ stores $fwd_B$, $bwd_B$};
+  \node[node] (node3) [right=of node2] {C};
+  \node[node] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+
+  \draw[->] (node1.east) -- (node2.west) node[midway, above] {$b_P$};
+  \draw[->] (node2.east) -- (node3.west);
+  \draw[->] (node3.east) -- (node4.west);
+  \draw[->] (node4.east) -- (node5.west);
+\end{tikzpicture}
+\end{center}
+
+Upon reaching node B, since it is not an Arg Node, $b_P$ will record $fwd_B$ and $bwd_B$, then will be passed on to B's out-neighbour.
+It will continue and do this for C and D.
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [right=of node1] {B};
+  \node[node, red] (node3) [right=of node2] {C};
+  \node[align=center,anchor=north] (lab) at (node3.south) {$\uparrow$\\$b_P$ stores $fwd_C$, $bwd_C$};
+  \node[node] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+
+  \draw[->] (node1.east) -- (node2.west) node[midway, above] {$b_P$};
+  \draw[->] (node2.east) -- (node3.west) node[midway, above] {$b_P$};
+  \draw[->] (node3.east) -- (node4.west);
+  \draw[->] (node4.east) -- (node5.west);
+\end{tikzpicture}
+\end{center}
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [right=of node1] {B};
+  \node[node, red] (node3) [right=of node2] {C};
+  \node[node, red] (node4) [right=of node3] {D};
+  \node[align=center,anchor=north] (lab) at (node4.south) {$\uparrow$\\$b_P$ stores $fwd_D$, $bwd_D$};
+  \node[node, orange] (node5) [right=of node4] {E};
+
+  \draw[->] (node1.east) -- (node2.west) node[midway, above] {$b_P$};
+  \draw[->] (node2.east) -- (node3.west) node[midway, above] {$b_P$};
+  \draw[->] (node3.east) -- (node4.west) node[midway, above] {$b_P$};
+  \draw[->] (node4.east) -- (node5.west);
+\end{tikzpicture}
+\end{center}
+
+Until, finally, $b_P$ encounters node E, which is an Arg Node, and we are able to retrieve the forward pass output of E, $y_E$.
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [right=of node1] {B};
+  \node[node, red] (node3) [right=of node2] {C};
+  \node[node, red] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+  \node[align=center,anchor=north] (lab) at (node5.south) {$\uparrow$\\retrieve $y_E$};
+
+  \draw[->] (node1.east) -- (node2.west) node[midway, above] {$b_P$};
+  \draw[->] (node2.east) -- (node3.west) node[midway, above] {$b_P$};
+  \draw[->] (node3.east) -- (node4.west) node[midway, above] {$b_P$};
+  \draw[->] (node4.east) -- (node5.west) node[midway, above] {$b_P$};
+\end{tikzpicture}
+\end{center}
+
+We then:
+\begin{itemize}
+  \item Use the stored $fwd$ closures from B, C, D to compute $x_A = fwd_B(fwd_C(fwd_D(y_E)))$, and store it within the Promise metadata object $P$.
+  \item Check in $P$ if the Promise is now in Ready state (all branches have found an Arg Node), in this case there is only the one branch.
+  \item If Ready, and the Promise has no incomplete parent Promises (explained the next section), compute $R_{E \leftarrow A} = bwd_D(bwd_C(bwd_B(bwd_A(R_A, x_A))))$.
+\end{itemize}
+
+\vspace{0.7cm}
+\begin{center}
+\begin{tikzpicture}
+  \node[node, red] (node1) {A};
+  \node[node, red] (node2) [right=of node1] {B};
+  \node[node, red] (node3) [right=of node2] {C};
+  \node[node, red] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+  \node[align=center,anchor=north] (lab) at (node5.south) {$\uparrow$\\retrieve $y_E$};
+  \node[align=center,anchor=north, yshift=-1.1cm, xshift=-1.3cm] (label1) at (node1.south) {Store $x_A$ in $P$};
+
+  \draw[->] (node1.east) -- (node2.west) node[midway, above] {$b_P$};
+  \draw[->] (node2.east) -- (node3.west) node[midway, above] {$b_P$};
+  \draw[->] (node3.east) -- (node4.west) node[midway, above] {$b_P$};
+  \draw[->] (node4.east) -- (node5.west) node[midway, above] {$b_P$};
+  \begin{scope}[transform canvas={yshift=-1.8cm}]
+    \draw[->, shorten <= -0.5cm, shorten >= -0.5cm] (node5.north) -- (node1.north) node[midway, above] {Compute $x_A$};
+  \end{scope}
+  \begin{scope}[transform canvas={yshift=-2.4cm}]
+    \draw[->, shorten <= -0.5cm, shorten >= -0.5cm] (node1.north) -- (node5.north) node[midway, below] {Compute $R_{E \leftarrow A}$};
+  \end{scope}
+\end{tikzpicture}
+\end{center}
+\vspace{0.3cm}
+
+And now, we have lazily computed the propagations of the path starting from A and ending at E, while keeping the traversal pointer from
+backtracking any previously visited nodes. Blue indicates relevance propagation is complete at that node.
+
+\begin{center}
+\begin{tikzpicture}
+  \node[node, blue] (node1) {A};
+  \node[node, blue] (node2) [right=of node1] {B};
+  \node[node, blue] (node3) [right=of node2] {C};
+  \node[node, blue] (node4) [right=of node3] {D};
+  \node[node, orange] (node5) [right=of node4] {E};
+  \node[align=center,anchor=north] (lab) at (node5.south) {$\uparrow$\\Continue propagation with $R_{E \leftarrow A}$};
+
+  \draw[->] (node1.east) -- (node2.west);
+  \draw[->] (node2.east) -- (node3.west);
+  \draw[->] (node3.east) -- (node4.west);
+  \draw[->] (node4.east) -- (node5.west);
+\end{tikzpicture}
+\end{center}
 
 \textbf{Promise Trees and Resolution}
 A Promise Tree is created when a promise-generating operation receives a Promise as relevance input.

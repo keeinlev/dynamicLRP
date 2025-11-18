@@ -836,7 +836,8 @@ class LRPPropFunctions:
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:
-            return gamma_lrp_general(torch.matmul, None, {}, x, weights, z, r, 1, filter_val)[:2]
+            gamma = grad_fn.metadata["gamma"]
+            return gamma_lrp_general(torch.matmul, None, {}, x, weights, z, r, gamma, filter_val)[:2]
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
@@ -923,7 +924,8 @@ class LRPPropFunctions:
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:
-            return gamma_lrp_general(conv_f, conv_T, {"stride": grad_fn._saved_stride, "padding": grad_fn._saved_padding, "dilation": grad_fn._saved_dilation, "groups": grad_fn._saved_groups}, x, weights, z, r, 100, filter_val)
+            gamma = grad_fn.metadata["gamma"]
+            return gamma_lrp_general(conv_f, conv_T, {"stride": grad_fn._saved_stride, "padding": grad_fn._saved_padding, "dilation": grad_fn._saved_dilation, "groups": grad_fn._saved_groups}, x, weights, z, r, gamma, filter_val)
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)

@@ -409,8 +409,6 @@ epigenetic marker prediction (EMP) task and H3 target, Llama-3.2-1B finetuned on
 and the ViT-b-16 and VGG16 base models to evaluate on the CIFAR-10 ImageNet dataset. Finetuned models were then used to
 evaluate examples from their respective datasets' validation splits.
 
-
-\subsection{Visualizing Attributions for Image Models}
 \begin{figure}[h]
   \centering
   \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
@@ -424,15 +422,16 @@ Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most re
 masking/occluding the top-i least relevant features from each input sample, to compute the Least-Relevant First (LeRF) curve.
 The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
 
+\section{Results}
 \begin{figure}[h]
   \centering
   \includegraphics[width=1.0\textwidth]{../documentation/vit_abpc_comparisons.png}
-  \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from ImageNet CIFAR-10's test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
+  \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from the ImageNet CIFAR-10 test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
 \end{figure}
 
 \begin{table}
 \begin{center}
-  \caption{ABPC and attribution efficiency metrics for ViT experiments.}
+  \caption{ABPC and attribution efficiency metrics for ViT-b-16 experiments. 1000 examples from CIFAR-10 test set \cite{krizhevsky2009learning}.}
   \label{vit-table}
   \begin{tabular}{ | c | c c c c c | }
     \hline
@@ -442,9 +441,9 @@ The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
     InputXGradient & -0.0030 & 0.90 & 0.90 & \textbf{59.89} & 2.1GB \\ 
     GradientSHAP & 0.074 & 0.94 & 0.87 & 3.32 & 8.6GB \\
     Random & -0.023 & 0.88 & 0.90 & - & - \\
-    AttnLRP & 1.20 & 1.59 & 0.39 & 6.02 & \textbf{0.96GB} \\
+    AttnLRP & \textbf{1.46} & \textbf{1.78} & 0.33 & 6.02 & \textbf{0.96GB} \\
     \hline
-    Ours & \textbf{1.36} & \textbf{1.73} & \textbf{0.36} & 9.74 & 1.6GB \\
+    Ours & \textbf{1.46} & \textbf{1.78} & \textbf{0.32} & 9.74 & 1.6GB \\
     \hline
   \end{tabular}
   \\ [0.5ex]
@@ -452,7 +451,26 @@ The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
 *N/A in the Speed column signifies that GPU memory limits caused thrashing and prevented the observation of method's true speed.
 \end{table}
 
-\section{Discussion}
+\begin{table}
+\begin{center}
+  \caption{ABPC and attribution efficiency metrics for VGG experiments. 3800 examples from ImageNette (320px) validation set \cite{howard2019imagenette}}.
+  \label{vit-table}
+  \begin{tabular}{ | c | c c c c c | }
+    \hline
+    Method & ABPC ($\uparrow$) & Comprehensiveness ($\uparrow$) & Sufficiency ($\downarrow$) & Speed (it/s, $\uparrow$) & Peak VRAM ($\downarrow$) \\
+    \hline
+    Saliency & 0.73 & 2.58 & 1.85 & \textbf{156.83} & TO FILL \\ 
+    SmoothGrad & 1.50 & \textbf{2.87} & 1.37 & 8.90 & TO FILL \\ 
+    Random & -0.0022 & 2.40 & 2.40 & - & - \\
+    Zennit LRP & 1.69 & 2.72 & 1.02 & 29.41 & TO FILL \\
+    \hline
+    Ours & \textbf{1.77} & 2.65 & \textbf{0.88} & 21.79 & 2.3GB \\
+    \hline
+  \end{tabular}
+  \\ [0.5ex]
+\end{center}
+\end{table}
+
 
 \subsection{Comparing the Attribution Methods of Table 1}
 We see that among all the attribution methods tested, ours and AttnLRP stand among the top of the ABPC metrics. Comprehensiveness is defined as $AUC(y = baseline) - AUC(MoRF)$ and Sufficiency as $AUC(y = baseline) - AUC(LeRF)$.
@@ -465,14 +483,16 @@ regions of the stream. This is an important theoretical consideration that is ov
 never the direct focus of relevance propagation. With our framework, considering these connections is built-in.
 
 What we also demonstrate is the framework's capability to adopt rules defined by other implementations. In this experiment, we tuned our LRP to behave under the specifications defined in AttnLRP \cite{achtibat2024attnlrp}.
-We used $\gamma$-LRP for Convolutional and Linear layers ($\gamma = 100$, $\gamma = 1$, respectively), and attributed attention modules using CP-LRP, as also suggested by the AttnLRP authors for image models.
+We used $\gamma$-LRP for Convolutional and Linear layers ($\gamma_{conv} = 130$, $\gamma_{linear} = 0.001$), and attributed attention modules using CP-LRP, as also suggested by the AttnLRP authors for image models.
+
+\section{Discussion}
 
 The memory improvement of AttnLRP over our LRP is likely due to the fact that Zennit does not require the full autograd computation graph to be stored, only the subgraphs associated with the above mentioned layers/modules,
 as well as activations and normalization layers. Any additional operations performed do not have autograd nodes saved, and thus reduce total peak VRAM usage, as opposed to our method which tracks such operations.
 
 The difference in computation speed is likely also a result of the additional propagations taken across the entire computation graph. However, we also use a different approach to computing the propagations of Linear and
 Convolutional layers, opting for an explicit, analytical redistribution instead of using the gradient-based approach, which computes the gradients of the inputs and weights w.r.t. the relevance contributions.
-However, these two methods are mathematically equivalent.
+However, these two methods are mathematically equivalent. \textcolor{red}{Maybe show a derivation in the Appendix?}
 
 \subsection{Weighing the Costs of Maintainability}
 While we are optimistic that a generalized form of LRP will empower and enable researchers to explain increasingly complex model architectures, we are equally aware of skepticism surrounding its long-term feasibility.

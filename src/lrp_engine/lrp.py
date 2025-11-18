@@ -53,6 +53,8 @@ class LRPEngine:
                  params_to_interpret=None,
                  no_recompile=False,
                  use_gamma=False,
+                 conv_gamma=100.0,
+                 mm_gamma=1.0,
                  use_z_plus=False,
                  relevance_filter=1.0,
                  starting_relevance=None,
@@ -65,7 +67,10 @@ class LRPEngine:
         self.params_to_interpret : list[torch.Tensor] = params_to_interpret
         self.param_node_inds : list[int] = None
         self.no_recompile : bool = no_recompile
-        self.use_gamma : bool = use_gamma
+        self.use_gamma_conv : Union[bool, tuple[bool]] = use_gamma[0] if isinstance(use_gamma, tuple) else use_gamma
+        self.use_gamma_mm : Union[bool, tuple[bool]] = use_gamma[1] if isinstance(use_gamma, tuple) else use_gamma
+        self.conv_gamma = conv_gamma
+        self.mm_gamma = mm_gamma
         self.use_z_plus : bool = use_z_plus
         self.relevance_filter : float = relevance_filter
         self.promise_bucket = PromiseBucket()
@@ -112,13 +117,15 @@ class LRPEngine:
             curnode.metadata["bucket"] = self.promise_bucket
         elif node_name == "DecomposedConvolutionBackward0":
             curnode.metadata["conv_layer"] = self.conv_counter
-            curnode.metadata["use_gamma"] = self.use_gamma
+            curnode.metadata["use_gamma"] = self.use_gamma_conv
+            curnode.metadata["gamma"] = self.conv_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
             self.conv_counter += 1
         elif node_name == "MmBackward0":
             curnode.metadata["mm_layer"] = self.mm_counter
-            curnode.metadata["use_gamma"] = self.use_gamma
+            curnode.metadata["use_gamma"] = self.use_gamma_mm
+            curnode.metadata["gamma"] = self.mm_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
             self.mm_counter += 1

@@ -98,6 +98,11 @@ Recent advances have begun addressing these technical barriers. Achtibat et al. 
 
 We address this gap by proposing a model-agnostic LRP framework that extends rule-based attribution to arbitrary neural architectures with minimal overhead. Our key insight is decomposing LRP rules to individual tensor operations—analogous to how PyTorch's autograd generalized gradient computation—enabling seamless integration with any network topology. Through a novel promise-based system for handling missing forward activations, our approach maintains LRP's theoretical guarantees while achieving computational efficiency comparable to standard backpropagation. This work repositions LRP as a competitive, scalable alternative for explaining modern deep learning systems.
 
+We aim to show through experiments across multiple modalities that our proposed LRP solution remains mathematically sound and produces
+faithful and interpretable attributions consistent with existing methods. We also demonstrate that the Promise-based LRP maintains a
+predictable and efficient memory footprint and sufficient computation speed for research applications on large (100s of millions -
+1 billion parameters) models of various architectures using consumer-grade hardware.
+
 \section{Background}
 
 Neural network interpretability algorithms fundamentally seek to decompose model predictions into input feature contributions, yet differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad}, but suffer from gradient saturation and linearity assumptions that fail to capture complex nonlinear interactions \cite{ancona2018towards}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME \cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates, yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}. Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
@@ -151,36 +156,6 @@ This theoretical foundation underscores the flexibility and scalability of the p
 
 \section{Methods}
 
-\subsection{Computation Graph Processing}
-
-The computation graph is a directed acyclic graph (DAG) representing the sequence of operations in a neural network. However, the autograd graph only has one entrypoint at the Node representing the model output, and tracks only the backward edges from output to input. Algorithm~\ref{alg:graph-construction} outlines the process of constructing an auxiliary graph from the autograd graph of a PyTorch model. This graph will allow access to any Node's in- and out-adjacencies, and will be used in the traversal algorithm.
-
-\begin{algorithm}[t]
-  \caption{Computation Graph Construction}
-  \label{alg:graph-construction}
-  \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$
-    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
-    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
-    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
-    \State $root \gets hidden\_states.grad\_fn$
-    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-    \Return $in\_adj$, $out\_adj$, $topo\_stack$
-    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \If{$fcn = \text{None}$ or $fcn \in visited$}
-        \State \Return
-      \EndIf
-      \State $visited \gets visited \cup \{fcn\}$
-      \For{each $child \in fcn.next\_functions$}
-        \State $out\_adj[fcn].append(child)$
-        \State $in\_adj[child].append(fcn)$
-        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \EndFor
-      \State $topo\_stack.push(fcn)$
-    \EndFunction
-  \end{algorithmic}
-\end{algorithm}
-
 \subsection{Operation-Level Relevance Propagation}
 
 We implement propagation rules for each type of autograd Node (a Node in this case maps to an operation call), then traverse the auxiliary graph with the following heuristic:
@@ -199,7 +174,27 @@ We implement propagation rules for each type of autograd Node (a Node in this ca
   This ensures traversal follows some topological ordering of $G$, since nodes are only processed once all their in-neighbours have been.
 \end{definition}
 
-The operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental tensor operations. Algorithm~\ref{alg:operation-propagation} describes the propagation process.
+We motivate shifting the level of abstraction from layer-wise to operation-wise by careful consideration of the modern-day deep learning paradigm
+and the costs of the practices used by currently existing LRP implementations.
+
+When operating at the layer level, for every new model architecture, a configuration for LRP must be specified for each new module
+in the architecture. Since modules are user-defined, there is thus no limit to the number of such unique configurations. And though many
+architectures may share the same set of tensor operations used in their computations, they would require two different configurations in this case.
+By using this level of abstraction, current LRP implementations also require many modules in the model to be patched and hooked, changing
+built-in behaviours of forward and backward passes. This introduces a potential entrypoint for user error, should they use the wrong version of the
+model, or forget to switch off these patches for true training or evaluation. We aim to curb these concerns by enabling LRP at the operation
+level.
+Another oversight of using layer-wise abstraction for LRP is that there are many operations that can be done to tensors which do not
+materialize as modules (e.g. addition, multiplication, logarithms, etc.), and thus must be written in explicitly as sub-steps in a wider-scoped,
+and module-specific propagation rule any time they are to be considered in LRP.
+
+By atomicizing relevance propagation to the core operations applied to tensors, we eliminate the need for redundant configurations,
+maximize reuse of defined mathematical rules, and ensure the capture of any and all significant manipulations to the data made by the model
+without repeating propagation rule definitions, regardless of the module they are defined in.
+Additionally, our framework sits on top of the auto-differentiation module, not within it, so there is no interference with the built-in
+systems which may compromise regular functionality.
+This operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental
+tensor operations.
 
 \subsection{A Caveat to Autograd}
 
@@ -390,18 +385,8 @@ Another benefit which arises from both the caching and this reduction is that th
 Recall that due to the issue of Promise Deadlock that can be encountered during initial traversal, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
 However, if we know the Promise chains beforehand and can reduce them to single nodes, then the order in which we perform computations becomes fully deterministic and independent of edge connections, reducing the graph traversal overhead to $O(n)$.
 
-A slight observation that can then be made is that Promises must strictly represent only non-branching computation paths, which follows from both the definition of Promise-Generating Operations and the process of collapsing Promises into single nodes for subsequent passes.
-
-A detailed algorithm describing these subsequent passes is provided in the Appendix.
-
 \section{Experimental Setup}
-We aim to show through the following experiments that our proposed LRP solution remains mathematically sound and produces
-faithful and interpretable attributions consistent with existing methods. We also demonstrate that the
-Promise-based LRP maintains a predictable and efficient memory footprint and sufficient computation speed for
-research applications on large (100s of millions - 1 billion parameters) models of various architectures
-using consumer-grade hardware.
-
-Specifically, all experiments were run on a machine with 32GB RAM and an RTX 4070 Super with 12GB VRAM, with PyTorch v2.7.1 and CUDA v12.8.
+\textcolor{red}{Give a rundown of the hardware used}
 
 \subsection{Model and Dataset Selection}
 We used RoBERTa-large finetuned on the SQuAD-v2 question-answering dataset, DNABERT-2 finetuned on the GUE
@@ -669,39 +654,121 @@ Our implementation uses PyTorch hooks to record operations during the forward pa
 Below is a simplified Python pseudocode that captures the core logic of the promise-based LRP engine:
 
 \begin{verbatim}
-class Promise:
-  def __init__(self, op_type, inputs):
-    self.op_type = op_type
-    self.inputs = inputs
-    self.ready = False
-    self.complete = False
-    self.relevance = None
 
-  def resolve(self, output_relevance):
-    # Custom propagation rule for each op_type
-    self.relevance = propagate_relevance(self.op_type, self.inputs, output_relevance)
-    self.ready = True
-    return self.relevance
+class PromiseBranch:
+  def __init__(self, promise_obj, index):
+    self.promise = promise_obj
+    self.promise_dict = promise.metadata_dict
+    self.index = index
+    self.fwd_chain = []
+    self.bwd_chain = []
+    self.children = [] # Recall that the child connection is from Branch -> Promise
+
+  def record_fwd(self, fwd_closure):
+    self.fwd_chain.append(fwd_closure)
+
+  def record_bwd(self, bwd_closure):
+    self.bwd_chain.append(bwd_closure)
+
+  def setarg(self, val):
+    # Brings args from the Arg Node to the Origin Node
+    # Assumes that fwd_chain has recorded all node fwd closures leading up to an Arg Node
+    for fcn in self.fwd_chain:
+      # Iteratively apply the forward chain operations
+      val = fcn(val)
+    self.promise_dict["args"][self.index] = val
+
+    self.promise_dict["ready"] = all(arg is not None for arg in self.promise_dict["args"])
+    if self.promise_dict["ready"]:
+      self.promise.trigger_completion()
+
+  def exec_bwd(self, val):
+    # Brings relevances from the Origin Node to the Arg Node
+    # Assumes that bwd_chain has recorded all node bwd closures leading up to an Arg Node
+    for fcn in reverse(self.bwd_chain):
+      # Iteratively apply the backward chain operations in reverse order from what they were recorded in
+      val = fcn(val)
+    self.promise_dict["rins"][self.index] = val
+
+class Promise:
+  def __init__(self, output_relevance, op, num_branches, parent_promises)
+    self.op = op
+    self.parents = parent_promises # And the parent connection is from Promise -> Branch
+    self.metadata_dict = {
+      "rout": output_relevance,
+      "ready": False,
+      "complete": False,
+      "args": [None] * num_branches,
+      "rins": [None] * num_branches,
+    }
+
+    # metadata_dict is mutable, so all branches can write to it as a shared location, using their respective index
+    self.branches = [ PromiseBranch(self, i) for i in range(num_branches) ]
+  
+  def accumulate_rout(self, val):
+    # May be overridden based on the Promise operation type, but this is a general default for simplicity
+    self.metadata_dict["rout"] += val
+
+  def trigger_completion(self):
+    if len(pending_parents := list(filter(lambda parent: not parent.complete, self.parents))):
+      # If Promise has any parent Promise Branches that have not been completed yet, try to trigger them by setting their args with this Promise's op result
+      # This potentially sets off a mutual recursion loop between PromiseBranch.setarg() and Promise.trigger_completion() calls.
+      for parent in pending_parents:
+        parent.setarg(self.op(*self.metadata_dict["args"]))
+    else:
+      # Otherwise, we can proceed with relevance backprop
+      # Custom propagation rule for each operation type
+      self.relevance = propagate_relevance(type(self.op), output_relevance, self.metadata_dict["args"])
+      for i, branch in enumerate(self.branches):
+        # Propagates the distributed relevances from Origin Node back to each end-of-Branch Arg Node
+        branch.exec_bwd(self.relevance[i])
+        for child in branch.children:
+          # self.metadata_dict["rins"][i] is updated within branch.exec_bwd()
+          child.accumulate_rout(self.metadata_dict["rins"][i])
+      self.metadata_dict["complete"] = True
+
+      # Recurse
+      for branch in self.branches:
+        for child in branch.children:
+          child.trigger_completion()
 
 def lrp_engine(graph, output_relevance):
-  # Traverse graph in reverse topological order
-  for node in reversed(graph.topo_order()):
-    promise = node.promise
-    if all(child.promise.complete for child in node.outputs):
-      input_relevance = promise.resolve(node.output_relevance)
-      for inp in node.inputs:
-        inp.promise.relevance = input_relevance[inp]
-      promise.complete = True
-  return [node.promise.relevance for node in graph.input_nodes()]
+  # To write...
 \end{verbatim}
 
 \textbf{Explicit Steps in the Algorithm}
 \begin{enumerate}
-  \item \textbf{Forward Pass:} Register hooks to record each operation and build the computation graph.
-  \item \textbf{Promise Creation:} For each operation, instantiate a promise object with its propagation rule.
-  \item \textbf{Backward Pass:} Starting from the output, traverse the graph in reverse topological order. Each promise is resolved when all output relevance is received, and marked complete when it distributes relevance to its inputs.
+  \item \textbf{Forward Pass:} Get the model output and computation graph built by the auto-differentiation module.
+  \item \textbf{Graph Augmentation Pass:} Attach any additional required metadata for LRP to each node in the computation graph. This includes in-neighbours, topological ordering, and computation flags. See Algorithm~\ref{alg:graph-construction}.
+  \item \textbf{Backward Pass:} Starting from the output, traverse the graph using the Traversal Heuristic (\textcolor{red}{Section}). A node is traversed when all output relevance is received, or when it is part of a Promise's resolution path, and marked as propagated when it distributes relevance to its inputs.
   \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
 \end{enumerate}
+
+\begin{algorithm}[t]
+  \caption{Computation Graph Construction}
+  \label{alg:graph-construction}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$
+    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
+    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
+    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
+    \State $root \gets hidden\_states.grad\_fn$
+    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+    \Return $in\_adj$, $out\_adj$, $topo\_stack$
+    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \If{$fcn = \text{None}$ or $fcn \in visited$}
+        \State \Return
+      \EndIf
+      \State $visited \gets visited \cup \{fcn\}$
+      \For{each $child \in fcn.next\_functions$}
+        \State $out\_adj[fcn].append(child)$
+        \State $in\_adj[child].append(fcn)$
+        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \EndFor
+      \State $topo\_stack.push(fcn)$
+    \EndFunction
+  \end{algorithmic}
+\end{algorithm}
 
 \textbf{Readiness and Completeness}
 \begin{itemize}

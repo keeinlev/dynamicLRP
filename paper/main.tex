@@ -158,14 +158,61 @@ This theoretical foundation underscores the flexibility and scalability of the p
 
 \subsection{Operation-Level Relevance Propagation}
 
-We implement propagation rules for each type of autograd Node (a Node in this case maps to an operation call), then traverse the auxiliary graph with the following heuristic:
+As layers in deep learning architectures begin to evolve to more and more complex modules which compound many operations, we begin to see
+issues in performing backpropagation methods at the per-module level of abstraction, the current widely-agreed upon choice for LRP.
+We motivate shifting the level of abstraction of LRP from layer/module-wise to operation-wise through careful consideration of the modern-day deep learning
+paradigm and the practices used by existing LRP implementations. We define a module as an object lying at the maximal granularity
+within a model structure defined by a deep learning framework (e.g. Linear, Convolution, Attention, LayerNorm).
+
+While many modules are certainly defined by a sole operation such as Linear, Convolution, Softmax, etc., there is a rising number of modules
+that compound these with elementary tensor operations, which are not captured at the granularity of modules.
+
+The first consequence is that there is no upper limit for the number of unique module types, and as the field advances, the rate at which
+these new modules are introduced increases, each requiring a new backpropagation rule. This is unsustainable in the long-term.
+By shifting to the level of operations, there is a strict set of operation-specific rules that must be defined before all architectures
+that reduce to that set of operations are supported.
+
+Another complication of elementary operations (e.g. addition, multiplication, logarithm) not being captured at the module-level granularity
+is that they must always appear only as sub-steps within a wider-scoped, module-specific propagation rule if they are to be considered in LRP.
+Thus, redundancy arises when multiple modules make use of the same elementary operations, and although the logic for handling them may already
+be defined for one module, it must be redefined for the others due to the propagation boundaries lying at the extremities of the modules and
+not the operations. This puts limits on the usefulness and wide adoption of the backpropagation method.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=1.0\textwidth]{../documentation/op-level-lrp-motivation.png}
+  \caption{Visualizing the difference between a module-level and operation-level approach for a simplified Transformer block.
+  The rightmost diagram represents some fabricated toy example architecture that shares the same operation set as the Transformer, and thus
+  does not require any new implementation to be covered by operation-level LRP, but would need new rules and configurations under module-level LRP.}
+\end{figure}
+
+More specific to current LRP implementations \textcolor{red}{Mention and cite?}, many modules in a model need to be patched and hooked so
+that the built-in backpropagation machinery can be reused. While this method may be more performant at times, it requires a configuration
+tailored specifically for each model, posing the same issue as the limitless number of module rule definitions. This process also explicitly
+changes the behaviours of the forward and backward passes, and introduces a potential entrypoint for user error, should they use the wrong
+version of the model, or forget to switch off these patches for true training or evaluation. A less pertinent detail, though possibly more so
+for future applications, is that this also takes away the ability to operate on the model in both the traditional fashion and for
+LRP simultaneously, since the computation graph can only be in one state at a time, and is required to remain as such for the whole duration
+of the respective function.
+
+By atomicizing relevance propagation to the individual operations applied to tensors, and relying solely on the computation graph, while not
+interfering with its true structure, we eliminate the need for redundant model configurations, maximize reuse of already defined
+mathematical rules, and ensure the capture of any and all significant manipulations to the data made by the model in a clean and easily
+repeatable fashion for any arbitrary model architecture. \textcolor{red}{This can probably also fit well in the Introduction.}
+
+Our operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental
+tensor operations, treating operations as first-class citizens in propagation. We implement propagation rules for each type of Node in the
+computation graph (a Node in this case maps to an operation call). 
+
+\subsection{Propagating Through the Computation Graph}
+We traverse the computation graph with the following heuristic:
 
 \begin{definition}[Traversal Heuristic]
   Given some DAG $G = (V, E)$, for all $v \in V$, let $pending(v) = indegree(v)$. Let $outadj$ be the graph defined as an out-adjacency list.
   
   Initialize $S$ as a stack. Push all nodes with in-degree 0 onto $S$. Traverse as follows:
   \begin{itemize}
-    \item Pop the top node $v$ from the stack and process it.
+    \item Pop the top node $v$ from the stack and process it (in our case, apply the operation-specific propagation function).
     \item For all $w \in outadj(v)$, decrement $pending(w) = pending(w) - 1$.
     \item For all $w' \in outadj(v)$ where $pending(w') == 0$ now, push $w'$ onto $S$.
     \item Repeat while $S$ is non-empty.
@@ -174,32 +221,7 @@ We implement propagation rules for each type of autograd Node (a Node in this ca
   This ensures traversal follows some topological ordering of $G$, since nodes are only processed once all their in-neighbours have been.
 \end{definition}
 
-We motivate shifting the level of abstraction from layer-wise to operation-wise by careful consideration of the modern-day deep learning paradigm
-and the costs of the practices used by currently existing LRP implementations.
-
-When operating at the layer level, for every new model architecture, a configuration for LRP must be specified for each new module
-in the architecture. Since modules are user-defined, there is thus no limit to the number of such unique configurations. And though many
-architectures may share the same set of tensor operations used in their computations, they would require two different configurations in this case.
-By using this level of abstraction, current LRP implementations also require many modules in the model to be patched and hooked, changing
-built-in behaviours of forward and backward passes. This introduces a potential entrypoint for user error, should they use the wrong version of the
-model, or forget to switch off these patches for true training or evaluation. We aim to curb these concerns by enabling LRP at the operation
-level.
-Another oversight of using layer-wise abstraction for LRP is that there are many operations that can be done to tensors which do not
-materialize as modules (e.g. addition, multiplication, logarithms, etc.), and thus must be written in explicitly as sub-steps in a wider-scoped,
-and module-specific propagation rule any time they are to be considered in LRP.
-
-By atomicizing relevance propagation to the core operations applied to tensors, we eliminate the need for redundant configurations,
-maximize reuse of defined mathematical rules, and ensure the capture of any and all significant manipulations to the data made by the model
-without repeating propagation rule definitions, regardless of the module they are defined in.
-Additionally, our framework sits on top of the auto-differentiation module, not within it, so there is no interference with the built-in
-systems which may compromise regular functionality.
-This operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental
-tensor operations.
-
-\subsection{A Caveat to Autograd}
-
 While the above solution seems sound, a subtle issue lies within defining the propagation functions for each Node type.
-
 Consider a simple approach for backpropagating $R_{c}$ to $R_{a}$ and $R_{b}$ for $c = a + b$ as follows using absolute value ratios:
 
 \begin{equation}
@@ -208,11 +230,10 @@ Consider a simple approach for backpropagating $R_{c}$ to $R_{a}$ and $R_{b}$ fo
 
 We suggest this because we want to attribute relevance to each tensor component proportionally to the magnitude of its contribution to the operation result.
 
-Since autograd is a differentiation library, it only caches within its Nodes information necessary for computing the gradients w.r.t. its arguments.
+Since computation graphs are mainly used for auto-differentiation, each Node only caches information necessary for computing the gradients w.r.t. its arguments.
 
-But for $c = a + b$, we see that $\frac{\partial a}{\partial c} = \frac{\partial b}{\partial c} = 1$. This implies that $a$ and $b$ need not be stored in any autograd `AddBackward0' Node, which indeed is the case.
-
-This poses a critical problem for us, since without $a$ and $b$, we are then unable to compute $R_{a}$ and $R_{b}$ faithfully when we traverse the `AddBackward0` Node.
+But for $c = a + b$, we see that $\frac{\partial a}{\partial c} = \frac{\partial b}{\partial c} = 1$. This implies that $a$ and $b$ need not be stored in any Addition Node, which indeed is the case in a framework such as PyTorch.
+This poses a critical problem for us, since without $a$ and $b$, we are then unable to compute $R_{a}$ and $R_{b}$ faithfully when we traverse an Addition Node, and this operation is not the only example of this case.
 
 \subsection{The Promise System}
 
@@ -287,8 +308,77 @@ ancestor Promises' activations via parent connections. Once all activations of t
 and backward chains. See Appendix for the formal resolution algorithm.
 
 \subsubsection{Promise Deadlock}
-We show in the Appendix through a simple and common example that deadlock can occur from circular dependencies between branches of the same Promise, each waiting for the other to resolve.
-We also provide the solution to this by allowing Promises to break our defined traversal heuristic to prioritize the completion of Promise Branches over the heuristic.
+The introduction of Promises can cause a circular dependency between Promise Branches. Consider the following configuration of nodes. Let A be a Promise-Generating Node, and let B and E be Arg Nodes, coloured orange.
+Nodes coloured red are traversed, green are untraversed.
+
+One can consider that this is exactly the pattern found in residual connections, crucial in transformer networks and ResNets.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, orange] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, orange] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west);
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+Recall that our traversal heuristic states that we may only consider a node for traversal if all of its in-neighbours have propagated to it. In this case, A creates a Promise $P$, propagates its Promise Branches
+$p_1$, $p_2$ to B and D, and we see that the number of inputs landed at B equals B's in-degree. We traverse B first, propagating the Promise Branch $p_1$ to it.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, orange] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+B is an Arg Node, so the Promise Branch will retrieve its forward output and forward-chain it to obtain the activation at A, then save it to the Promise.
+We now stall traversal and enqueue B until the Promise is complete. Our only next option for traversal is D, which has received the other Promise Branch $p_2$ from A as input.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[node, red] (node1) {A};
+\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node, red] (node4) [below=of node3, xshift=-8mm] {D};
+\node[node, orange] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+We know that now E must be traversed, but see that we never traversed into it from the A->B->C path, so its incoming relevance inputs will never equal its in-degree, and we cannot consider it
+for traversal. This creates a circular dependency: C is stalled waiting for A's Promise $P$ to complete, but $P$ cannot complete because its second branch $p_2$ requires accessing E's activation,
+and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
+
+The solution, in brief, is to break our traversal heuristic upon such situations, and allow Promise Branches to fully propagate until they reach Arg Nodes.
+The specific manner in which this is done is explained fully in the Appendix \textcolor{red}{Link to "The Solution to Promise Deadlock: Pre-Promises"}.
 
 % Now consider some Promise Branch input $p_1$, and some node $v$ which receives it as an input. We have the following cases depending on what type of node $v$ is:
 % \begin{enumerate}
@@ -306,8 +396,7 @@ We also provide the solution to this by allowing Promises to break our defined t
 % \end{itemize}
 
 
-This leads to an amended version of the previous propagation algorithm, Algorithm~\ref{alg:promise-propagation}
-
+A simplified version of the propagation algorithm which considers all these is presented as Algorithm~\ref{alg:promise-propagation}.
 
 Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
 Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
@@ -480,19 +569,22 @@ Convolutional layers, opting for an explicit, analytical redistribution instead 
 However, these two methods are mathematically equivalent. \textcolor{red}{Maybe show a derivation in the Appendix?}
 
 \subsection{Weighing the Costs of Maintainability}
-While we are optimistic that a generalized form of LRP will empower and enable researchers to explain increasingly complex model architectures, we are equally aware of skepticism surrounding its long-term feasibility.
-Specifically, because we break LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
-We therefore provide the following considerations to address such concerns:
+While we are optimistic that a generalized form of LRP will empower and enable researchers to explain increasingly complex model architectures, we are equally aware that by breaking LRP down to the level of tensor operations,
+we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
+We make a few considerations to address such concerns.
 
-\paragraph{We concern ourselves only with shape and mathematical operators.} Although these still consititue the majority of PyTorch's operator set, they are a bounded and well-defined subset which we are interested in. 
-Each operation we handle must take some tensor input and return some tensor output as part of the its forward call. This sets a tangible and conceptual limit on our implementation scope. 
-\paragraph{Shape operations are easy.} Shape operations do not numerically transform any parts of a tensor, only its structure. Thus, the task of backpropagating relevance through such operations reduces to the task of 
-reassigning or accumulating relevance at the input positions that produced the output. Notice that in these cases, LRP and gradient backpropagation align naturally in intent and behaviour, if we replace relevance with gradients.
-Thus, this propagation pattern is already implemented in autograd, and existing autograd nodes can be reused directly, providing exactly the propagation functions we require for LRP.
-\paragraph{Activations are typically treated as identities.} In previous LRP literature, activation functions such as ReLU, GELU, etc. have established and stable propagation rules which simply pass relevance along unchanged.
-\paragraph{New operations may reuse old ones, explicitly or conceptually.} Fused operations and renamed combinations of existing primitives are common. In these cases, the cost of supporting them is minimal. They can either 
-directly reuse already-supported operators, or be decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into components we already handle.
-\paragraph{Our contribution is the framework, further theory can follow.} Even if future work extends LRP to new, more complex operations, our contribution provides a structured place for these rules to live in and be reused 
+Firstly, recall that the set of tensor operations we are interested in, specifically mathematical and shape operations, is a bounded and well-defined set. 
+This places a tangible and conceptual limit on our implementation scope. We also argue that defining rules for operations is more trivial than defining rules for modules, since one needs only to understand the operation and its
+mathematical properties in isolation, and not additionally the context in which the operation is defined in. This better reflects the properties of the Chain Rule.
+
+Another consideration is that there are many operation types whose propagation rules are easily defined.
+Shape operations do not numerically transform any parts of a tensor, only the structure. Thus, the task of backpropagating relevance through such operations reduces to the task of reassigning or accumulating relevance at the
+input positions that produced the output. In these cases, the desired functions for LRP are identical to the ones used for gradient backpropagation, and are accessible to us via the auto-differentiation library.
+In addition, previous LRP literature has established that activation functions such as ReLU, GELU, etc. correspond to stable propagation rules which simply pass relevance along unchanged, known as Identity Rules.
+Fused operations and renamed combinations of existing primitives can be either directly routed to already-supported operators, or be decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into
+components we already handle.
+
+\paragraph{We remind readers that our contribution is the framework, further theory can follow.} Even if future work extends LRP to new, more complex operations, our contribution provides a structured place for these rules to live in and be reused 
 indefinitely. While we acknowledge that the derivation and definition of such rules may be non-trivial, we believe that further work in broadening LRP's reach will be a collective effort led by those who continue to see its 
 value in model interpretability. Through this work, we aim to renew interest in LRP by providing a unified, modular framework that prioritizes compatibility, ease of use, and competitive efficiency. Our hope is that by lowering 
 the barrier to entry, we encourage others to explore, refine, and extend LRP across modern architectures.
@@ -506,7 +598,7 @@ but in the long run, we hope that this contribution can widen the scope of what 
 
 \subsection{Extensibility to Other Deep Learning Frameworks}
 While it may seem that this design is strictly PyTorch-specific, we would like to argue otherwise. While it is built for PyTorch currently,
-we claim that the Promise-based Dynamic LRP can be extended to any deep learning framework with a graph-based auto-differentiation module.
+we claim that the Promise-based Dynamic LRP can be extended to any deep learning framework with a graph-based auto-differentiation library.
 
 We consider that differentiation is first and foremost a mathematical concept, and that in order for it to be carried out for some function,
 the set of givens required for this computation is purely characteristic to the function.
@@ -738,7 +830,7 @@ def lrp_engine(graph, output_relevance):
 
 \textbf{Explicit Steps in the Algorithm}
 \begin{enumerate}
-  \item \textbf{Forward Pass:} Get the model output and computation graph built by the auto-differentiation module.
+  \item \textbf{Forward Pass:} Get the model output and computation graph built by the auto-differentiation library.
   \item \textbf{Graph Augmentation Pass:} Attach any additional required metadata for LRP to each node in the computation graph. This includes in-neighbours, topological ordering, and computation flags. See Algorithm~\ref{alg:graph-construction}.
   \item \textbf{Backward Pass:} Starting from the output, traverse the graph using the Traversal Heuristic (\textcolor{red}{Section}). A node is traversed when all output relevance is received, or when it is part of a Promise's resolution path, and marked as propagated when it distributes relevance to its inputs.
   \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
@@ -1478,77 +1570,7 @@ Promise Tree
 \end{center}
 \end{minipage}
 
-\textbf{Promise Deadlock}
-The introduction of Promises can cause issues with the traversal heuristic we use. Consider the following configuration of nodes. Let A be a Promise-Generating Node, and let B and E be Arg Nodes, coloured orange.
-Nodes coloured red are traversed, green are untraversed.
-
-One can consider that this is exactly the pattern found in residual connections, crucial in transformer networks and ResNets.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[node, red] (node1) {A};
-\node[node, orange] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[node] (node4) [below=of node3, xshift=-8mm] {D};
-\node[node, orange] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west);
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
-\end{tikzpicture}
-\end{center}
-
-Recall that our traversal heuristic states that we may only consider a node for traversal if all of its in-neighbours have propagated to it. In this case, A creates a Promise $P$, propagates its Promise Branches
-$p_1$, $p_2$ to B and D, and we see that the number of inputs landed at B equals B's in-degree. We traverse B first, propagating the Promise Branch $p_1$ to it.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[node, red] (node1) {A};
-\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[node] (node4) [below=of node3, xshift=-8mm] {D};
-\node[node, orange] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
-\end{tikzpicture}
-\end{center}
-
-B is an Arg Node, so the Promise Branch will retrieve its forward output and forward-chain it to obtain the activation at A, then save it to the Promise.
-We now stall traversal and enqueue B until the Promise is complete. Our only next option for traversal is D, which has received the other Promise Branch $p_2$ from A as input.
-
-\begin{center}
-\begin{tikzpicture}
-%Nodes
-\node[node, red] (node1) {A};
-\node[node, red, label={\small stalled}] (node2) [right=of node1] {B};
-\node[node] (node3) [right=of node2] {C};
-\node[node, red] (node4) [below=of node3, xshift=-8mm] {D};
-\node[node, orange] (node5) [right=of node3] {E};
-
-%Lines
-\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
-\draw[->] (node2.east) -- (node3.west);
-\draw[->] (node3.east) -- (node5.west);
-\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
-\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
-\end{tikzpicture}
-\end{center}
-
-We know that now E must be traversed, but see that we never traversed into it from the A->B->C path, so its incoming relevance inputs will never equal its in-degree, and we cannot consider it
-for traversal. This creates a circular dependency: C is stalled waiting for A's Promise $P$ to complete, but $P$ cannot complete because its second branch $p_2$ requires accessing E's activation,
-and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
-
-\textbf{Pre-Promises}
+\textbf{Solution to Promise Deadlock: Pre-Promises}
 
 The solution to Promise Deadlock is to allow Promise Branches to "reach ahead" past the traversal frontier to locate their Arg Nodes, without triggering full relevance backpropagation.
 

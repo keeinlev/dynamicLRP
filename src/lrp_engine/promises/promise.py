@@ -52,6 +52,7 @@ except ImportError:
 class PromiseBucket:
     """Holder for all Promises used for a certain model LRP."""
     dtype = torch.float32
+    with_grad = False
 
     def __init__(self):
         self.all_inner_nodes : set[int] = set()
@@ -85,12 +86,12 @@ class PromiseBucket:
                 if type(node).__name__ == "CatBackward0":
                     if "shapes" not in node.metadata:
                         # Refresh the shapes of the cat arguments
-                        node.metadata["shapes"] = [ out.shape for out in node(torch.rand(node._input_metadata[0].shape)) ]
+                        node.metadata["shapes"] = [ out.shape for out in node(torch.rand(node._input_metadata[0].shape, requires_grad=PromiseBucket.with_grad)) ]
                     curr_promise.fwd_shape = node.metadata["shapes"][curr_promise.idx]
                 else:
                     curr_promise.fwd_shape = node._input_metadata[0].shape
                 
-                curr_promise.set_rout(torch.zeros(node._input_metadata[0].shape, dtype=curr_promise.rout.dtype, device=curr_promise.rout.device))
+                curr_promise.set_rout(torch.zeros(node._input_metadata[0].shape, dtype=curr_promise.rout.dtype, device=curr_promise.rout.device, requires_grad=PromiseBucket.with_grad))
 
                 if hasattr(curr_promise, "refresh_metadata"):
                     curr_promise.refresh_metadata(node)

@@ -59,7 +59,8 @@ class LRPEngine:
                  relevance_filter=1.0,
                  starting_relevance=None,
                  topk=1,
-                 dtype=torch.float32,):
+                 dtype=torch.float32,
+                 with_grad=False):
         assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
         self.out_adj_list : Union[set[Node], set[int]] = None
         self.topo_exec_order : list[int] = None
@@ -78,8 +79,12 @@ class LRPEngine:
         self.mm_counter = 0
         self.starting_relevance = starting_relevance
         self.topk = topk
+        self.with_grad : bool = with_grad
         LRPPropFunctions.dtype = dtype
+        LRPPropFunctions.with_grad = with_grad
         PromiseBucket.dtype = dtype
+        PromiseBucket.with_grad = with_grad
+
     
     @staticmethod
     def group_and_categorize_inputs(input_tracker_list: list[tuple[Union[Promise, torch.Tensor], int]], run_mode: RunMode):
@@ -134,7 +139,7 @@ class LRPEngine:
         """Runs LRP by using the computation graph rooted at hidden_states"""
         self.conv_counter = 0
         self.mm_counter = 0
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.with_grad):
             if isinstance(output_tuple_or_tensor, torch.Tensor):
                 output_tuple_or_tensor = (output_tuple_or_tensor,)
             elif not isinstance(output_tuple_or_tensor, tuple) or not all(isinstance(ot, torch.Tensor) for ot in output_tuple_or_tensor):
@@ -176,6 +181,10 @@ class LRPEngine:
                 assert all( sr is None or sr.shape == ot.shape for sr, ot in zip(relevances, output_tuple_or_tensor)), \
                     f"If overriding starting relevances, their shapes must match those of the model outputs, given {[ sr.shape for sr in relevances ]}, expected {[ ot.shape for ot in output_tuple_or_tensor ]}."
             start_time = time.time()
+
+            # if self.with_grad:
+            #     for r in relevances:
+            #         r.requires_grad_()
 
             # TODO: Add a graph hashing system to evaluate if a new model architecture has been given.
             if self.out_adj_list is None or self.topo_exec_order is None or self.fcn_map is None:
@@ -337,7 +346,8 @@ class LRPEngine:
                     # each NTM case breaks down into 2 sub-cases, revisiting Pre-Promise or not.
 
                     # Aggregate all inputs into one Tensor or Promise
-                    curnode_in_rel = sum(tensor_inputs)
+                    if tensor_inputs:
+                        curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
 
                     ####### PRE-PROMISE RETRIEVAL
                     # Consider that we traverse the same Node at most twice at this stage. Once possibly for PTM, and the second

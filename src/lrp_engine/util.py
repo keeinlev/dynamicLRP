@@ -199,7 +199,7 @@ def gammma_lrp_matmul_grad(x: torch.Tensor, w: torch.Tensor, r: torch.Tensor, fi
     rin_input = rin_input
 
     rin_weight = w * (x.t() @ r) # s o
-    rin_weight = rin_weight / 2
+    rin_weight = rin_weight
 
     return relevance_filter(rin_input, filter_val), rin_weight
 
@@ -213,14 +213,15 @@ def gamma_lrp_conv2d_grad(conv_T: Callable, module_kwargs: dict, x: torch.Tensor
     grad_w = torch.nn.grad.conv2d_weight(x, w.shape, r, **{k:v for k,v in list(module_kwargs.items()) if k != "output_padding"})
     r_weight = w * grad_w
 
-    return r_input, r_weight / 2
+    return r_input, r_weight
 
 def gamma_lrp_general(module_op: Callable, module_T_op: Callable, module_kwargs: dict, x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, gamma, filter_val=1.0):
     """Analytical Gamma-LRP using clamped input and weights"""
-    x = x.detach()
-    w = w.detach()
-    z = z.detach()
-    r = r.detach()
+    if not r.requires_grad:
+        x = x.detach()
+        w = w.detach()
+        z = z.detach()
+        r = r.detach()
 
     # Create clamped components, track each one individually for correct gamma-LRP
     x_pos = x.clamp(min=0.0)
@@ -283,9 +284,9 @@ def gamma_lrp_general(module_op: Callable, module_T_op: Callable, module_kwargs:
     rins_x_w = reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), rins_x_w)
 
     if module_T_op is None:
-        return rins_x_w[0], rins_x_w[1]
+        return relevance_filter(rins_x_w[0], filter_val), rins_x_w[1]
     else:
-        return rins_x_w[0], rins_x_w[1], 0.0
+        return relevance_filter(rins_x_w[0], filter_val), rins_x_w[1], 0.0
 
     # THE ABOVE IS MEANT TO BE EQUIVALENT TO THE FOLLOWING:
     # gradients = torch.autograd.grad(

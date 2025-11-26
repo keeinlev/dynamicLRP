@@ -164,6 +164,30 @@ architectures using consumer-grade hardware.
 % Alongside this unprecendented generality over architectures for LRP, we demonstrate that our framework enables new applications of LRP in
 % training-time interpretability, through layer relevance normalizations and attribution-based gradient weighting.
 
+\section{Related Work}
+
+One of the more recent and impactful architectural advancements in LRP theory was AttnLRP, which derived novel propagation rules
+for the unique components in attention blocks through Deep Taylor Decomposition \cite{achtibat2024attnlrp}.
+AttnLRP showed clear empirical improvements over existing explainability methods (SmoothGrad, GradCAM, KernelSHAP, AttnRollout,
+Original LRP) in both visual and textual tasks. Its extension to concepts in Mechanistic Interpretability, an effort to
+identify structural components in trained models, has shown empirical results for principled model pruning and alignment
+with desired human-friendly behaviours \cite{hatefi2025pruningcircuitcompression}.
+
+Previous to this, uses of LRP have been widely explored for bias mitigation in image captioning and classification tasks. Anders et al.
+proposed additional learned layers which consume LRP pixel heatmaps to identify and unlearn the associations to out-of-distribution
+artifacts while amplifying those of the true object information. This targeted behaviour known as the Clever Hans effect, and introduced a
+novel training framework leveraging spectral clustering to cleanse training data \cite{anders2020cleverhans}.
+
+However, later exploration of differentiable LRP allowed attributions to directly influence gradient descent without
+additional training mechanisms, all while staying within the realm of loss-based training. This was shown to be applicable to
+arbitrary DNNs with ISNet \cite{bassi2024isnet}, \cite{bassi2024fasterisnet}, and remained applicable for Attention-LSTM hybrids such
+as Ada(Adaptive Attention)-LSTM and MH(Multi-Head Attention)-FC \cite{sun2021lrpfinetuning}, though this only used LRP on the last Linear
+layer in each architecture.
+
+While these works show a clear usefulness of LRP, they remain somewhat bottlenecked and constrained in that they remain purpose-built, in
+the domain of image-based tasks, pure Fully-Connected or Convolutional architectures, and a small subset of SoTA transformer models.
+We see the potential of the applied concepts, and our work aims to generalize them across the deep learning landscape.
+
 \section{Background}
 
 Neural network interpretability algorithms fundamentally seek to decompose model predictions into input feature contributions, yet differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad}, but suffer from gradient saturation and linearity assumptions that fail to capture complex nonlinear interactions \cite{ancona2018towards}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME \cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates, yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}. Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
@@ -221,7 +245,7 @@ This theoretical foundation underscores the flexibility and scalability of the p
 We motivate shifting the level of abstraction of LRP from layer/module-wise to operation-wise through careful consideration of the modern-day deep learning
 paradigm and the practices used by existing LRP implementations. We define a module as an object lying at the maximal granularity
 within a model structure defined by a deep learning framework (e.g. Linear, Convolution, Attention, LayerNorm).
-While many modules are certainly defined by a sole operation such as Linear, Convolution, Softmax, etc., newer modules compound these with
+While many modules are defined by a sole operation such as Linear, Convolution, Softmax, etc., newer modules compound many
 elementary tensor operations, which are not captured at the granularity of modules.
 
 The first consequence is that there is no upper limit for the number of unique module types, each requiring a new backpropagation rule.
@@ -236,18 +260,19 @@ be defined before all architectures that reduce to that set of operations are su
   does not require any new implementation to be covered by operation-level LRP, but would need new rules and configurations under module-level LRP.}
 \end{figure}
 
-Another complication is that operations not captured at the module level must always appear only as sub-steps within a wider-scoped,
-module-specific propagation rule if they are to be considered in LRP. Thus, redundancy arises when multiple modules make use of the same
-elementary operations, but still require two unique propagation rule definitions.
-
-Current LRP implementations function by patching and hooking modules, so that the built-in backpropagation machinery can be reused. While
-this method may be more performant at times, it explicitly changes the behaviours of the forward and backward passes. This takes away the
-ability to operate on the model in both the traditional fashion and for LRP simultaneously, since the state of the computation graph itself
-becomes modified by these patches.
+Another complication is that operations not captured at the module level must always appear only as sub-steps within a module-specific
+propagation rule if they are to be considered in LRP. Thus, redundancy arises when multiple modules make use of the same elementary
+operations, but still require two unique propagation rule definitions.
 
 Our operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed and bounded set of fundamental
 tensor operations, treating operations as first-class citizens in propagation. We implement propagation rules for each type of Node in the
 computation graph (a Node in this case maps to an operation call).
+
+Another key practical advantage of our design is that it does not modify any of the existing forward and backward pass functions.
+Current LRP implementations will patch and hook modules so that the built-in backpropagation machinery can be reused, however this
+explicitly changes the behaviour of both passes and the computation graph structure to suit LRP. This enforces the model to always be either
+in training mode or LRP mode, never both at the same time. DynamicLRP has no such constraint, enabling training and LRP to run simultaenously,
+shifting LRP from the post-hoc to training-time analysis.
 
 \subsection{Propagating Through the Computation Graph}
 We traverse the computation graph with the following heuristic:
@@ -510,6 +535,18 @@ Another benefit which arises from both the caching and this reduction is that th
 Recall that due to the issue of Promise Deadlock that can be encountered during initial traversal, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
 However, if we know the Promise chains beforehand and can reduce them to single nodes, then the order in which we perform computations becomes fully deterministic and independent of edge connections, reducing the graph traversal overhead to $O(n)$.
 
+\subsection{Differentiable Attribution}
+
+Since DynamicLRP does not change any functionality in the model forward and backward passes, it operates on the full, unabridged computation
+graph. This allows DynamicLRP to run as a standalone process to the backward pass, and can thus be computed as a parallel process on another
+device during a training optimizer step.
+
+To take this a step further, DynamicLRP itself is a differentiable process, and we provide a mode where it constructs its own computation
+graph, reusing cached activations from the original graph where possible. We may thus factor attribution signals into model gradient updates
+by combining task objectives with attribution values in a combined loss function, generalizing the works of Bassi et al. and Sun et al.,
+which only applied purpose-built LRP to CNNs and final FC layers, respectively, to arbitrary model architectures \cite{bassi2024fasterisnet},
+\cite{sun2021lrpfinetuning}.
+
 \section{Experimental Setup}
 \textcolor{red}{Give a rundown of the hardware used}
 
@@ -585,51 +622,57 @@ The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
 \subsection{Comparing the Attribution Methods of Table 1}
 We see that among all the attribution methods tested, ours and AttnLRP stand among the top of the ABPC metrics. Comprehensiveness is defined as $AUC(y = baseline) - AUC(MoRF)$ and Sufficiency as $AUC(y = baseline) - AUC(LeRF)$.
 
-While AttnLRP, which is built off of the XAI library Zennit \cite{anders2021zennit}, performs noticeably better in speed and memory usage, we demonstrate that our dynamic LRP is in fact more faithful than it in the ViT experiment,
-and much better than all other alternative methods in every category present, barring the speed of InputXGradient. We attribute this improvement to our LRP being able to capture a more holistic picture of the entire model data flow.
-The the inclusion of the residual stream's contributions to the output within the attribution computation is likely a large factor in this. Being a crucial pathway which allows the transformer architecture to shape its predictions,
-it lends itself well in nature to LRP. Later layers, which get visited first in LRP, will combine with residual outputs that are sequentially and semantically closer the final output, acting as a relevance boost to the most significant
-regions of the stream. This is an important theoretical consideration that is overlooked by the current LRP landscape, since residual connections are almost always within output classes or at the extremities of an attention module,
-never the direct focus of relevance propagation. With our framework, considering these connections is built-in.
+We demonstrate that DynamicLRP is as faithful than the leading implementation of AttnLRP in the ViT experiment,
+and much better than all other alternative methods in every category present, barring the speed of InputXGradient.
+In addition, DynamicLRP clearly outperforms the Zennit \cite{anders2021zennit} implementation in the VGG evaluations as well.
+We attribute this improvement to our LRP being able to capture a more holistic picture of the entire model data flow.
+% The the inclusion of the residual stream's contributions to the output within the attribution computation is likely a large factor in this. Being a crucial pathway which allows the transformer architecture to shape its predictions,
+% it lends itself well in nature to LRP. Later layers, which get visited first in LRP, will combine with residual outputs that are sequentially and semantically closer the final output, acting as a relevance boost to the most significant
+% regions of the stream. This is an important theoretical consideration that is overlooked by the current LRP landscape, since residual connections are almost always within output classes or at the extremities of an attention module,
+% never the direct focus of relevance propagation. With our framework, considering these connections is built-in.
 
 What we also demonstrate is the framework's capability to adopt rules defined by other implementations. In this experiment, we tuned our LRP to behave under the specifications defined in AttnLRP \cite{achtibat2024attnlrp}.
 We used $\gamma$-LRP for Convolutional and Linear layers ($\gamma_{conv} = 130$, $\gamma_{linear} = 0.001$), and attributed attention modules using CP-LRP, as also suggested by the AttnLRP authors for image models.
 
 \section{Discussion}
 
-The memory improvement of AttnLRP over our LRP is likely due to the fact that Zennit does not require the full autograd computation graph to be stored, only the subgraphs associated with the above mentioned layers/modules,
-as well as activations and normalization layers. Any additional operations performed do not have autograd nodes saved, and thus reduce total peak VRAM usage, as opposed to our method which tracks such operations.
+The memory improvement of AttnLRP over our LRP is likely due to the fact that it does not require the full autograd
+computation graph to be stored, only the subgraphs associated with the above mentioned layers/modules, as well as activations
+and normalization layers. This is characteristic to the implementation, which is built on the Zennit library \cite{anders2021zennit}.
+Any additional operations performed do not have autograd nodes saved, and thus reduce total peak VRAM usage, as opposed to our method which tracks such operations.
 
-The difference in computation speed is likely also a result of the additional propagations taken across the entire computation graph. However, we also use a different approach to computing the propagations of Linear and
-Convolutional layers, opting for an explicit, analytical redistribution instead of using the gradient-based approach, which computes the gradients of the inputs and weights w.r.t. the relevance contributions.
-However, these two methods are mathematically equivalent. \textcolor{red}{Maybe show a derivation in the Appendix?}
+Additionally, DynamicLRP shows better speed than AttnLRP in the ViT test, which indicates that our elementary relevance
+computations remain in the same order of computational complexity as current implementations, even while processing the whole
+computation graph. However, we also use a different approach to computing the propagations of Linear and Convolutional layers,
+opting for an explicit, analytical redistribution instead of using the gradient-based approach via the patching of built-in
+backward pass mechanisms.
+We show that these two methods are mathematically equivalent. \textcolor{red}{Show a derivation in the Appendix}
 
 \subsection{Weighing the Costs of Maintainability}
 By breaking LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
-We make a few considerations to address such concerns.
-
-The set of tensor operations we are interested in, specifically mathematical and shape operations, is a bounded and well-defined set. 
+However, consider that the set of tensor operations we are interested in, specifically mathematical and shape operations, is a bounded and well-defined set. 
 This places a tangible and conceptual limit on our implementation scope.
 % Defining rules for operations instead of modules also better reflects the properties of the Chain Rule, a more modularized task than defining module-level rules.
 
-Another consideration is that there are many operation types whose propagation rules are easily defined.
-For shape operations, which manipulate only the structure of tensors, the task of relevance propagation reduces to accumulating relevance at the
-input positions mapped to the output. In these cases, we simply reuse the functions from gradient backpropagation, which do exactly this and can be found in the auto-differentiation library.
-In addition, activation functions such as ReLU, GELU, etc. have been shown to correspond to Identity propagation functions.
-Fused operations and renamed combinations of existing primitives can re-routed or decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into
+There are also case-by-case implementation considerations.
+In shape operations, which manipulate only the structure of tensors, the task of relevance propagation reduces to accumulating relevance at the
+inputs which map to the output. Here, we simply reuse the functions from gradient backpropagation, which do exactly this and are produced by the auto-differentiation library.
+Activation functions such as ReLU, GELU, etc. have been shown to correspond to Identity propagation functions, requiring no implementation overhead.
+Finally, fused/composite operations can re-routed or decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into
 components we already handle.
 
-\paragraph{We remind readers that our contribution is the framework, further theory can follow.} Even if future work extends LRP to new, more complex operations, our contribution provides a structured place for these rules to live in and be reused 
-indefinitely. While we acknowledge that the derivation and definition of such rules may be non-trivial, we believe that further work in broadening LRP's reach will be a collective effort led by those who continue to see its 
-value in model interpretability. Through this work, we aim to renew interest in LRP by providing a unified, modular framework that prioritizes compatibility, ease of use, and practical efficiency. Our hope is that by lowering 
-the barrier to entry, we encourage others to explore, refine, and extend LRP across modern architectures.
+\paragraph{We remind readers that our contribution is the framework, further theory can follow.}
+We acknowledge that further work in broadening LRP's reach will be a collective effort led by those who continue to see its
+value in model interpretability. However, the aim of DynamicLRP is to renew interest in LRP by providing this unified,
+modular framework that prioritizes compatibility and ease of use while maintaining practical efficiency. Our hope is that by
+lowering the barrier to entry, we enable further refinement and extension of LRP across modern architectures.
 
-To reinforce this premise, one can look to PyTorch's own design history. Autograd itself was one such project which required countless manual definitions of functions and derivatives, living in configuration files, but it is 
-now a stable and established core to the foundation of machine learning. Likewise, the structured kernels initiative required the porting of hundreds of PyTorch operators but ended up enhancing maintainability of operator 
-variants and enabling meta-execution of computation graphs, which were big wins for scalability and performance.
-
-The takeaway is that if we want to care about extensibility and rigor of our methods, and if we deem LRP a method worth sustaining, then the effort is justified. With this framework, LRP can become as accessible as autograd, 
-but in the long run, we hope that this contribution can widen the scope of what else can be adapted to use the computation graph in future research.
+In this, we feel similarities to PyTorch's own design history, which included multiple large-scale manual effort projects
+such as autograd itself and the structured kernels initiative, which were, knowingly or unknowingly, large contributors to
+the framework's efficiency and popularity. The core idea is that if we care about extensibility and rigor of our methods, and
+if we deem LRP a method worth sustaining, then the effort is justified. With this framework, LRP can become as accessible as
+autograd, and we hope that this contribution will widen the scope of how LRP and computation graphs can be leveraged in
+future research.
 
 \subsection{Extensibility to Other Deep Learning Frameworks}
 While it may seem that this design is strictly PyTorch-specific, we claim that the Promise-based Dynamic LRP can be extended to any deep learning

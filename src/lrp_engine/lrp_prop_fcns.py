@@ -6,9 +6,9 @@ from functools import reduce
 from .promises import *
 from .util import (
     epsilon,
-    renormalize_epsilon,
-    renormalize_epsilon_scalar,
-    shift_and_renormalize,
+    # renormalize_epsilon,
+    # renormalize_epsilon_scalar,
+    # shift_and_renormalize,
     DEBUG,
     LRPCheckpoint,
     merge_input_shapes,
@@ -780,7 +780,7 @@ class LRPPropFunctions:
         r1 = (arg1.abs() / denom) * factor
         r2 = (arg2.abs() / denom) * factor
 
-        r1, r2 = renormalize_epsilon(r, r1, r2)
+        # r1, r2 = renormalize_epsilon(r, r1, r2)
         return r1, r2
 
     @staticmethod
@@ -814,7 +814,7 @@ class LRPPropFunctions:
         r1 = (arg1.abs() / denom) * r
         r2 = ((1 / arg2).abs() / denom) * r
 
-        r1, r2 = renormalize_epsilon(r, r1, r2)
+        # r1, r2 = renormalize_epsilon(r, r1, r2)
         # print(f"DivBackward relevance sums: out {r.sum()}, in {(r1 + r2).sum()}")
 
         return r1, r2

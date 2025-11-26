@@ -1,6 +1,6 @@
 from ..util import (
     epsilon,
-    renormalize_epsilon,
+    # renormalize_epsilon,
 )
 from .promise import Promise
 
@@ -51,7 +51,7 @@ class AddBackwardPromise(Promise):
         denom = arg1 + arg2 + epsilon
         r1 = (arg1 / denom) * r
         r2 = (arg2 / denom) * r
-        self.promise["rins"][0], self.promise["rins"][1] = renormalize_epsilon(r, r1, r2)
+        self.promise["rins"][0], self.promise["rins"][1] = r1, r2#renormalize_epsilon(r, r1, r2)
 
     def _setarg(self, value):
         self.promise["args"][self.idx] = value

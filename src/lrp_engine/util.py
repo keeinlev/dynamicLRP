@@ -8,23 +8,23 @@ DEBUG = False
 # For denominator stability in relevance distribution
 epsilon = 10e-12
 
-def renormalize_epsilon(rz, rx, ry):
-    """Renormalizes output relevances after dividing by a denominator with epsilon added to preserve conservation"""
-    scale = rz / (rx + ry)
-    return torch.nan_to_num(rx * scale, nan=0.0), torch.nan_to_num(ry * scale, nan=0.0)
+# def renormalize_epsilon(rz, rx, ry):
+#     """Renormalizes output relevances after dividing by a denominator with epsilon added to preserve conservation"""
+#     scale = rz / (rx + ry)
+#     return torch.nan_to_num(rx * scale, nan=0.0), torch.nan_to_num(ry * scale, nan=0.0)
 
-def renormalize_epsilon_scalar(rz, rx, ry):
-    """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
-    scale = rz.nansum() / (rx.nansum() + ry.nansum())
-    return rx * scale, ry * scale
+# def renormalize_epsilon_scalar(rz, rx, ry):
+#     """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
+#     scale = rz.nansum() / (rx.nansum() + ry.nansum())
+#     return rx * scale, ry * scale
 
-def shift_and_renormalize(rz, rx, alpha=0.5):
-    """Shifts rx by alpha in the positive direction, then renormalizes rx to rz via scalar sums"""
-    # if rx.max() - rx.min() <= rz.sum():
-    #   return rx
-    rx = rx + alpha
-    scale = rz.nansum() / rx.nansum()
-    return rx * scale
+# def shift_and_renormalize(rz, rx, alpha=0.5):
+#     """Shifts rx by alpha in the positive direction, then renormalizes rx to rz via scalar sums"""
+#     # if rx.max() - rx.min() <= rz.sum():
+#     #   return rx
+#     rx = rx + alpha
+#     scale = rz.nansum() / rx.nansum()
+#     return rx * scale
 
 
 # Handling AddMmBackward0 is not the exact same as just AddBackward0. The calculation of the in-relevances

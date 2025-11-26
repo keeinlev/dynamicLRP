@@ -157,6 +157,11 @@ class LRPPropFunctions:
         return x if cls.with_grad else x.detach()
 
     @staticmethod
+    @add_node_to_promise_path
+    def ResidualIgnoreBackwardProp(grad_fn, r):
+        return r
+
+    @staticmethod
     @output_relevances
     @add_node_to_promise_path
     @skip_redundant_promise
@@ -166,6 +171,9 @@ class LRPPropFunctions:
         Promise a parent to the two new objects.
         Otherwise, the relevance is saved as the rout of the new Promise.
         See promise.py for an explanation on Promises."""
+
+        if type(grad_fn.next_functions[1][0]).__name__ == "ResidualIgnoreBackward" and isinstance(r, torch.Tensor):
+            return torch.zeros(grad_fn._input_metadata[0].shape, device=grad_fn._input_metadata[0].device, dtype=PromiseBucket.dtype), r
 
         if grad_fn.next_functions[1][0] is None:
             return r, torch.zeros(grad_fn._input_metadata[0].shape, device=grad_fn._input_metadata[0].device, dtype=PromiseBucket.dtype, requires_grad=LRPPropFunctions.with_grad)
@@ -196,6 +204,9 @@ class LRPPropFunctions:
         if isinstance(r, Promise):
             r.arg_node_ind = traversal_ind
             r.children.append((promise1, promise2))
+        
+        if (non_residual_child := next((i for i in range(2) if type(grad_fn.next_functions[i][0]).__name__ == "ResidualIgnoreBackward"), None)) is not None:
+            promise["non_residual_idx"] = non_residual_child
 
         grad_fn.metadata["promise"] = promise
 
@@ -853,7 +864,7 @@ class LRPPropFunctions:
             weights = weights.clamp(min=0.0)
             z = x @ weights
 
-        rin_input, rin_weight = epsilon_lrp_matmul(x, weights, z, r, bilinear=True)
+        rin_input, rin_weight = epsilon_lrp_matmul(x, weights, z, r, bilinear=grad_fn.metadata["use_bilinear"])
 
         # propagate relevance in parallel for input and weight, as specified by A.3.2 (Bilinear matmul) of AttnLRP: https://arxiv.org/pdf/2402.05602
         return relevance_filter(rin_input, filter_val), rin_weight
@@ -882,7 +893,7 @@ class LRPPropFunctions:
                     # If this is the first branch of the promise
                     return r # We will check if the promise is complete in the graph traversal
 
-        rin_mat1, rin_mat2 = epsilon_lrp_matmul(mat1, mat2, z, r, bilinear=True)
+        rin_mat1, rin_mat2 = epsilon_lrp_matmul(mat1, mat2, z, r, bilinear=grad_fn.metadata["use_bilinear"])
 
         # propagate relevance in parallel for mat1 and mat2
         return rin_mat1, rin_mat2
@@ -950,11 +961,11 @@ class LRPPropFunctions:
             c = c[:, :, :H, :W]
 
         r_input = x * c
-        r_input = r_input / 2
+        r_input = r_input
 
         grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
         r_weight = weights * grad_w  # elementwise, scales by weight itself
-        r_weight = r_weight / 2
+        r_weight = r_weight
 
         return relevance_filter(r_input, filter_val), r_weight, 0.0
     
@@ -1104,6 +1115,15 @@ class LRPPropFunctions:
 
         # Distribute last matmul
         r_attn_logits, r_v = epsilon_lrp_matmul(attn_logits, value, output, r, bilinear=True)
+        if enable_gqa:
+            # Collapse r_v
+            r_v = repeat_interleave_grad_fn_v(r_v)
+
+        if not grad_fn.metadata["use_attn_lrp"]:
+            if is_cpu:
+                return torch.zeros_like(query), k_zeros, r_v
+            else:
+                return torch.zeros_like(query), k_zeros, r_v, 0.0
 
         # Distribute softmax
         r_attn_weights = unbiased_attn_weights.tril() * (r_attn_logits - attn_logits * r_attn_logits.sum(dim=-1, keepdim=True))
@@ -1114,15 +1134,12 @@ class LRPPropFunctions:
         del attn_weights, r_attn_weights
 
         if enable_gqa:
-            # Need to collapse r_k and r_v
+            # Collapse r_k
             r_k = repeat_interleave_grad_fn_k(r_k)
-            r_v = repeat_interleave_grad_fn_v(r_v)
         
         if is_cpu:
-            # return torch.zeros_like(query), k_zeros, r_v
             return r_q, r_k, r_v
         else:
-            # return torch.zeros_like(query), torch.zeros_like(key), r_v, 0.0
             return r_q, r_k, r_v, 0.0
     
     @classmethod
@@ -1209,6 +1226,14 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     @skip_redundant_promise
     def SoftmaxBackwardProp(grad_fn, r):
+        if not "use_attn_lrp" in grad_fn.metadata:
+            result = grad_fn._saved_result.detach()
+            if isinstance(r, Promise):
+                r.setarg(result, grad_fn, "_saved_result")
+                if r.complete:
+                    r = r.rin
+            return r
+
         promise = {
             "rout": r,
             "args": [None],
@@ -1233,21 +1258,6 @@ class LRPPropFunctions:
         grad_fn.metadata["promise"] = promise
 
         return promise
-        # result = LRPPropFunctions.detach_if_grad(grad_fn._saved_result)
-        # if isinstance(r, Promise):
-        #     r.setarg(result, grad_fn, "_saved_result")
-        #     if r.complete:
-        #         r = r.rin
-        #     else:
-        #         return r
-        
-        # if hasattr(grad_fn, "_saved_logsumexp"):
-        #     saved_input = torch.log(result) + grad_fn._saved_logsumexp
-        #     rin = saved_input * (r - saved_input * r.sum(dim=-1, keepdim=True))
-        # else:
-        #     rin = result * (r - result * r.sum(dim=-1, keepdim=True))
-
-        # return renormalize_epsilon(r, rin, torch.zeros_like(rin))[0]
     
     @classmethod
     @output_relevances

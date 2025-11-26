@@ -272,6 +272,7 @@ class Promise:
     def fwd(self, x):
         """Applies all operations to the operand found from a branch to the origin of the Promise."""
         for fcn in self.compiled_fwd[::-1]:
+            x = x.detach()
             x = fcn(x)
         return x
 

@@ -1,3 +1,4 @@
+import torch
 from ..util import (
     epsilon,
     # renormalize_epsilon,
@@ -42,6 +43,9 @@ class AddBackwardPromise(Promise):
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
         assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
+        if (non_residual_idx := self.promise.get("non_residual_idx")) is not None:
+            self.promise["rins"][non_residual_idx] = self.promise["rout"]
+            self.promise["rins"][1 - non_residual_idx] = torch.zeros_like(self.promise["args"][1 - non_residual_idx])
         arg1, arg2 = self.promise["args"]
         r = self.promise["rout"]
         if not isinstance(arg1, float):

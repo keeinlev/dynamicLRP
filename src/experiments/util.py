@@ -106,7 +106,7 @@ def LRPEmbeddingModelEval(model, tokenizer, engine, examples, labels, num_exampl
         if masked_inds:
             inputs[0][masked_inds[i]] = tokenizer.pad_token_id
         outputs : torch.Tensor = model(inputs.to(device))
-        logits = outputs[0]
+        logits = outputs.logits
         pred = logits.argmax()
         if pred == labels[i]:
             if pred:

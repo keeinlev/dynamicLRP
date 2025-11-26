@@ -56,6 +56,8 @@ class LRPEngine:
                  conv_gamma=100.0,
                  mm_gamma=1.0,
                  use_z_plus=False,
+                 use_attn_lrp=False,
+                 use_bilinear_mm=False,
                  relevance_filter=1.0,
                  starting_relevance=None,
                  topk=1,
@@ -73,6 +75,8 @@ class LRPEngine:
         self.conv_gamma = conv_gamma
         self.mm_gamma = mm_gamma
         self.use_z_plus : bool = use_z_plus
+        self.use_attn_lrp : bool = use_attn_lrp
+        self.use_bilinear_mm : bool = use_attn_lrp or use_bilinear_mm
         self.relevance_filter : float = relevance_filter
         self.promise_bucket = PromiseBucket()
         self.conv_counter = 0
@@ -85,6 +89,11 @@ class LRPEngine:
         PromiseBucket.dtype = dtype
         PromiseBucket.with_grad = with_grad
 
+
+    @staticmethod
+    def get_model_operations(model_output):
+        g = make_graph(model_output)
+        return g[2], g[4]
     
     @staticmethod
     def group_and_categorize_inputs(input_tracker_list: list[tuple[Union[Promise, torch.Tensor], int]], run_mode: RunMode):
@@ -133,7 +142,14 @@ class LRPEngine:
             curnode.metadata["gamma"] = self.mm_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
             self.mm_counter += 1
+        elif node_name == "BmmBackward0":
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
+        elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0", "SoftmaxBackward0"]:
+            curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
+        elif node_name == "SoftmaxBackward0":
+            curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
 
     def run(self, output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor]):
         """Runs LRP by using the computation graph rooted at hidden_states"""

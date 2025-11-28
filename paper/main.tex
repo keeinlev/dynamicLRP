@@ -381,7 +381,7 @@ We traverse the computation graph with the following heuristic:
   Initialize $S$ as a stack. Push all nodes with in-degree 0 onto $S$. Traverse as follows:
   \begin{itemize}
     \item Pop the top node $v$ from the stack and process it (in our case, apply the operation-specific propagation function).
-    \item For all $w \in outadj(v)$, decrement $pending(w) = pending(w) - 1$.
+    \item For all $w \in outadj(v)$, decrement $pending(w)$ by 1.
     \item For all $w' \in outadj(v)$ where $pending(w') == 0$ now, push $w'$ onto $S$.
     \item Repeat while $S$ is non-empty.
   \end{itemize}
@@ -400,7 +400,7 @@ We suggest this because we want to attribute relevance to each tensor component 
 
 Since computation graphs are mainly used for auto-differentiation, each Node only caches information necessary for computing the gradients w.r.t. its arguments.
 
-But for $c = a + b$, we see that $\frac{\partial a}{\partial c} = \frac{\partial b}{\partial c} = 1$. This implies that $a$ and $b$ need not be stored in any Addition Node, which indeed is the case in a framework such as PyTorch.
+But for $c = a + b$, we see that $\frac{\partial c}{\partial a} = \frac{\partial c}{\partial b} = 1$. This implies that $a$ and $b$ need not be stored in any Addition Node, which indeed is the case in a framework such as PyTorch.
 This poses a critical problem for us, since without $a$ and $b$, we are then unable to compute $R_{a}$ and $R_{b}$ faithfully when we traverse an Addition Node, and this operation is not the only example of this case.
 
 \subsection{The Promise System}

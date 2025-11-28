@@ -92,6 +92,7 @@ class LRPEngine:
 
     @staticmethod
     def get_model_operations(model_output):
+        """Returns a set of autograd Node names in the first value and the total number of Nodes in the second value"""
         g = make_graph(model_output)
         return g[2], g[4]
     

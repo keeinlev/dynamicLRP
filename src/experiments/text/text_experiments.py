@@ -181,16 +181,9 @@ def run_lxt(model, input_ids, attention_mask, target, embedding_layer):
         return relevance.detach().cpu()
     return None
 
-def run_dynamic_lrp(model, input_ids, attention_mask, target, target_idx=-1):
+def run_dynamic_lrp(model, input_ids, attention_mask, target, lrp, target_idx=-1):
     # Dynamic LRP
     # We need to run the model, get logits, then run engine.
-    
-    # Ensure gradients are enabled for the graph construction
-    for layer in model.model.layers:
-        layer.self_attn.o_proj.register_forward_hook(checkpoint_hook)
-
-    # Set LRP dtype to match model
-    LRPPropFunctions.dtype = model.dtype
     
     with torch.enable_grad():
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
@@ -203,11 +196,9 @@ def run_dynamic_lrp(model, input_ids, attention_mask, target, target_idx=-1):
             
         pass
     
-    lrp = LRPEngine()
-    checkpoint_rels = lrp.run(target_logit)
+    checkpoint_rels = lrp.run(target_logit.unsqueeze(0))
     
-    relevance_outputs = lrp_engine.run(outputs.logits.neg())
-    return checkpoint_rels[0].sum(dim=-1).detach().cpu()
+    return checkpoint_rels[1][0].detach().cpu()
 
 def evaluate_faithfulness(model, input_ids, attention_mask, attributions, target, baseline_token_id, target_idx=-1, steps=10):
     # MoRF: Remove most relevant first
@@ -298,6 +289,11 @@ def main():
         model, tokenizer = get_model_and_tokenizer(fallback_model, args.dataset, device)
 
     model.eval()
+
+    # Set the attention checkpoints for DynamicLRP
+    for layer in model.model.layers:
+        layer.self_attn.o_proj.register_forward_hook(checkpoint_hook)
+
     embedding_layer = get_embedding_layer(model)
     
     # Load Data
@@ -308,16 +304,18 @@ def main():
     
     # Baselines
     methods = {
-        "IG": run_ig,
-        "GradSHAP": run_gradshap,
+        # "IG": run_ig,
+        # "GradSHAP": run_gradshap,
         "DynamicLRP": run_dynamic_lrp,
     }
     
     # Add LXT if available
-    if "lxt.efficient" in sys.modules:
-        methods["LXT"] = run_lxt
+    # if "lxt.efficient" in sys.modules:
+    #     methods["LXT"] = run_lxt
 
     print("Starting evaluation...")
+
+    lrp = LRPEngine(dtype=torch.bfloat16)
     
     for i in tqdm(range(len(dataset))):
         sample = dataset[i]
@@ -350,7 +348,7 @@ def main():
                 if method_name in ["IG", "GradSHAP"]:
                     attributions = method_fn(model, input_ids, attention_mask, target, embedding_layer, target_idx=target_idx)
                 elif method_name == "DynamicLRP":
-                    attributions = method_fn(model, input_ids, attention_mask, target, target_idx=target_idx)
+                    attributions = method_fn(model, input_ids, attention_mask, target, lrp, target_idx=target_idx)
                 
                 morf_auc, lerf_auc = evaluate_faithfulness(
                     model, input_ids, attention_mask, attributions[0], target, baseline_token_id, target_idx=target_idx

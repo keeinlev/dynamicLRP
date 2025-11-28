@@ -1,5 +1,8 @@
 import torch
-from .promise import Promise
+from .promise import (
+    Promise,
+    ensure_dtype
+)
 
 class DummyPromise(Promise):
     def __init__(self, promise, traversal_ind, bucket):
@@ -17,9 +20,7 @@ class DummyPromise(Promise):
     def rin(self):
         return self.promise["rins"][0]
 
-    def set_rout(self, new_rout):
-        self.promise["rout"] = new_rout
-
+    @ensure_dtype
     def set_rin(self, new_rin):
         self.promise["rins"][0] = new_rin
 
@@ -29,6 +30,7 @@ class DummyPromise(Promise):
         self.set_rin(self.rout)
         return self.rout
 
+    @ensure_dtype
     def _setarg(self, value):
         self.promise["args"][0] = value
 

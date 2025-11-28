@@ -118,10 +118,9 @@ def LRPEmbeddingModelEval(model, tokenizer, engine, examples, labels, num_exampl
                 fp += 1
             else:
                 fn += 1
-        hidden_states = outputs.hidden_states
 
         if run_lrp:
-            relevance_outputs = engine.run(hidden_states)
+            relevance_outputs = engine.run(logits)
 
             param_vals.append(relevance_outputs[1][0])
             checkpoint_vals = relevance_outputs[0]

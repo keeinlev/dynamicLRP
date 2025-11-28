@@ -16,6 +16,7 @@ from .util import (
     epsilon_lrp_matmul,
 )
 from .relevance_filter import relevance_filter
+from .model_specific.mosaicbert import IndexFirstAxis, IndexPutFirstAxis
 
 """
 For all these functions, grad_fn is the autograd Node returned from traversing the autograd graph.
@@ -31,21 +32,27 @@ def output_relevances(func):
             input_rels = list(input_rels)
         else:
             input_rels = [ input_rels ]
-        for arg in input_rels:
-            if isinstance(arg, torch.Tensor) and arg.dtype != PromiseBucket.dtype:
-                arg = arg.to(PromiseBucket.dtype)
+        for i, arg in enumerate(input_rels):
+            if isinstance(arg, torch.Tensor):
+                if arg.dtype != PromiseBucket.dtype:
+                    input_rels[i] = arg.to(PromiseBucket.dtype)
+            # elif isinstance(arg, Promise) and arg.rout.dtype != PromiseBucket.dtype:
+            #     arg.promise["rout"].to(dtype=PromiseBucket.dtype)
 
         res = func(*args, **kwargs)
 
         # Clean output dtypes
         if isinstance(res, tuple):
             res = list(res)
-            for r in res:
-                if isinstance(r, torch.Tensor) and LRPPropFunctions != torch.float32 and r.dtype != LRPPropFunctions.dtype:
-                    r = r.to(dtype=LRPPropFunctions.dtype)
+            for i, r in enumerate(res):
+                if isinstance(r, torch.Tensor):
+                    if r.isnan().any():
+                        raise RuntimeError(f"Node {args[-2]} at {args[-2].metadata['topo_ind']} produced nan! {r}")
+                    if LRPPropFunctions.dtype != torch.float32 and r.dtype != LRPPropFunctions.dtype:
+                        res[i] = r.to(dtype=LRPPropFunctions.dtype)
             res = tuple(res)
             return tuple(res)
-        elif isinstance(res, torch.Tensor) and LRPPropFunctions != torch.float32 and res.dtype != LRPPropFunctions.dtype:
+        elif isinstance(res, torch.Tensor) and LRPPropFunctions.dtype != torch.float32 and res.dtype != LRPPropFunctions.dtype:
             res = res.to(dtype=LRPPropFunctions.dtype)
         return res
     if not DEBUG:
@@ -194,6 +201,7 @@ class LRPPropFunctions:
 
         traversal_ind = grad_fn.metadata["topo_ind"]
         bucket = grad_fn.metadata["bucket"]
+        del grad_fn.metadata["bucket"]
 
         promise1 = AddBackwardPromise(promise, traversal_ind, bucket, 0)
         promise2 = AddBackwardPromise(promise, traversal_ind, bucket, 1)
@@ -239,6 +247,7 @@ class LRPPropFunctions:
         
         traversal_ind = grad_fn.metadata["topo_ind"]
         bucket = grad_fn.metadata["bucket"]
+        del grad_fn.metadata["bucket"]
 
         is_mean = type(grad_fn).__name__[:-1] == "MeanBackward"
         promise = SumBackwardPromise(promise, traversal_ind, bucket, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"), is_mean)
@@ -278,6 +287,7 @@ class LRPPropFunctions:
             
             traversal_ind = grad_fn.metadata["topo_ind"]
             bucket = grad_fn.metadata["bucket"]
+            del grad_fn.metadata["bucket"]
 
             prev_promise_branch = None
             promise_branches = []
@@ -324,6 +334,7 @@ class LRPPropFunctions:
             
             traversal_ind = grad_fn.metadata["topo_ind"]
             bucket = grad_fn.metadata["bucket"]
+            del grad_fn.metadata["bucket"]
 
             prev_promise_branch = None
             promise_branches = []
@@ -370,6 +381,7 @@ class LRPPropFunctions:
 
             traversal_ind = grad_fn.metadata["topo_ind"]
             bucket = grad_fn.metadata["bucket"]
+            del grad_fn.metadata["bucket"]
 
             p = UnbindBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim)
             for i, parent in parents:
@@ -411,9 +423,11 @@ class LRPPropFunctions:
 
             traversal_ind = grad_fn.metadata["topo_ind"]
             bucket = grad_fn.metadata["bucket"]
+            del grad_fn.metadata["bucket"]
 
             split_size = getattr(grad_fn, "_saved_split_size", None)
             p = SplitBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim, split_size)
+
             for i, parent in parents:
                 p.parent_idxs[parent] = i
                 parent.arg_node_ind = traversal_ind
@@ -842,8 +856,6 @@ class LRPPropFunctions:
         # Priority right now is getting the deterministic execution plan run mode working, can circle back to this later
         # because it will likely require some reworking on Promises as well. See the note I left in promise.py.
 
-        #### TODO: Add an ablation for Attn-LRP vs traditional LRP
-
         z = x @ weights # s o
 
         if isinstance(r, Promise):
@@ -1226,7 +1238,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     @skip_redundant_promise
     def SoftmaxBackwardProp(grad_fn, r):
-        if not "use_attn_lrp" in grad_fn.metadata:
+        if "use_attn_lrp" not in grad_fn.metadata:
             result = grad_fn._saved_result.detach()
             if isinstance(r, Promise):
                 r.setarg(result, grad_fn, "_saved_result")
@@ -1248,6 +1260,7 @@ class LRPPropFunctions:
         
         traversal_ind = grad_fn.metadata["topo_ind"]
         bucket = grad_fn.metadata["bucket"]
+        del grad_fn.metadata["bucket"]
 
         promise = SoftmaxBackwardPromise(promise, traversal_ind, bucket, getattr(grad_fn, "_saved_result"), getattr(grad_fn, "_saved_dim"))
 
@@ -1321,15 +1334,50 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def IndexPutFirstAxisBackwardProp(grad_fn, r):
-        """Identity but needs custom output"""
-        return r, 0.0
+        if isinstance(r, Promise):
+            def fwd_factory(node):
+                def fwd_indexputfirstaxis(x):
+                    return IndexPutFirstAxis.forward(x, node.saved_tensors[0], node.first_axis_dim)
+                return fwd_indexputfirstaxis
+
+            def bwd_factory(node):
+                def bwd_indexputfirstaxis(x):
+                    return IndexPutFirstAxis.backward(node, x)
+                return bwd_indexputfirstaxis
+            
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            r.nest_bwd(bwd_factory, grad_fn.metadata["topo_ind"])
+            return r, 0.0
+
+        return IndexPutFirstAxis.backward(grad_fn, r), 0.0
     
     @staticmethod
     @output_relevances
     @add_node_to_promise_path
     def IndexFirstAxisBackwardProp(grad_fn, r):
-        """Identity but needs custom output"""
-        return r, 0.0
+        if isinstance(r, Promise):
+            def fwd_factory(node):
+                def fwd_indexfirstaxis(x):
+                    return IndexFirstAxis.forward(x, node.saved_tensors[0])
+                return fwd_indexfirstaxis
+
+            def bwd_factory(node):
+                def bwd_indexfirstaxis(x):
+                    return IndexFirstAxis.backward(node, x)
+                return bwd_indexfirstaxis
+            
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            r.nest_bwd(bwd_factory, grad_fn.metadata["topo_ind"])
+            return r, 0.0
+
+        return IndexFirstAxis.backward(grad_fn, r), 0.0
+    
+    def NativeDropoutBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            r.setarg(LRPPropFunctions.detach_if_grad(grad_fn._saved_result1), grad_fn, "_saved_result1")
+            if r.complete:
+                return r.rin
+        return r
     
     @staticmethod
     @output_relevances

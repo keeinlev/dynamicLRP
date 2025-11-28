@@ -3,7 +3,10 @@ from ..util import (
     epsilon,
     # renormalize_epsilon,
 )
-from .promise import Promise
+from .promise import (
+    Promise,
+    ensure_dtype
+)
 
 class AddBackwardPromise(Promise):
     """
@@ -34,9 +37,7 @@ class AddBackwardPromise(Promise):
     def rin(self):
         return self.promise["rins"][self.idx]
 
-    def set_rout(self, new_rout):
-        self.promise["rout"] = new_rout
-
+    @ensure_dtype
     def set_rin(self, new_rin):
         self.promise["rins"][self.idx] = new_rin
 
@@ -53,9 +54,11 @@ class AddBackwardPromise(Promise):
         if not isinstance(arg2, float):
             arg2 = arg2.abs()
         denom = arg1 + arg2 + epsilon
+
         r1 = (arg1 / denom) * r
         r2 = (arg2 / denom) * r
         self.promise["rins"][0], self.promise["rins"][1] = r1, r2#renormalize_epsilon(r, r1, r2)
 
+    @ensure_dtype
     def _setarg(self, value):
         self.promise["args"][self.idx] = value

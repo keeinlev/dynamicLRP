@@ -109,6 +109,7 @@ class PromiseBucket:
             p.promise["complete"] = False
             p.promise["ready"] = False
             p.promise["pending_parents"] = len(p.parents)
+            p.promise["tail_nodes"] = None
 
 def ensure_dtype(func):
     def wrapper(*args, **kwargs):
@@ -341,17 +342,17 @@ class Promise:
     def set_rout(self, new_rout):
         self.promise["rout"] = new_rout
 
-    @ensure_dtype
     @abstractmethod
     def _setarg(self, value):
         """Function that actually changes the value of self.promise["args"][self.idx].
         Some Promise types may require unique behaviour."""
+        ## YOU NEED TO ADD @ensure_dtype TO CUSTOM PROMISE IMPLS OF THIS FCN
         ...
 
-    @ensure_dtype
     @abstractmethod
     def set_rin(self, new_rin):
         """Like _setarg, sets self.promise["rins"][self.idx], but some Promise types need custom behaviour."""
+        ## YOU NEED TO ADD @ensure_dtype TO CUSTOM PROMISE IMPLS OF THIS FCN
         ...
 
     @ensure_dtype
@@ -445,7 +446,8 @@ class Promise:
             op_result = self.op_result
             for i, parent in enumerate(self.parents):
                 # Setting the arg of all parents using the op_result of this Promise.
-                parent.promise["tail_nodes"].update(self.promise["tail_nodes"])
+                if parent.promise["tail_nodes"] is not None:
+                    parent.promise["tail_nodes"].update(self.promise["tail_nodes"])
                 if parent.arg is None:
                     if isinstance(op_result, tuple):
                         parent.setarg(op_result[self.parent_idxs[parent]], fwd_only=fwd_only, recompile=recompile)
@@ -456,7 +458,8 @@ class Promise:
         """Set the corresponding arg for this branch and check if the promise is ready.
         If it is ready, trigger its completion."""
         if arg_node and ret_fcn:
-            self.promise["tail_nodes"].add(arg_node)
+            if self.promise["tail_nodes"] is not None:
+                self.promise["tail_nodes"].add(arg_node)
             self.arg_node_retrieval_fcn = ret_fcn
             self.bucket.leaf_promises.append(self)
             self.arg_node_ind = arg_node.metadata["topo_ind"]

@@ -1,5 +1,8 @@
 import torch
-from .promise import Promise
+from .promise import (
+    Promise,
+    ensure_dtype
+)
 
 class CatBackwardPromise(Promise):
     """
@@ -27,9 +30,7 @@ class CatBackwardPromise(Promise):
     def rin(self):
         return self.promise["rins"][self.idx]
 
-    def set_rout(self, new_rout):
-        self.promise["rout"] = new_rout
-
+    @ensure_dtype
     def set_rin(self, new_rin):
         self.promise["rins"][self.idx] = new_rin
 
@@ -40,5 +41,6 @@ class CatBackwardPromise(Promise):
         for i, split in enumerate(split_fcn(self.rout)):
             self.promise["rins"][i] = split
 
+    @ensure_dtype
     def _setarg(self, value):
         self.promise["args"][self.idx] = value

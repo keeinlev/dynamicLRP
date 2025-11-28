@@ -129,7 +129,7 @@ class LRPEngine:
         node_name = type(curnode).__name__
         if node_name[:-1] in self.promise_generating_nodes:
             curnode.metadata["bucket"] = self.promise_bucket
-        elif node_name == "DecomposedConvolutionBackward0":
+        if node_name == "DecomposedConvolutionBackward0":
             curnode.metadata["conv_layer"] = self.conv_counter
             curnode.metadata["use_gamma"] = self.use_gamma_conv
             curnode.metadata["gamma"] = self.conv_gamma
@@ -147,8 +147,6 @@ class LRPEngine:
         elif node_name == "BmmBackward0":
             curnode.metadata["use_bilinear"] = self.use_bilinear_mm
         elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0", "SoftmaxBackward0"]:
-            curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
-        elif node_name == "SoftmaxBackward0":
             curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
 
     def run(self, output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor]):

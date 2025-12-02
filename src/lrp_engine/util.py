@@ -1,7 +1,7 @@
-from typing import Tuple, Callable
 import torch
-from .relevance_filter import relevance_filter
 from functools import reduce
+from typing import Tuple, Callable
+from .relevance_filter import relevance_filter
 
 DEBUG = False
 
@@ -26,6 +26,10 @@ epsilon = 10e-12
 #     scale = rz.nansum() / rx.nansum()
 #     return rx * scale
 
+def handle_neg_index(ind, seqlen):
+    if ind < seqlen:
+        return ind
+    return ind - (1 << ind.bit_length())
 
 # Handling AddMmBackward0 is not the exact same as just AddBackward0. The calculation of the in-relevances
 # is slightly different because you need to consider the matmul after the addition is propagated.
@@ -167,7 +171,8 @@ def decompose_addcmulbackward(grad_fn):
 
 def merge_input_shapes(grad_fn):
     shapes = [ im.shape for im in grad_fn._input_metadata ]
-    dim = grad_fn._saved_dim
+    fwd_shape = grad_fn._input_metadata[0].shape
+    dim = handle_neg_index(grad_fn._saved_dim, len(fwd_shape))
     out_shape = list(shapes[0])
     out_shape = out_shape[:dim] + [len(shapes)] + out_shape[dim:]
 

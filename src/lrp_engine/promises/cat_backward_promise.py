@@ -3,6 +3,7 @@ from .promise import (
     Promise,
     ensure_dtype
 )
+from ..util import handle_neg_index
 
 class CatBackwardPromise(Promise):
     """
@@ -10,12 +11,7 @@ class CatBackwardPromise(Promise):
     """
     def __init__(self, promise, traversal_ind, bucket, saved_dim, idx):
         super().__init__(promise, traversal_ind, bucket)
-        
-        # Negative indices -i get saved as 2**32 - i
-        if saved_dim > len(self.fwd_shape) - 1:
-            saved_dim -= 2**32
-
-        self.dim = saved_dim
+        self.dim = handle_neg_index(saved_dim, len(self.fwd_shape))
         self.idx = idx
 
     @property

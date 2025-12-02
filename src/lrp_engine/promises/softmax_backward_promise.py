@@ -1,15 +1,11 @@
 from .dummy_promise import DummyPromise
+from ..util import handle_neg_index
 
 class SoftmaxBackwardPromise(DummyPromise):
     
     def __init__(self, promise, traversal_ind, bucket, saved_result, saved_dim):
         super().__init__(promise, traversal_ind, bucket)
-        
-        # Negative indices -i get saved as 2**32 - i
-        if saved_dim > len(self.fwd_shape) - 1:
-            saved_dim -= 2**32
-
-        self.dim = saved_dim
+        self.dim = handle_neg_index(saved_dim, len(self.fwd_shape))
         self.result = saved_result.to(self.bucket.dtype)
 
     @property
@@ -22,10 +18,7 @@ class SoftmaxBackwardPromise(DummyPromise):
         self.set_rin((self.arg.tril() * (self.rout - self.result * self.rout.sum(dim=-1, keepdim=True))))
     
     def refresh_metadata(self, node):
-        saved_dim = node._saved_dim
-        # Negative indices -i get saved as 2**32 - i
-        if saved_dim > len(self.fwd_shape) - 1:
-            saved_dim -= 2**32
+        saved_dim = handle_neg_index(node._saved_dim, len(self.fwd_shape))
 
         self.dim = saved_dim
         self.result = node._saved_result.to(self.bucket.dtype)

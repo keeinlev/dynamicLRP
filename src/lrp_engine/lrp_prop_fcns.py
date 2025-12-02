@@ -14,6 +14,7 @@ from .util import (
     merge_input_shapes,
     gamma_lrp_general,
     epsilon_lrp_matmul,
+    handle_neg_index,
 )
 from .relevance_filter import relevance_filter
 from .model_specific.mosaicbert import IndexFirstAxis, IndexPutFirstAxis
@@ -320,7 +321,7 @@ class LRPPropFunctions:
     def StackBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
             unstacked_shape = list(r.fwd_shape)
-            stack_dim = grad_fn._saved_dim
+            stack_dim = handle_neg_index(grad_fn._saved_dim, len(unstacked_shape))
             num_args = unstacked_shape[stack_dim]
             unstacked_shape = tuple(unstacked_shape[:stack_dim] + unstacked_shape[stack_dim + 1:])
             promise = {
@@ -461,8 +462,10 @@ class LRPPropFunctions:
                     return r
             else:
                 def factory_fcn(node):
+                    fwd_shape = node._input_metadata[0].shape
+                    saved_dim = handle_neg_index(node._saved_dim, len(fwd_shape))
                     def fwd_max(x):
-                        return torch.max(x, dim=node._saved_dim, keepdim=node._saved_keepdim)
+                        return torch.max(x, dim=saved_dim, keepdim=node._saved_keepdim)
                     return fwd_max
 
                 r.nest_fwd(factory_fcn, grad_fn.metadata["topo_ind"])
@@ -494,10 +497,10 @@ class LRPPropFunctions:
     def GatherBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
             def fwd_gather(node):
-                saved_dim = node._saved_dim
-                if saved_dim > len(node._saved_self.shape) - 1:
-                    saved_dim -= 2**32
-                return torch.gather(node._saved_self, saved_dim, node._saved_index)
+                expected_fwd_shape = node._input_metadata[0].shape
+                saved_dim = handle_neg_index(node._saved_dim, len(expected_fwd_shape))
+                saved_index = handle_neg_index(node._saved_index, expected_fwd_shape[saved_dim])
+                return torch.gather(node._saved_self, saved_dim, saved_index)
             r.setarg(fwd_gather(grad_fn), grad_fn, fwd_gather)
             if r.complete:
                 r = r.rin
@@ -553,18 +556,15 @@ class LRPPropFunctions:
         def get_clean_start_end(node):
             expected_fwd_shape = node._input_metadata[0].shape
             upstream_shape = node._saved_self_sym_sizes
-            sliced_dim = node._saved_dim
-            start = node._saved_start # TODO: Come back to take care of the negative index case.
+            sliced_dim = handle_neg_index(node._saved_dim, len(expected_fwd_shape))
             full_size = upstream_shape[sliced_dim]
-            if start > full_size:
-                start = full_size - (2**32 - start)
+            start = handle_neg_index(node._saved_start, full_size)
             end = start + expected_fwd_shape[sliced_dim]
-            return start, end, full_size
+            return start, end, full_size, sliced_dim
 
         def create_pad(node):
             upstream_shape = node._saved_self_sym_sizes
-            sliced_dim = node._saved_dim
-            start, end, full_size = get_clean_start_end(node)
+            start, end, full_size, sliced_dim = get_clean_start_end(node)
 
             # We wish to pad r so that it becomes the correct size along the sliced dimension
             pad = []
@@ -580,9 +580,9 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             def fwd_factory(node):
-                start, end, _ = get_clean_start_end(node)
+                start, end, _, saved_dim = get_clean_start_end(node)
                 def fwd_slice(x):
-                    return torch.ops.aten.slice(x, node._saved_dim, start, end)
+                    return torch.ops.aten.slice(x, saved_dim, start, end)
                 return fwd_slice
             
             def bwd_factory(node):
@@ -634,8 +634,11 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             def fwd_factory(node):
+                expected_fwd_shape = node._input_metadata[0].shape
+                saved_dim = handle_neg_index(node._saved_dim, len(expected_fwd_shape))
+                saved_index = handle_neg_index(node._saved_index, expected_fwd_shape[saved_dim])
                 def fwd_select(x):
-                    return torch.select(x, node._saved_dim, node._saved_index)
+                    return torch.select(x, saved_dim, saved_index)
                 return fwd_select
 
             r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
@@ -723,9 +726,10 @@ class LRPPropFunctions:
     def UnsqueezeBackwardProp(cls, grad_fn, r):
 
         def fwd_factory(node):
-            dim = node._saved_dim
+            fwd_shape = node._input_metadata[0].shape
+            saved_dim = handle_neg_index(node._saved_dim, len(fwd_shape))
             def fwd_unsqueeze(x):
-                return x.unsqueeze(dim=dim)
+                return x.unsqueeze(dim=saved_dim)
             return fwd_unsqueeze
 
         if isinstance(r, Promise):
@@ -741,9 +745,10 @@ class LRPPropFunctions:
     def SqueezeBackwardProp(cls, grad_fn, r):
 
         def fwd_factory(node):
-            dim = node._saved_dim
+            fwd_shape = node._input_metadata[0].shape
+            saved_dim = handle_neg_index(node._saved_dim, len(fwd_shape))
             def fwd_squeeze(x):
-                return x.squeeze(dim=dim)
+                return x.squeeze(dim=saved_dim)
             return fwd_squeeze
 
         if isinstance(r, Promise):

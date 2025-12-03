@@ -351,7 +351,7 @@ function chain to reconstruct the activation at the Origin Node, which is then s
 all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred relevance can be “fast-forwarded” down
 each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
 dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
-We provide a full example of this mechanism in the Appendix \textcolor{red}{Link to Appendix}.
+We provide a full example of this mechanism in \ref{appendix:basic-promise-example}.
 
 \subsubsection{Promise Nesting and Trees}
 Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
@@ -365,14 +365,14 @@ We categorize all Promise-Generating Operations as one of the following:
 
 Those which are Strict typically lack required forward activations during LRP traversal, necessitating promise-based resolution.
 Whereas Dependents do not have a mathematical dependency on the activations, but typically are operations which perform merging/splitting of data.
-We formalize and prove this generalization in the Appendix.
+We formalize and prove this generalization in the Appendix \textcolor{red}{Think about if you are actually going to do this}.
 
 Note that whether a Dependent Promise-Generating Node instantiates a new Promise or not is architecture-specific.
 
 When a Promise-Generating Node $v_p$ receives a Promise Branch $p$ as input, $v_p$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $p$ via parent-child connections, forming a Promise Tree.
 Promise Trees resolve bottom-up, starting with leaf Promise Branches, which encounter Arg Nodes, and forward-chain to reconstruct their
 ancestor Promises' activations via parent connections. Once all activations of the Promise at the root of the Tree have been recovered, the relevance is propagated back down the Tree via child connections
-and backward chains. See Appendix for the formal resolution algorithm.
+and backward chains. See \ref{appendix:promise-trees} for the formal resolution algorithm.
 
 \subsubsection{Promise Deadlock}
 Promises can cause circular dependencies between Promise Branches. Consider the following graph, reflecting a pattern found in
@@ -444,7 +444,7 @@ for traversal. This creates a circular dependency: C is stalled waiting for A's 
 and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
 
 The solution, in brief, is to break our traversal heuristic upon such situations, and allow Promise Branches to fully propagate until they reach Arg Nodes.
-The specific manner in which this is done is explained fully in the Appendix \textcolor{red}{Link to "The Solution to Promise Deadlock: Pre-Promises"}.
+The specific manner in which this is done is explained fully in \ref{appendix:pre-promises}.
 
 % Now consider some Promise Branch input $p_1$, and some node $v$ which receives it as an input. We have the following cases depending on what type of node $v$ is:
 % \begin{enumerate}
@@ -466,7 +466,7 @@ A simplified version of the propagation algorithm which considers all these is p
 
 Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
 Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
-within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in the Appendix.
+within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in \ref{appendix:unique-chains}.
 This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
 
 
@@ -503,7 +503,7 @@ Let $S$ be the size of the largest activation cached in the computation graph.
 
 Let $\delta = \sum_{v_p \in V_P} d(v_p)$
 
-Then, the promise-based LRP algorithm has runtime complexity $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$.
+Then, the promise-based LRP algorithm has runtime complexity $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(|V_P| \cdot S)$.
 % The promise-based LRP algorithm requires $F = 1 + |P| \cdot D$ forward passes and $B = 1$ backward pass, giving total complexity $O((1 + |P| \cdot D) \cdot n + m)$.
 \end{theorem}
 
@@ -655,7 +655,7 @@ computations remain in the same order of computational complexity as current imp
 computation graph. However, we also use a different approach to computing the propagations of Linear and Convolutional layers,
 opting for an explicit, analytical redistribution instead of using the gradient-based approach via the patching of built-in
 backward pass mechanisms.
-We show that these two methods are mathematically equivalent. \textcolor{red}{Show a derivation in the Appendix}
+We show that these two methods are mathematically equivalent. \textcolor{red}{Still need to show a derivation in the Appendix}
 
 \subsection{Weighing the Costs of Maintainability}
 By breaking LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
@@ -717,33 +717,28 @@ be overcome by our framework.
 %\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}
 \subsection{Algorithms}
 \begin{algorithm}[H]
-  \caption{Operation-Level Relevance Propagation}
-  \label{alg:operation-propagation}
+  \caption{Computation Graph Construction}
+  \label{alg:graph-construction}
   \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
-    \Ensure Input relevance $R_{in}$
-    \State Initialize $stack \gets [hidden\_states.grad\_fn]$
-    \State Initialize $nodes\_pending \gets \{ node : len(parents)$ for $node, parents \in in\_adj.items() \}$
-    \State Initialize $node\_inputs \gets \{ node : [ null$ for $parent$ in $parents$ ] for $node, parents \in in\_adj.items() \}$
-    \State Initialize $fcn\_map$ which maps $type(node)$ to its corresponding propagation function.
-    \State Set $node\_inputs[hidden\_states.grad\_fn] = [R\_out]$
-
-    \While{$stack$}
-      \State $curnode \gets stack.pop()$
-      \State $curnode\_in\_rel = node\_inputs[curnode]$
-      \If{$curnode == target\_node$}
-        \Return $R_{in} := curnode\_in\_rel$
+    \Require Model output $hidden\_states$
+    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
+    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
+    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
+    \State $root \gets hidden\_states.grad\_fn$
+    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+    \Return $in\_adj$, $out\_adj$, $topo\_stack$
+    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \If{$fcn = \text{None}$ or $fcn \in visited$}
+        \State \Return
       \EndIf
-      \State $prop\_fcn \gets fcn\_map[type(curnode)]$
-      \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
-      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$
-        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
-        \If{$nodes\_pending[child] == 0$}
-          \State $stack.push(child)$
-        \EndIf
+      \State $visited \gets visited \cup \{fcn\}$
+      \For{each $child \in fcn.next\_functions$}
+        \State $out\_adj[fcn].append(child)$
+        \State $in\_adj[child].append(fcn)$
+        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
       \EndFor
-    \EndWhile
+      \State $topo\_stack.push(fcn)$
+    \EndFunction
   \end{algorithmic}
 \end{algorithm}
 
@@ -922,32 +917,6 @@ def lrp_engine(graph, output_relevance):
   \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
 \end{enumerate}
 
-\begin{algorithm}[t]
-  \caption{Computation Graph Construction}
-  \label{alg:graph-construction}
-  \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$
-    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
-    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
-    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
-    \State $root \gets hidden\_states.grad\_fn$
-    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-    \Return $in\_adj$, $out\_adj$, $topo\_stack$
-    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \If{$fcn = \text{None}$ or $fcn \in visited$}
-        \State \Return
-      \EndIf
-      \State $visited \gets visited \cup \{fcn\}$
-      \For{each $child \in fcn.next\_functions$}
-        \State $out\_adj[fcn].append(child)$
-        \State $in\_adj[child].append(fcn)$
-        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \EndFor
-      \State $topo\_stack.push(fcn)$
-    \EndFunction
-  \end{algorithmic}
-\end{algorithm}
-
 \textbf{Readiness and Completeness}
 \begin{itemize}
   \item \textbf{Readiness:} A promise is ready when all output relevance (from downstream nodes) has been received.
@@ -956,7 +925,8 @@ def lrp_engine(graph, output_relevance):
 
 This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
 
-\textbf{Example of Basic Promise Mechanism}
+\subsection{Example of Basic Promise Mechanism}
+\label{appendix:basic-promise-example}
 Consider the following subgraph in a computation graph. Suppose nodes A, B, C, D are all nodes which do not store
 any forward activations, and E is one which does and allows us to retrieve or recompute its forward pass output.
 Furthermore, suppose that node A is one which requires some forward activation to compute relevance propagation,
@@ -1157,7 +1127,8 @@ backtracking any previously visited nodes. Blue indicates relevance propagation 
 \end{tikzpicture}
 \end{center}
 
-\textbf{Promise Trees and Resolution}
+\subsection{Promise Trees and Resolution}
+\label{appendix:promise-trees}
 A Promise Tree is created when a promise-generating operation receives a Promise as relevance input.
 The new Promise specific to that operation is created and linked to the input Promise with parent-child connections.
 
@@ -1656,7 +1627,8 @@ Promise Tree
 \end{center}
 \end{minipage}
 
-\textbf{Solution to Promise Deadlock: Pre-Promises}
+\subsection{Solution to Promise Deadlock: Pre-Promises}
+\label{appendix:pre-promises}
 
 The solution to Promise Deadlock is to allow Promise Branches to "reach ahead" past the traversal frontier to locate their Arg Nodes, without triggering full relevance backpropagation.
 
@@ -1781,7 +1753,8 @@ And we propagate through it to E, finally.
 \end{tikzpicture}
 \end{center}
 
-\textbf{Input Aggregation} When a node has multiple in-neighbours pointing to one input position, we must aggregate the incoming relevances into one object.
+\subsection{Input Aggregation}
+When a node has multiple in-neighbours pointing to one input position, we must aggregate the incoming relevances into one object.
 For multiple tensor inputs, this is straightforward, simply sum them.
 For multiple Promise Branch objects, we need to group them somehow while maintaining correct structure for resolution.
 This can be achieved using a new Promise Branch object which becomes the child of all the Promise Branches that need to be grouped, and sees them as parents.
@@ -1820,6 +1793,7 @@ to its parent Promise Branches, and then similarly receive relevance back from t
 \end{proof}
 
 \textbf{Claim:} The internal nodes of a given Promise chain are unique to that Promise.
+\label{appendix:unique-chains}
 \begin{proof}
   By Prop. 1 we have that no node has relevance propagated through it more than once in our graph traversal.
   Suppose for a contradiction, then, that there were 2 distinct Promise Branches which shared an internal node. But then, upon resolution of both branches,

@@ -221,23 +221,32 @@ Our work builds on these insights to address the limitations of existing methods
 
 \subsection{Computation Graphs in Deep Learning Frameworks}
 
-Deep learning frameworks rely on computation graphs to represent the sequence of operations performed during the forward and backward passes of a neural network. Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing operations (e.g., matrix multiplication, activation functions), and $E$ is the set of directed edges representing data flow between operations.
+Deep learning frameworks rely on computation graphs to represent the sequence of operations performed on tensors and trace the gradients of the loss back to the network parameters.
+Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing some operation $f_v$ (e.g., matrix multiplication, ReLU, addition), and $E$ is the set of directed edges representing data flow between operations.
 
-Each node $v \in V$ in the graph corresponds to a function $f_v$ that maps its inputs to outputs. For example, a linear layer can be represented as $f_v(x) = Wx + b$, where $W$ and $b$ are the weights and biases, respectively. The edges $e \in E$ capture the dependencies between these operations, ensuring that the graph is acyclic and can be traversed in topological order.
+In auto-differentiation libraries, each node $v \in V$ in the graph holds a function $\tilde{f}_v$ that computes the local gradient backpropagation of that operation using the Chain Rule, mapping the gradients of forward outputs to gradients of forward inputs.
+The edges $e \in E$ are thus directed from the model's output layer to input layer, each vertex pointing to its forward dependencies.
+These functions must be well-defined for all tensor operations and allow backpropagation to leverage the graph structure for efficient computation.
 
-The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
-\begin{equation}
-\frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
-\end{equation}
-where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
+For example, a matrix multiplication node $v_{mm}$ from a linear layer will have $\tilde{f}_{mm}(\frac{\partial L}{\partial z}) = \begin{pmatrix} \frac{\partial L}{\partial z} W^T & x^T \frac{\partial L}{\partial z} \end{pmatrix}$, where $L$ is the loss, $W$ is the weight matrix, $x$ is the layer input, and $z = Wx$.
+The in-edge pointing to $v$ would come from a node $v_{add}$, which represents the next operation in the forward pass, the bias addition $f_{add}(z, b) = z + b$. 
+The two out-edges leaving $v$ point to a terminal node representing $W$, indicating it is a parameter, and the node representing the operation which produced $x$ in the forward pass.
 
-The promise-based attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers. By leveraging the DAG structure, the algorithm ensures that relevance is propagated efficiently and faithfully, adhering to the conservation principle:
+% The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
+% \begin{equation}
+% \frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
+% \end{equation}
+% where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
+
+Our proposed attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers as standard functionality.
+By leveraging the DAG structure constructed by a reliable learning framework, the algorithm ensures that relevance is propagated efficiently and faithfully.
+The LRP conservation principle is thus adhered to on an operation-wise basis, instead of layer-wise.
 \begin{equation}
 \sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
 \end{equation}
 where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
 
-This theoretical foundation underscores the flexibility and scalability of the promise-based approach, making it well-suited for modern deep learning models.
+% This theoretical foundation underscores the flexibility and scalability of the promise-based approach, making it well-suited for modern deep learning models.
 
 \section{Methods}
 
@@ -678,9 +687,10 @@ future research.
 While it may seem that this design is strictly PyTorch-specific, we claim that the Promise-based Dynamic LRP can be extended to any deep learning
 framework with an auto-differentiation library.
 
-We consider that differentiation is first and foremost a mathematical, and auto-differentiation stricly relies on computation graphs.
-It itself is a task defined at the operation level, and for any function to be differentiated, the set of givens required for this
-computation is purely characteristic to the function in question, not the framework or programming language being used.
+We consider that differentiation is first and foremost a mathematical concept, and auto-differentiation stricly relies on computation graphs.
+This implies two important invariants across any auto-differentiation engine.
+Being built on computation graphs, these engines themselves are defined at the operation level, and for any function to be differentiated, the set of givens required
+is purely characteristic to the mathematical properties of the function in question, not the framework or programming language being used.
 
 Thus, all implementations of auto-differentiation will be required to store the same minimum set of data for each function they share, in
 the structure of a computation graph.
@@ -1668,7 +1678,7 @@ Once $v$'s in-degree is satisfied later in the traversal:
     \item The traversal continues normally from $p_2$'s Arg Node after backward-chaining.
 \end{itemize}
 
-To illustrate the function of Pre-Promises, we will pick up where the last example left off. We have that D is trying to propagate a Promise Branch to E, but E does not
+To illustrate the function of Pre-Promises, we will pick up where the example in Section 4.3.3 left off. We have that D is trying to propagate a Promise Branch to E, but E does not
 have all its inputs yet. Therefore, we create a Pre-Promise $p_3$, and allow traversal to continue at E, now giving $p_3$ as E's input from D.
 
 \begin{center}

@@ -1,17 +1,102 @@
-\begin{thebibliography}{3}
+\begin{thebibliography}{25}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
 
-\bibitem[Bach et~al.(2015)Bach, Binder, Montavon, Klauschen, M{\"u}ller, and
-  Samek]{bach2015pixel}
-Sebastian Bach, Alexander Binder, Gr{\"e}goire Montavon, Frederick Klauschen,
-  Klaus-Robert M{\"u}ller, and Wojciech Samek.
+\bibitem[Achtibat et~al.(2024)Achtibat, Hatefi, Dreyer,
+  et~al.]{achtibat2024attnlrp}
+Reduan Achtibat, Sayed Mohammad~Vakilzadeh Hatefi, Maximilian Dreyer, et~al.
+\newblock Attnlrp: Attention-aware layer-wise relevance propagation for
+  transformers.
+\newblock \emph{arXiv preprint arXiv:2402.05602}, 2024.
+
+\bibitem[Ancona et~al.(2018)Ancona, Ceolini, {\"O}ztireli, and
+  Gross]{ancona2018towards}
+Marco Ancona, Enea Ceolini, Cengiz {\"O}ztireli, and Markus Gross.
+\newblock Towards better understanding of gradient-based attribution methods
+  for deep neural networks.
+\newblock \emph{arXiv preprint arXiv:1711.06104}, 2018.
+
+\bibitem[Anders et~al.(2020)Anders, Weber, Neumann, Samek, Müller, and
+  Lapuschkin]{anders2020cleverhans}
+Christopher~J. Anders, Leander Weber, David Neumann, Wojciech Samek,
+  Klaus-Robert Müller, and Sebastian Lapuschkin.
+\newblock Finding and removing clever hans: Using explanation methods to debug
+  and improve deep models.
+\newblock 2020.
+\newblock URL \url{https://arxiv.org/abs/1912.11425}.
+
+\bibitem[Anders et~al.(2021)Anders, Neumann, Samek, M{\"{u}}ller, and
+  Sebastian]{anders2021zennit}
+Christopher~J. Anders, David Neumann, Wojciech Samek, Klaus{-}Robert
+  M{\"{u}}ller, and Lapuschkin Sebastian.
+\newblock Software for dataset-wide {XAI:} from local explanations to
+  globalinsights with zennit, corelay, and virelay.
+\newblock \emph{CoRR}, abs/2106.13200, 2021.
+\newblock URL \url{https://arxiv.org/abs/2106.13200}.
+
+\bibitem[Bach et~al.(2015)Bach, Binder, Montavon, et~al.]{bach2015pixel}
+Sebastian Bach, Alexander Binder, Gr{\"e}goire Montavon, et~al.
 \newblock Pixel-wise explanations for non-linear classifier decisions by
   layer-wise relevance propagation.
 \newblock \emph{PLoS ONE}, 10\penalty0 (7):\penalty0 e0130140, 2015.
+
+\bibitem[Bassi et~al.(2024{\natexlab{a}})Bassi, Decherchi, and
+  Cavalli]{bassi2024fasterisnet}
+Pedro R. A.~S. Bassi, Sergio Decherchi, and Andrea Cavalli.
+\newblock Faster isnet for background bias mitigation on deep neural networks.
+\newblock \emph{IEEE Access}, 12:\penalty0 155151–155167, 2024{\natexlab{a}}.
+\newblock ISSN 2169-3536.
+\newblock \doi{10.1109/access.2024.3461773}.
+\newblock URL \url{http://dx.doi.org/10.1109/ACCESS.2024.3461773}.
+
+\bibitem[Bassi et~al.(2024{\natexlab{b}})Bassi, Dertkigil, and
+  Cavalli]{bassi2024isnet}
+Pedro R. A.~S. Bassi, Sergio S.~J. Dertkigil, and Andrea Cavalli.
+\newblock Improving deep neural network generalization and robustness to
+  background bias via layer-wise relevance propagation optimization.
+\newblock \emph{Nature Communications}, 15\penalty0 (1), 2024{\natexlab{b}}.
+\newblock ISSN 2041-1723.
+\newblock \doi{10.1038/s41467-023-44371-z}.
+\newblock URL \url{http://dx.doi.org/10.1038/s41467-023-44371-z}.
+
+\bibitem[Covert et~al.(2020)Covert, Lundberg, and Lee]{covert2020understanding}
+Ian Covert, Scott~M Lundberg, and Su-In Lee.
+\newblock Understanding global feature contributions with additive importance
+  measures.
+\newblock \emph{Advances in Neural Information Processing Systems},
+  33:\penalty0 17212--17223, 2020.
+
+\bibitem[Ding et~al.(2017)Ding, Liu, Luan, and Sun]{ding2017saliency}
+Yanzhuo Ding, Yang Liu, Huanbo Luan, and Maosong Sun.
+\newblock Visualizing and understanding neural machine translation.
+\newblock \emph{Proceedings of the 55th Annual Meeting of the Association for
+  Computational Linguistics (Volume 1: Long Papers)}, pp.\  1150--1159, 2017.
+
+\bibitem[Hatefi et~al.(2025)Hatefi, Dreyer, Achtibat, Kahardipraja, Wiegand,
+  Samek, and Lapuschkin]{hatefi2025pruningcircuitcompression}
+Sayed Mohammad~Vakilzadeh Hatefi, Maximilian Dreyer, Reduan Achtibat, Patrick
+  Kahardipraja, Thomas Wiegand, Wojciech Samek, and Sebastian Lapuschkin.
+\newblock Attribution-guided pruning for compression, circuit discovery, and
+  targeted correction in llms.
+\newblock 2025.
+\newblock URL \url{https://arxiv.org/abs/2506.13727}.
+
+\bibitem[Howard(2019)]{howard2019imagenette}
+Jeremy Howard.
+\newblock Imagenette: A smaller subset of 10 easily classified classes from
+  imagenet, March 2019.
+\newblock URL \url{https://github.com/fastai/imagenette}.
+
+\bibitem[Krizhevsky \& Hinton(2009)Krizhevsky and
+  Hinton]{krizhevsky2009learning}
+Alex Krizhevsky and Geoffrey Hinton.
+\newblock Learning multiple layers of features from tiny images.
+\newblock Technical Report~0, University of Toronto, Toronto, Ontario, 2009.
+\newblock URL
+  \url{https://www.cs.toronto.edu/~kriz/learning-features-2009-TR.pdf}.
 
 \bibitem[Lundberg \& Lee(2017)Lundberg and Lee]{lundberg2017unified}
 Scott~M Lundberg and Su-In Lee.
@@ -19,11 +104,91 @@ Scott~M Lundberg and Su-In Lee.
 \newblock \emph{Advances in Neural Information Processing Systems}, pp.\
   4765--4774, 2017.
 
+\bibitem[Machiraju et~al.(2024)Machiraju, Derry, Desai,
+  et~al.]{machiraju2024prospector}
+Gautam Machiraju, Alexander Derry, Arjun Desai, et~al.
+\newblock Prospector heads: Generalized feature attribution for large models \&
+  data.
+\newblock \emph{Proceedings of the 41st International Conference on Machine
+  Learning}, 2024.
+
+\bibitem[Montavon et~al.(2017)Montavon, Lapuschkin, Binder,
+  et~al.]{montavon2017explaining}
+Gr{\'e}goire Montavon, Sebastian Lapuschkin, Alexander Binder, et~al.
+\newblock Explaining nonlinear classification decisions with deep taylor
+  decomposition.
+\newblock \emph{Pattern recognition}, 65:\penalty0 211--222, 2017.
+
+\bibitem[Ribeiro et~al.(2016)Ribeiro, Singh, and Guestrin]{ribeiro2016should}
+Marco~Tulio Ribeiro, Sameer Singh, and Carlos Guestrin.
+\newblock Why should i trust you?: Explaining the predictions of any
+  classifier.
+\newblock \emph{Proceedings of the 22nd ACM SIGKDD international conference on
+  knowledge discovery and data mining}, pp.\  1135--1144, 2016.
+
+\bibitem[Schulz et~al.(2020)Schulz, Sixt, Tombari, and
+  Landgraf]{schulz2020abpc}
+Karl Schulz, Leon Sixt, Federico Tombari, and Tim Landgraf.
+\newblock Restricting the flow: Information bottlenecks for attribution.
+\newblock \emph{International Conference on Learning Representations}, pp.\
+  12685--12703, 2020.
+
+\bibitem[Selvaraju et~al.(2017)Selvaraju, Cogswell, Das, Vedantam, Parikh, and
+  Batra]{selvaraju2017grad}
+Ramprasaath~R Selvaraju, Michael Cogswell, Abhishek Das, Ramakrishna Vedantam,
+  Devi Parikh, and Dhruv Batra.
+\newblock Grad-cam: Visual explanations from deep networks via gradient-based
+  localization.
+\newblock \emph{Proceedings of the IEEE international conference on computer
+  vision}, pp.\  618--626, 2017.
+
+\bibitem[Simonyan et~al.(2014)Simonyan, Vedaldi, and
+  Zisserman]{simonyan2014deep}
+Karen Simonyan, Andrea Vedaldi, and Andrew Zisserman.
+\newblock Deep inside convolutional networks: Visualising image classification
+  models and saliency maps.
+\newblock \emph{arXiv preprint arXiv:1312.6034}, 2014.
+
+\bibitem[Smilkov et~al.(2017)Smilkov, Thorat, Kim, Vi{\'e}gas, and
+  Wattenberg]{smilkov2017smoothgrad}
+Daniel Smilkov, Nikhil Thorat, Been Kim, Fernanda Vi{\'e}gas, and Martin
+  Wattenberg.
+\newblock Smoothgrad: removing noise by adding noise.
+\newblock \emph{arXiv preprint arXiv:1706.03825}, 2017.
+
+\bibitem[Sun et~al.(2021)Sun, Lapuschkin, Samek, and
+  Binder]{sun2021lrpfinetuning}
+Jiamei Sun, Sebastian Lapuschkin, Wojciech Samek, and Alexander Binder.
+\newblock Explain and improve: Lrp-inference fine-tuning for image captioning
+  models.
+\newblock 2021.
+\newblock URL \url{https://arxiv.org/abs/2001.01037}.
+
 \bibitem[Sundararajan et~al.(2017)Sundararajan, Taly, and
   Yan]{sundararajan2017axiomatic}
 Mukund Sundararajan, Ankur Taly, and Qiqi Yan.
 \newblock Axiomatic attribution for deep networks.
 \newblock \emph{International Conference on Machine Learning}, pp.\
   3319--3328, 2017.
+
+\bibitem[Vaswani et~al.(2017)Vaswani, Shazeer, Parmar,
+  et~al.]{vaswani2017attention}
+Ashish Vaswani, Noam Shazeer, Niki Parmar, et~al.
+\newblock Attention is all you need.
+\newblock \emph{Advances in neural information processing systems}, 30, 2017.
+
+\bibitem[Voita et~al.(2019)Voita, Talbot, Moiseev, et~al.]{voita2021analyzing}
+Elena Voita, David Talbot, Fedor Moiseev, et~al.
+\newblock Analyzing multi-head self-attention: Specialized heads do the heavy
+  lifting, the rest can be pruned.
+\newblock \emph{Proceedings of the 57th Annual Meeting of the Association for
+  Computational Linguistics}, pp.\  5797--5808, 2019.
+
+\bibitem[Zhou et~al.(2016)Zhou, Khosla, Lapedriza, Oliva, and
+  Torralba]{zhou2016learning}
+Bolei Zhou, Aditya Khosla, Agata Lapedriza, Aude Oliva, and Antonio Torralba.
+\newblock Learning deep features for discriminative localization.
+\newblock \emph{Proceedings of the IEEE conference on computer vision and
+  pattern recognition}, pp.\  2921--2929, 2016.
 
 \end{thebibliography}

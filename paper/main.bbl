@@ -1,4 +1,4 @@
-\begin{thebibliography}{25}
+\begin{thebibliography}{24}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -19,15 +19,6 @@ Marco Ancona, Enea Ceolini, Cengiz {\"O}ztireli, and Markus Gross.
   for deep neural networks.
 \newblock \emph{arXiv preprint arXiv:1711.06104}, 2018.
 
-\bibitem[Anders et~al.(2020)Anders, Weber, Neumann, Samek, Müller, and
-  Lapuschkin]{anders2020cleverhans}
-Christopher~J. Anders, Leander Weber, David Neumann, Wojciech Samek,
-  Klaus-Robert Müller, and Sebastian Lapuschkin.
-\newblock Finding and removing clever hans: Using explanation methods to debug
-  and improve deep models.
-\newblock 2020.
-\newblock URL \url{https://arxiv.org/abs/1912.11425}.
-
 \bibitem[Anders et~al.(2021)Anders, Neumann, Samek, M{\"{u}}ller, and
   Sebastian]{anders2021zennit}
 Christopher~J. Anders, David Neumann, Wojciech Samek, Klaus{-}Robert
@@ -43,24 +34,24 @@ Sebastian Bach, Alexander Binder, Gr{\"e}goire Montavon, et~al.
   layer-wise relevance propagation.
 \newblock \emph{PLoS ONE}, 10\penalty0 (7):\penalty0 e0130140, 2015.
 
-\bibitem[Bassi et~al.(2024{\natexlab{a}})Bassi, Decherchi, and
-  Cavalli]{bassi2024fasterisnet}
+\bibitem[Bassi et~al.(2024)Bassi, Decherchi, and Cavalli]{bassi2024fasterisnet}
 Pedro R. A.~S. Bassi, Sergio Decherchi, and Andrea Cavalli.
 \newblock Faster isnet for background bias mitigation on deep neural networks.
-\newblock \emph{IEEE Access}, 12:\penalty0 155151–155167, 2024{\natexlab{a}}.
+\newblock \emph{IEEE Access}, 12:\penalty0 155151–155167, 2024.
 \newblock ISSN 2169-3536.
 \newblock \doi{10.1109/access.2024.3461773}.
 \newblock URL \url{http://dx.doi.org/10.1109/ACCESS.2024.3461773}.
 
-\bibitem[Bassi et~al.(2024{\natexlab{b}})Bassi, Dertkigil, and
-  Cavalli]{bassi2024isnet}
-Pedro R. A.~S. Bassi, Sergio S.~J. Dertkigil, and Andrea Cavalli.
-\newblock Improving deep neural network generalization and robustness to
-  background bias via layer-wise relevance propagation optimization.
-\newblock \emph{Nature Communications}, 15\penalty0 (1), 2024{\natexlab{b}}.
-\newblock ISSN 2041-1723.
-\newblock \doi{10.1038/s41467-023-44371-z}.
-\newblock URL \url{http://dx.doi.org/10.1038/s41467-023-44371-z}.
+\bibitem[Böhle et~al.(2019)Böhle, Eitel, Weygandt, and
+  Ritter]{bohle2019alzheimers}
+Moritz Böhle, Fabian Eitel, Martin Weygandt, and Kerstin Ritter.
+\newblock Layer-wise relevance propagation for explaining deep neural network
+  decisions in mri-based alzheimer's disease classification.
+\newblock \emph{Frontiers in Aging Neuroscience}, Volume 11 - 2019, 2019.
+\newblock ISSN 1663-4365.
+\newblock \doi{10.3389/fnagi.2019.00194}.
+\newblock URL
+  \url{https://www.frontiersin.org/journals/aging-neuroscience/articles/10.3389/fnagi.2019.00194}.
 
 \bibitem[Covert et~al.(2020)Covert, Lundberg, and Lee]{covert2020understanding}
 Ian Covert, Scott~M Lundberg, and Su-In Lee.
@@ -69,26 +60,19 @@ Ian Covert, Scott~M Lundberg, and Su-In Lee.
 \newblock \emph{Advances in Neural Information Processing Systems},
   33:\penalty0 17212--17223, 2020.
 
-\bibitem[Ding et~al.(2017)Ding, Liu, Luan, and Sun]{ding2017saliency}
-Yanzhuo Ding, Yang Liu, Huanbo Luan, and Maosong Sun.
-\newblock Visualizing and understanding neural machine translation.
-\newblock \emph{Proceedings of the 55th Annual Meeting of the Association for
-  Computational Linguistics (Volume 1: Long Papers)}, pp.\  1150--1159, 2017.
-
-\bibitem[Hatefi et~al.(2025)Hatefi, Dreyer, Achtibat, Kahardipraja, Wiegand,
-  Samek, and Lapuschkin]{hatefi2025pruningcircuitcompression}
-Sayed Mohammad~Vakilzadeh Hatefi, Maximilian Dreyer, Reduan Achtibat, Patrick
-  Kahardipraja, Thomas Wiegand, Wojciech Samek, and Sebastian Lapuschkin.
-\newblock Attribution-guided pruning for compression, circuit discovery, and
-  targeted correction in llms.
-\newblock 2025.
-\newblock URL \url{https://arxiv.org/abs/2506.13727}.
-
 \bibitem[Howard(2019)]{howard2019imagenette}
 Jeremy Howard.
 \newblock Imagenette: A smaller subset of 10 easily classified classes from
   imagenet, March 2019.
 \newblock URL \url{https://github.com/fastai/imagenette}.
+
+\bibitem[Iwana et~al.(2019)Iwana, Kuroki, and
+  Uchida]{iwana2019lrpexplainingcnns}
+Brian~K. Iwana, Ryohei Kuroki, and Seiichi Uchida.
+\newblock Explaining convolutional neural networks using softmax gradient
+  layer-wise relevance propagation.
+\newblock 2019.
+\newblock URL \url{https://arxiv.org/abs/1908.04351}.
 
 \bibitem[Krizhevsky \& Hinton(2009)Krizhevsky and
   Hinton]{krizhevsky2009learning}
@@ -118,6 +102,21 @@ Gr{\'e}goire Montavon, Sebastian Lapuschkin, Alexander Binder, et~al.
 \newblock Explaining nonlinear classification decisions with deep taylor
   decomposition.
 \newblock \emph{Pattern recognition}, 65:\penalty0 211--222, 2017.
+
+\bibitem[Montavon et~al.(2019)Montavon, Binder, Lapuschkin, Samek, and
+  M{\"u}ller]{montavon2019lrp}
+Gr{\'e}goire Montavon, Alexander Binder, Sebastian Lapuschkin, Wojciech Samek,
+  and Klaus-Robert M{\"u}ller.
+\newblock Layer-wise relevance propagation: An overview, 2019.
+
+\bibitem[Otsuki et~al.(2024)Otsuki, Iida, Doublet, Hirakawa, Yamashita,
+  Fujiyoshi, and Sugiura]{otsuki2024lrpresidualconnections}
+Seitaro Otsuki, Tsumugi Iida, Félix Doublet, Tsubasa Hirakawa, Takayoshi
+  Yamashita, Hironobu Fujiyoshi, and Komei Sugiura.
+\newblock Layer-wise relevance propagation with conservation property for
+  resnet.
+\newblock 2024.
+\newblock URL \url{https://arxiv.org/abs/2407.09115}.
 
 \bibitem[Ribeiro et~al.(2016)Ribeiro, Singh, and Guestrin]{ribeiro2016should}
 Marco~Tulio Ribeiro, Sameer Singh, and Carlos Guestrin.
@@ -176,13 +175,6 @@ Mukund Sundararajan, Ankur Taly, and Qiqi Yan.
 Ashish Vaswani, Noam Shazeer, Niki Parmar, et~al.
 \newblock Attention is all you need.
 \newblock \emph{Advances in neural information processing systems}, 30, 2017.
-
-\bibitem[Voita et~al.(2019)Voita, Talbot, Moiseev, et~al.]{voita2021analyzing}
-Elena Voita, David Talbot, Fedor Moiseev, et~al.
-\newblock Analyzing multi-head self-attention: Specialized heads do the heavy
-  lifting, the rest can be pruned.
-\newblock \emph{Proceedings of the 57th Annual Meeting of the Association for
-  Computational Linguistics}, pp.\  5797--5808, 2019.
 
 \bibitem[Zhou et~al.(2016)Zhou, Khosla, Lapedriza, Oliva, and
   Torralba]{zhou2016learning}

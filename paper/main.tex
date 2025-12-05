@@ -66,7 +66,7 @@
   % Things just for the journal/conference version go here
 }
 
-\title{Make sure to always keep your promises: A model-agnostic attribution algorithm for Neural Networks}
+\title{Always keep your promises: A model-agnostic solution to Layer-wise Relevance Propagation}
 
 \author[1]{FIRST AUTHOR NAME}
 \affil[1]{FIRST AFFILIATION}
@@ -104,8 +104,8 @@
 
 Layer-wise Relevance Propagation (LRP) provides principled attribution for neural networks through conservation properties and foundations
 in Deep Taylor Decomposition. However, existing implementations operate at the module level, requiring architecture-specific propagation
-rules and model modifications that limit the generality of target model, use cases in explanation-augmented training contexts, and
-sustainability as architectures evolve.
+rules and model modifications. These limit the generality of target model, use cases in explanation-augmented training contexts, and
+sustainability of implementations as architectures evolve.
 We introduce DynamicLRP, a model-agnostic LRP framework operating at the tensor operation level. By decomposing attribution to individual
 operations within computation graphs and introducing a novel mechanism for deferred activation resolution, named the Promise System, our
 approach achieves true architecture agnosticity while maintaining LRP's theoretical guarantees. This design operates independently of
@@ -140,20 +140,42 @@ capability of enabling training-time attribution for future research directions.
 \end{abstract} 
 \section{Introduction}
 
-Deep learning has fundamentally transformed machine learning by achieving unprecedented performance across vision, language, and multimodal tasks. However, this success comes at the cost of interpretability. While significant progress has been made in explaining medium-scale models and established architectures, the decision-making processes of large-scale transformer systems \cite{vaswani2017attention} remain challenging to interpret comprehensively. As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding \emph{why} they make specific predictions has become a critical scientific and societal imperative.
+While significant progress has been made in explaining medium-scale models and established architectures, the decision-making
+processes of large-scale transformer systems \cite{vaswani2017attention} remain challenging to interpret comprehensively.
+As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding
+\emph{why} they make specific predictions has become a critical scientific and societal imperative.
 
-Interpretability algorithms have emerged to address this challenge, offering diverse attribution methods that aim to identify which input features drive model predictions. These approaches broadly fall into three paradigms: gradient-based methods that leverage backpropagated derivatives \cite{simonyan2014deep}, perturbation-based techniques that measure prediction sensitivity to input modifications \cite{lundberg2017unified}, and rule-based decomposition methods that analytically redistribute output scores to input features. While gradient methods suffer from noise and saturation effects, and perturbation approaches incur prohibitive computational costs for large models, rule-based attribution offers a compelling middle ground, providing principled, efficient explanations through customizable propagation rules.
+Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
+differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
+chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
+but suffer from gradient saturation and linearity assumptions that fail to capture complex nonlinear interactions
+\cite{ancona2018towards}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
+\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
+yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
+Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
+localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
 
-Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel} stands as the most prominent rule-based attribution method, grounded in Deep Taylor Decomposition theory \cite{montavon2017explaining}. LRP's core insight is elegant: systematically decompose a neural network's output by backpropagating relevance scores through layers while preserving conservation properties. This approach has proven remarkably effective for convolutional networks and demonstrated theoretical advantages over gradient-based alternatives. However, LRP has struggled to keep pace with architectural innovations, particularly the attention mechanisms and normalization layers that define modern transformers \cite{ding2017saliency, voita2021analyzing}.
+Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer a
+compelling alternative through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity,
+LRP decomposes the actual prediction by backpropagating relevance scores while preserving conservation properties. This
+approach enables customizable propagation rules tailored to specific architectural components \cite{montavon2017explaining}.
+This approach has proven remarkably effective for convolutional networks and demonstrated theoretical
+advantages over gradient-based alternatives \cite{iwana2019lrpexplainingcnns, bohle2019alzheimers, sun2021lrpfinetuning}.
+However, LRP has historically required manual rule definition at each network layer, limiting its applicability to
+rapidly evolving architectures, where concepts like multi-head attention and residual connections demanded new
+specifications \cite{achtibat2024attnlrp, otsuki2024lrpresidualconnections}.
 
-Recent advances have begun addressing these technical barriers. Achtibat et al. \cite{achtibat2024attnlrp} developed specialized propagation rules for attention layers, demonstrating LRP's viability for transformer architectures. Yet despite these developments, LRP remains systematically underrepresented in contemporary explainability research. This oversight is exemplified by Machiraju et al.'s \cite{machiraju2024prospector} comprehensive attribution study, which evaluated gradients, attention maps, SHAP, and LIME across transformer models while entirely omitting LRP—despite its proven effectiveness and computational advantages. Such systematic neglect reflects LRP's broader marginalization in the modern machine learning landscape.
+This has led LRP to remain systematically underrepresented in contemporary explainability research, as it is one of the
+few mentioned methods which is not model-agnostic. Machiraju et al.'s \cite{machiraju2024prospector} comprehensive
+attribution study, which evaluated gradients, attention maps, SHAP, and LIME across transformer models, entirely omits
+LRP—despite its proven effectiveness and computational advantages.
 
-We address this gap by proposing a model-agnostic LRP framework that extends rule-based attribution to arbitrary neural architectures with minimal overhead. Our key insight is decomposing LRP rules to individual tensor operations—analogous to how PyTorch's autograd generalized gradient computation—enabling seamless integration with any network topology. Through a novel promise-based system for handling missing forward activations, our approach maintains LRP's theoretical guarantees while achieving computational efficiency comparable to standard backpropagation. This work repositions LRP as a competitive, scalable alternative for explaining modern deep learning systems.
-
-By atomicizing relevance propagation to the individual operations applied to tensors, and relying solely on the original computation graph,
-while not interfering with its true structure, we eliminate the need for redundant model configurations, maximize reuse of already defined
-mathematical rules, and ensure the capture of any and all significant manipulations to the data made by the model in a clean and easily
-repeatable fashion for any arbitrary model architecture.
+We address this gap by proposing DynamicLRP, an LRP framework that extends rule-based attribution to arbitrary neural
+architectures with minimal overhead. We define LRP rules for individual tensor operations, analogous to generalized
+gradient computation found in auto-differentiation libraries (like PyTorch), which can be applied to any network topology.
+Through our novel \textbf{"Promise System"} for handling missing forward activations, our approach repurposes the computation
+graph used in auto-differentiation, and maintains LRP's theoretical guarantees while achieving computational efficiency
+within the asymptotic bounds of standard backpropagation.
 
 We aim to show through experiments across multiple modalities that our proposed LRP solution remains mathematically sound and produces
 faithful and interpretable attributions consistent with existing methods. We also demonstrate that the Promise-based LRP maintains a
@@ -164,36 +186,33 @@ architectures using consumer-grade hardware.
 % Alongside this unprecendented generality over architectures for LRP, we demonstrate that our framework enables new applications of LRP in
 % training-time interpretability, through layer relevance normalizations and attribution-based gradient weighting.
 
-\section{Related Work}
+% Maybe for another paper
+% \section{Related Work}
 
-One of the more recent and impactful architectural advancements in LRP theory was AttnLRP, which derived novel propagation rules
-for the unique components in attention blocks through Deep Taylor Decomposition \cite{achtibat2024attnlrp}.
-AttnLRP showed clear empirical improvements over existing explainability methods (SmoothGrad, GradCAM, KernelSHAP, AttnRollout,
-Original LRP) in both visual and textual tasks. Its extension to concepts in Mechanistic Interpretability, an effort to
-identify structural components in trained models, has shown empirical results for principled model pruning and alignment
-with desired human-friendly behaviours \cite{hatefi2025pruningcircuitcompression}.
+% AttnLRP, one of the more recent and impactful architectural advancements in LRP theory, derived novel propagation rules
+% for the unique components in attention blocks through Deep Taylor Decomposition \cite{achtibat2024attnlrp}.
+% It showed clear empirical improvements over existing explainability methods (SmoothGrad, GradCAM, KernelSHAP, AttnRollout,
+% Original LRP) in both visual and textual tasks. Its extension to concepts in Mechanistic Interpretability, an effort to
+% identify structural components in trained models, has shown empirical results for principled model pruning and alignment
+% with desired human-friendly behaviours in LLMs \cite{hatefi2025pruningcircuitcompression}.
 
-Previous to this, uses of LRP have been widely explored for bias mitigation in image captioning and classification tasks. Anders et al.
-proposed additional learned layers which consume LRP pixel heatmaps to identify and unlearn the associations to out-of-distribution
-artifacts while amplifying those of the true object information. This targeted behaviour known as the Clever Hans effect, and introduced a
-novel training framework leveraging spectral clustering to cleanse training data \cite{anders2020cleverhans}.
+% The usefulness of LRP in CNN explainability has been explored for bias mitigation in image captioning and classification tasks.
+% Anders et al. proposed additional learned layers which consume LRP pixel heatmaps to identify and unlearn the associations
+% to out-of-distribution artifacts while amplifying those of the true object information. This targeted behaviour known as
+% the Clever Hans effect, and introduced a novel training framework leveraging spectral clustering to cleanse training data
+% \cite{anders2020cleverhans}.
 
-However, later exploration of differentiable LRP allowed attributions to directly influence gradient descent without
-additional training mechanisms, all while staying within the realm of loss-based training. This was shown to be applicable to
-arbitrary DNNs with ISNet \cite{bassi2024isnet}, \cite{bassi2024fasterisnet}, and remained applicable for Attention-LSTM hybrids such
-as Ada(Adaptive Attention)-LSTM and MH(Multi-Head Attention)-FC \cite{sun2021lrpfinetuning}, though this only used LRP on the last Linear
-layer in each architecture.
+% However, later exploration of differentiable LRP allowed attributions to directly influence gradient descent without
+% additional training mechanisms, all while staying within the realm of loss-based training. This was shown to be applicable to
+% arbitrary DNNs with ISNet \cite{bassi2024isnet, bassi2024fasterisnet}, and remained applicable for Attention-LSTM hybrids such
+% as Ada(Adaptive Attention)-LSTM and MH(Multi-Head Attention)-FC \cite{sun2021lrpfinetuning}, though this only used LRP on the last Linear
+% layer in each architecture.
 
-While these works show a clear usefulness of LRP, they remain somewhat bottlenecked and constrained in that they remain purpose-built, in
-the domain of image-based tasks, pure Fully-Connected or Convolutional architectures, and a small subset of SoTA transformer models.
-We see the potential of the applied concepts, and our work aims to generalize them across the deep learning landscape.
+% While these works show a clear usefulness of LRP, they remain somewhat bottlenecked and constrained in that they remain purpose-built, in
+% the domain of image-based tasks, pure Fully-Connected or Convolutional architectures, and a small subset of SoTA transformer models.
+% We see the potential of the applied concepts, and our work aims to generalize them across the deep learning landscape.
 
 \section{Background}
-
-Neural network interpretability algorithms fundamentally seek to decompose model predictions into input feature contributions, yet differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad}, but suffer from gradient saturation and linearity assumptions that fail to capture complex nonlinear interactions \cite{ancona2018towards}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME \cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates, yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}. Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
-
-Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer a compelling alternative through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity, LRP decomposes the actual prediction by backpropagating relevance scores while preserving conservation properties. This approach enables customizable propagation rules tailored to specific architectural components \cite{montavon2017explaining}. Notably, this modular design has historically required manual rule specification for each operation type, limiting its applicability to rapidly evolving architectures like transformers, where novel operations like multi-head attention and layer normalization demanded specialized treatment \cite{achtibat2024attnlrp}. The next section formally introduces classic LRP via Taylor approximation as it lays the groundwork for our proposed model-agnostic extension.
-
 \subsection{Classic LRP via Taylor Approximation}
 
 Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
@@ -204,18 +223,49 @@ f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x
 \end{equation}
 The conservation rule requires that the sum of input relevances equals the output relevance:
 \begin{equation}
-\sum_i R_{i \leftarrow j} = R_j
+\sum_i R_{i \leftarrow j}^{l - 1} = R_j^l
 \end{equation}
-Assuming $R_{i \leftarrow j}$ is proportional to the Taylor term for input $i$:
+Assuming $R_{i \leftarrow j}^{l - 1}$ is proportional to the Taylor term for input $i$:
 \begin{equation}
-R_{i \leftarrow j} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j
+R_{i \leftarrow j}^{l - 1} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j^l
 \end{equation}
-For a linear layer $y_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
+For a linear layer $z_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
 \begin{equation}
-R_{i \leftarrow j} = \frac{x_i w_{ji}}{y_j + \epsilon} R_j
+R_{i \leftarrow j}^{l - 1} = \frac{x_i w_{ji}}{z_j + \epsilon} R_j^l
 \end{equation}
-where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$. This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle, linking the mathematical definition of LRP to its practical implementation.
+where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$.
+This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle,
+linking the mathematical definition of LRP to its practical implementation.
 
+\subsection{LRP Variants}
+\subsubsection{$\gamma$-LRP}
+To denoise relevance attributions, the $\gamma$-LRP rule was introduced by Montavon et al. \cite{montavon2019lrp}. It adds a
+hyperparameter $\gamma$ that acts as a multiplicative booster for positive neuron contributions:
+
+\begin{equation}
+  R_{i \leftarrow j}^{l - 1} = \frac{x_i \cdot (w_{ji} + \gamma w_{ji}^+)}{\sum_i x_i \cdot (w_{ji} + \gamma w_{ji}^+)} R_j^l
+\end{equation}
+
+\subsubsection{Attn-LRP}
+Recent work by Achtibat et al. \cite{achtibat2024attnlrp} derived novel propagation rules using Deep Taylor Decomposition
+for both the softmax and bilinear matrix multiplication in the attention mechanism:
+
+\textbf{Bilinear Attention Matrix Multiplication}
+
+The relevance distribution for cell $A_{ji}$ in the matrix multiplication $O = A \cdot V$ is defined as:
+\begin{equation}
+  R_{ji}^{l - 1} = \sum_p A_{ji}V_{ip} \frac{R_{jp}^l}{2 O_{jp} + \epsilon}
+\end{equation}
+and $R_{ip}^{l - 1}$ can be computed by summing over $j$ instead of $p$. This characterizes the distribution across the
+product of the attention logits and values matrices.
+
+\textbf{Softmax}
+
+The relevance at the input layer of the softmax is defined as:
+\begin{equation}
+  R^{l - 1} = \sum_i x_i (R_i^l - s_i \sum_j R_j^l)
+\end{equation}
+where $s_i$ is the softmax output and $x_i$ is the softmax input.
 
 Our work builds on these insights to address the limitations of existing methods, providing a scalable and efficient solution for interpreting transformer models.
 
@@ -226,7 +276,7 @@ Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, wh
 
 In auto-differentiation libraries, each node $v \in V$ in the graph holds a function $\tilde{f}_v$ that computes the local gradient backpropagation of that operation using the Chain Rule, mapping the gradients of forward outputs to gradients of forward inputs.
 The edges $e \in E$ are thus directed from the model's output layer to input layer, each vertex pointing to its forward dependencies.
-These functions must be well-defined for all tensor operations and allow backpropagation to leverage the graph structure for efficient computation.
+These functions must be well-defined for all tensor operations for the computation graph to be leveraged in backpropagation.
 
 For example, a matrix multiplication node $v_{mm}$ from a linear layer will have $\tilde{f}_{mm}(\frac{\partial L}{\partial z}) = \begin{pmatrix} \frac{\partial L}{\partial z} W^T & x^T \frac{\partial L}{\partial z} \end{pmatrix}$, where $L$ is the loss, $W$ is the weight matrix, $x$ is the layer input, and $z = Wx$.
 The in-edge pointing to $v$ would come from a node $v_{add}$, which represents the next operation in the forward pass, the bias addition $f_{add}(z, b) = z + b$. 
@@ -363,13 +413,13 @@ We categorize all Promise-Generating Operations as one of the following:
   \item \textbf{Dependent: }$v_p$ will create a new Promise object only if at least one of its relevance inputs is a Promise, otherwise it returns a tensor relevance.
 \end{itemize}
 
-Those which are Strict typically lack required forward activations during LRP traversal, necessitating promise-based resolution.
-Whereas Dependents do not have a mathematical dependency on the activations, but typically are operations which perform merging/splitting of data.
-We formalize and prove this generalization in the Appendix \textcolor{red}{Think about if you are actually going to do this}.
+% Those which are Strict typically lack required forward activations during LRP traversal, necessitating promise-based resolution.
+% Whereas Dependents do not have a mathematical dependency on the activations, but typically are operations which perform merging/splitting of data.
+% We formalize and prove this generalization in the Appendix \textcolor{red}{Think about if you are actually going to do this}.
 
 Note that whether a Dependent Promise-Generating Node instantiates a new Promise or not is architecture-specific.
 
-When a Promise-Generating Node $v_p$ receives a Promise Branch $p$ as input, $v_p$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $p$ via parent-child connections, forming a Promise Tree.
+When a Promise-Generating Node $v$ receives a Promise Branch $b_P$ as input, $v$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $b_P$ via parent-child connections, forming a Promise Tree.
 Promise Trees resolve bottom-up, starting with leaf Promise Branches, which encounter Arg Nodes, and forward-chain to reconstruct their
 ancestor Promises' activations via parent connections. Once all activations of the Promise at the root of the Tree have been recovered, the relevance is propagated back down the Tree via child connections
 and backward chains. See \ref{appendix:promise-trees} for the formal resolution algorithm.
@@ -471,6 +521,7 @@ This allows us to define clear upper bounds on the computational and memory over
 
 
 \subsection{Theoretical Analysis}
+\label{sec:lrp-complexity}
 
 We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.
 
@@ -536,6 +587,8 @@ Since all computation paths are mutually exclusive, we have that $\delta \leq n$
 Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
 \end{proof}
 
+\subsubsection{Caching Promise Structures}
+\label{sec:promise-caching}
 This covers, however, only the first pass of the LRP algorithm. It is worth noting that repeated runs of LRP on the same model architecture yield an identical set of saved Promise computation paths.
 As a result, caching these paths can significantly improve the scalability of the algorithm.
 Once a Promise's computation path has been defined, it can effectively be reduced to a single node, therefore eliminating the graph traversal overhead of its internal nodes.
@@ -959,7 +1012,7 @@ propagation. But we know there is some node further down the traversal which sav
 and if we traverse to it, we will also know all the operations between it and node A, giving us a way to reconstruct
 the activation at node A (see Proposition below).
 
-\textbf{Proposition} For any node $v$ in a computation graph, there exists at least one node descendent to $v$
+\textbf{Proposition 1:} For any node $v$ in a computation graph, there exists at least one node descendent to $v$
 which stores a forward activation, which we call an Arg Node.
 
 \begin{proof}
@@ -1754,50 +1807,71 @@ And we propagate through it to E, finally.
 \end{center}
 
 \subsection{Input Aggregation}
-When a node has multiple in-neighbours pointing to one input position, we must aggregate the incoming relevances into one object.
-For multiple tensor inputs, this is straightforward, simply sum them.
-For multiple Promise Branch objects, we need to group them somehow while maintaining correct structure for resolution.
-This can be achieved using a new Promise Branch object which becomes the child of all the Promise Branches that need to be grouped, and sees them as parents.
-Thus, whenever multiple Promise Branches encounter the same node during propagation, their respective propagations end, and a new singular Promise Branch
-will continue in their place to prevent a path from being considered more than exactly once in propagation.
-We maintain correctness in propagation through the parent-child Promise Tree resolution, as the new Promise Branch will forward activations back
-to its parent Promise Branches, and then similarly receive relevance back from them once the root of the Promise Tree begins resolving.
+When node $v$ receives multiple relevance inputs from in-neighbors, we aggregate before propagation:
 
-\textbf{Proposition 1:} The computation graph traversal does not backtrack and retraverse any node once it has already propagated relevance through it.
+\textbf{Tensor inputs} are typically summed element-wise: $R_v = \sum_{i=1}^k R_i$, but there are rare edge cases like when
+propagating through a Split operation, where $R_v = concat(R_1 \ldots R_k)$, for example.
+
+\textbf{Promise Branch inputs} $p_1, \ldots, p_k$ are merged into a single aggregation branch $p_{\text{agg}}$ with parent
+connections to all $p_i$ but no child connections back. During forward-chaining, $p_{\text{agg}}$ distributes retrieved
+activations to all parents. During backward-chaining, $p_{\text{agg}}$ sums relevances from all parents before continuing
+propagation.
+
+Notably, this kind of aggregation occurs naturally through the Pre-Promise mechanism. Consider that any such $v$ that
+eventually receives more than one Promise Branch input, will at some point be in the exact state for requiring a
+Pre-Promise ($|I| < \text{indegree}(v)$). This occurs right after $v$ receives its first Promise Branch input $p_1$.
+As additional Promise Branches $p_2, \ldots, p_k$ arrive at $v$, they connect as parents to the Pre-Promise, and the
+child connections are made when the Pre-Promise is promoted, completing the aggregation structure.
+
+\textbf{Mixed Promise and Tensor inputs:} When $v$ receives both tensor relevances and Promise Branches, we handle Promise
+aggregation as above. If only one Promise Branch is present, we still create a new aggregation branch $p_{\text{agg}}$ as
+a child of the incoming branch. While this adds memory overhead, it maintains the Promise path abstraction required for
+caching (\ref{sec:promise-caching}). If tensor relevances were allowed to merge directly into a Promise Branch's
+internal nodes, cached Promise paths would behave incorrectly; relevance would be injected mid-chain rather than at the
+Promise's Origin Node.
+
+This process helps ensure that relevance is propagated only once through each node to prevent exponential blowup in graph
+traversal and incorrect accumulation of relevance from multiple Promise Branches. This will help us prove Proposition 2:
+
+\textbf{Proposition 2:} Each node in the computation graph has relevance propagated through it exactly once during LRP traversal.
 \begin{proof}
-  Proof:
+  We prove this in two cases: standard propagation and Promise propagation.
+
+  \textbf{Case 1: Standard Propagation.}
   By our traversal heuristic, and facilitated by the Input Aggregation process, we have that this statement will hold true in any case that
   follows the heuristic.
 
-  We can reach this conclusion by considering that the computation graph is a DAG by definition, as no instance of an operation can create as output
-  a dependency for its own inputs. Thus, there is no manner in which any kind of traversal starting at some node will come back to that same node.
+  By traversal heuristic, we process node $v$ only when all in-neighbors have propagated relevance to it. Since the
+  computation graph is a DAG (no operation can depend on its own output), no traversal path starting from $v$ can return
+  to $v$. 
+  Input aggregation ensures that multiple incoming relevances are combined before processing, so $v$ is processed exactly
+  once when all inputs arrive.
 
-  Therefore, if traversing naively with our traversal heuristic, every node will be traversed exactly once, at the time of propagation across it,
-  and it will not be retraversed. Thus, the statement holds.
+  \textbf{Case 2: Promise Propagation.}
+  The two distinct phases of a Promise Branch are the forward chaining of activations when it reaches an Arg Node and the
+  backward chaining of relevance, deferred until all parents in the Promise Tree are in Complete state.
+  Therefore, even though the nodes within a Promise Branch path are traversed in the first phase, they do not have
+  relevance propagated through them until the backward chain is executed, propagating all the way through to the Arg Node
+  and skipping all internal nodes. Since the Arg Node is a descendent of $v$ and all internal nodes in the chain, by the
+  DAG argument, none of those nodes can be revisited.
 
-  However, we make known that there are cases where this heuristic is broken to prevent Promise Deadlock. We now consider such cases and show
-  that the statement still holds in this situation.
-
-  Recall that this happens only during the creation of a Pre-Promise, which is the result of a Promise Branch being propagated to an out-neighbour whose
-  other inputs have not yet all landed. As soon as a Promise Branch is propagated, we essentially call for its resolution as soon as possible.
-  So, instead of waiting for the inputs to land, we propagate this new Pre-Promise.
-
-  Thus, we have a node $v$ such that the set of incoming relevance inputs to $v$, $I$, contains exactly one Promise Branch $p$, and $|I| < indegree(v)$.
-
-  Consider that the Pre-Promise resolution will always take priority over the traversal heuristic.
-  Thus, we assume the Pre-Promise will be propagated until it reaches its own Arg Node and propagates activations to its Promise Tree ancestors.
-  Upon backward propagation of the Promise Tree relevances, the backward chain of the Pre-Promise will not be executed, by definition of Pre-Promises.
-  Therefore, the relevance has not been propagated through this node yet.
-  Only once all the node's inputs land, and we traverse this node due to the traversal heuristic, will we accumulate all relevance values at this node, then execute the Pre-Promise backward chain on the accumulated relevance.
-  Traversal will continue at the Pre-Promise's Arg Node, and now we can apply the same DAG argument to conclude that this node will not be traversed again after this.
 \end{proof}
 
-\textbf{Claim:} The internal nodes of a given Promise chain are unique to that Promise.
+\textbf{Claim:} The internal nodes of any two distinct Promise branches are disjoint.
 \label{appendix:unique-chains}
 \begin{proof}
-  By Prop. 1 we have that no node has relevance propagated through it more than once in our graph traversal.
-  Suppose for a contradiction, then, that there were 2 distinct Promise Branches which shared an internal node. But then, upon resolution of both branches,
-  we would see that relevance gets propagated twice, once for each branch, contradicting Prop. 1.
+  By Proposition 2 we have that no node has relevance propagated through it more than once in graph traversal.
+
+  Suppose for contradiction that two distinct Promise branches $p_1$ and $p_2$ share an internal node $v$.
+  However, this means that during traversal, both $p_1$ and $p_2$ had to traverse $v$, or else it would not be recorded in
+  their chains. In that case, we would have applied Case 2 of Input Aggregation via the Pre-Promise mechanism, and both
+  chains would then terminate at the creation of the Pre-Promise. But, this contradicts our premise that $v$ was an internal
+  node for both branches, therefore it must be that no two distinct Promise branches share any internal nodes.
 \end{proof}
+
+\textbf{Remark.} This property ensures that the total number of nodes traversed by 
+all Promises is bounded by $\delta = \sum_{v_p \in V_P} d(v_p) \leq |V|$, as stated 
+in Theorem 1 (\ref{sec:lrp-complexity}). Each node contributes to at most one Promise's internal chain, preventing 
+double-counting in complexity analysis.
 
 \end{document}

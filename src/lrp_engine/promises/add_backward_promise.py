@@ -44,9 +44,13 @@ class AddBackwardPromise(Promise):
         assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
         arg1, arg2 = self.promise["args"]
         r = self.promise["rout"]
-        denom = arg1 ** 2 + arg2 ** 2 + epsilon
-        r1 = (arg1 ** 2 / denom) * r
-        r2 = (arg2 ** 2 / denom) * r
+        if not isinstance(arg1, float):
+            arg1 = arg1.abs()
+        if not isinstance(arg2, float):
+            arg2 = arg2.abs()
+        denom = arg1 + arg2 + epsilon
+        r1 = (arg1 / denom) * r
+        r2 = (arg2 / denom) * r
         self.promise["rins"][0], self.promise["rins"][1] = renormalize_epsilon(r, r1, r2)
 
     def _setarg(self, value):

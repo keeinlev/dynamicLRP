@@ -1,0 +1,851 @@
+% Share this document for others to view with this URL
+% https://www.overleaf.com/read/cvfmtqkfphmr#384bf0
+%
+\documentclass{article}
+
+\input{preamble}
+\input{math_commands}
+
+\usepackage{natbib}
+\usepackage{etoolbox}       % Provides toggle
+\newtoggle{arxiv}% Swap between arXiv and journal/conference version
+\toggletrue{arxiv}% Enable arXiv version --- change this to swap between arXiv and journal/conference
+\iftoggle{arxiv}{
+  % Things just for the arXiv version go here
+  \usepackage[parfill]{parskip}
+
+  \usepackage[%
+    a4paper,
+    inner=25mm,
+    outer=25mm,% = marginparsep + marginparwidth + 5mm (between marginpar and page border)
+    top=25mm,
+    bottom=25mm,
+    marginparsep=5mm,
+    marginparwidth=40mm,
+    %showframe% to show your page design, normally not used
+  ]{geometry}
+
+  \usepackage{tikz}
+  \usetikzlibrary{positioning,arrows.meta}
+
+  \tikzset{
+  maincircle/.style={circle, draw, minimum size=13mm, inner sep=2pt, font=\footnotesize, align=center},
+  fwd/.style={->, thick, >=Latex},
+  promise/.style={->, dashed, thick, >=Latex,
+                  preaction={draw, white, line width=3pt}}, % halo for visibility
+  node/.style={circle, draw=green!60, fill=green!5, very thick, minimum size=7mm},
+  anode/.style={circle, draw=orange!60, fill=orange!5, very thick, minimum size=7mm},
+  bnode/.style={circle, draw=red!60, fill=red!5, very thick, minimum size=7mm},
+  cnode/.style={circle, draw=blue!60, fill=blue!5, very thick, minimum size=7mm},
+  dnode/.style={circle, draw=teal!60, fill=teal!5, very thick, minimum size=7mm},
+}
+  \newlength{\defbaselineskip}
+  \setlength{\defbaselineskip}{\baselineskip}
+  % \setlength{\marginparwidth}{0.8in}
+  \setlength{\parskip}{6pt}%
+  \setlength{\parindent}{0pt}%
+
+  % If you find the font is not Libertine, move this block lower down the preamble, to just before \begin{document}
+  % If other packages later also import fonts, that will override the fonts introduced here.
+  \RequirePackage[T1]{fontenc}
+  \RequirePackage[tt=false, type1=true]{libertine}
+  \RequirePackage[varqu]{zi4}
+  \RequirePackage[libertine]{newtxmath}
+
+  \usepackage{fancyhdr}
+  \pagestyle{fancy}
+  \fancyhead[L]{PAPER SHORTNAME}
+  \fancyhead[R]{FIRST AUTHOR, et al. (YEAR)}
+
+  \usepackage{authblk}% alternative author layout that supports symbols to indicate affiliations
+  \renewcommand*{\Affilfont}{\normalsize}
+}{
+  % Things just for the journal/conference version go here
+}
+
+\title{Make sure to always keep your promises: A model-agnostic attribution algorithm for Neural Networks}
+
+\author[1]{FIRST AUTHOR NAME}
+\affil[1]{FIRST AFFILIATION}
+\affil[ ]{%
+\texttt{AUTHOR1@EMAIL.ADDRESS}\quad
+\texttt{AUTHOR2@EMAIL.ADDRESS}
+}
+
+\date{}% Suppress date
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+TBC
+\end{abstract}
+
+\section{Introduction}
+
+Deep learning has fundamentally transformed machine learning by achieving unprecedented performance across vision, language, and multimodal tasks. However, this success comes at the cost of interpretability. While significant progress has been made in explaining medium-scale models and established architectures, the decision-making processes of large-scale transformer systems \cite{vaswani2017attention} remain challenging to interpret comprehensively. As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding \emph{why} they make specific predictions has become a critical scientific and societal imperative.
+
+Interpretability algorithms have emerged to address this challenge, offering diverse attribution methods that aim to identify which input features drive model predictions. These approaches broadly fall into three paradigms: gradient-based methods that leverage backpropagated derivatives \cite{simonyan2014deep}, perturbation-based techniques that measure prediction sensitivity to input modifications \cite{lundberg2017unified}, and rule-based decomposition methods that analytically redistribute output scores to input features. While gradient methods suffer from noise and saturation effects, and perturbation approaches incur prohibitive computational costs for large models, rule-based attribution offers a compelling middle ground, providing principled, efficient explanations through customizable propagation rules.
+
+Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel} stands as the most prominent rule-based attribution method, grounded in Deep Taylor Decomposition theory \cite{montavon2017explaining}. LRP's core insight is elegant: systematically decompose a neural network's output by backpropagating relevance scores through layers while preserving conservation properties. This approach has proven remarkably effective for convolutional networks and demonstrated theoretical advantages over gradient-based alternatives. However, LRP has struggled to keep pace with architectural innovations, particularly the attention mechanisms and normalization layers that define modern transformers \cite{ding2017saliency, voita2021analyzing}.
+
+Recent advances have begun addressing these technical barriers. Achtibat et al. \cite{achtibat2024attnlrp} developed specialized propagation rules for attention layers, demonstrating LRP's viability for transformer architectures. Yet despite these developments, LRP remains systematically underrepresented in contemporary explainability research. This oversight is exemplified by Machiraju et al.'s \cite{machiraju2024prospector} comprehensive attribution study, which evaluated gradients, attention maps, SHAP, and LIME across transformer models while entirely omitting LRP—despite its proven effectiveness and computational advantages. Such systematic neglect reflects LRP's broader marginalization in the modern machine learning landscape.
+
+We address this gap by proposing a model-agnostic LRP framework that extends rule-based attribution to arbitrary neural architectures with minimal overhead. Our key insight is decomposing LRP rules to individual tensor operations—analogous to how PyTorch's autograd generalized gradient computation—enabling seamless integration with any network topology. Through a novel promise-based system for handling missing forward activations, our approach maintains LRP's theoretical guarantees while achieving computational efficiency comparable to standard backpropagation. This work repositions LRP as a competitive, scalable alternative for explaining modern deep learning systems.
+
+\section{Background}
+
+Neural network interpretability algorithms fundamentally seek to decompose model predictions into input feature contributions, yet differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad}, but suffer from gradient saturation and linearity assumptions that fail to capture complex nonlinear interactions \cite{ancona2018towards}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME \cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates, yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}. Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
+
+Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer a compelling alternative through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity, LRP decomposes the actual prediction by backpropagating relevance scores while preserving conservation properties. This approach enables customizable propagation rules tailored to specific architectural components \cite{montavon2017explaining}. Notably, this modular design has historically required manual rule specification for each operation type, limiting its applicability to rapidly evolving architectures like transformers, where novel operations like multi-head attention and layer normalization demanded specialized treatment \cite{achtibat2024attnlrp}. The next section formally introduces classic LRP via Taylor approximation as it lays the groundwork for our proposed model-agnostic extension.
+
+\subsection{Classic LRP via Taylor Approximation}
+
+Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
+
+For a function $f_j(x)$, the first-order Taylor expansion around a root point $x_0$ is:
+\begin{equation}
+f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})
+\end{equation}
+The conservation rule requires that the sum of input relevances equals the output relevance:
+\begin{equation}
+\sum_i R_{i \leftarrow j} = R_j
+\end{equation}
+Assuming $R_{i \leftarrow j}$ is proportional to the Taylor term for input $i$:
+\begin{equation}
+R_{i \leftarrow j} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j
+\end{equation}
+For a linear layer $y_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
+\begin{equation}
+R_{i \leftarrow j} = \frac{x_i w_{ji}}{y_j + \epsilon} R_j
+\end{equation}
+where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$. This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle, linking the mathematical definition of LRP to its practical implementation.
+
+
+Our work builds on these insights to address the limitations of existing methods, providing a scalable and efficient solution for interpreting transformer models.
+
+\subsection{Computation Graphs in Deep Learning Frameworks}
+
+Deep learning frameworks rely on computation graphs to represent the sequence of operations performed during the forward and backward passes of a neural network. Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing operations (e.g., matrix multiplication, activation functions), and $E$ is the set of directed edges representing data flow between operations.
+
+Each node $v \in V$ in the graph corresponds to a function $f_v$ that maps its inputs to outputs. For example, a linear layer can be represented as $f_v(x) = Wx + b$, where $W$ and $b$ are the weights and biases, respectively. The edges $e \in E$ capture the dependencies between these operations, ensuring that the graph is acyclic and can be traversed in topological order.
+
+The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
+\begin{equation}
+\frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
+\end{equation}
+where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
+
+The promise-based attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers. By leveraging the DAG structure, the algorithm ensures that relevance is propagated efficiently and faithfully, adhering to the conservation principle:
+\begin{equation}
+\sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
+\end{equation}
+where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
+
+This theoretical foundation underscores the flexibility and scalability of the promise-based approach, making it well-suited for modern deep learning models.
+
+\section{Methods}
+
+\subsection{Computation Graph Processing}
+
+The computation graph is a directed acyclic graph (DAG) representing the sequence of operations in a neural network. However, the autograd graph only has one entrypoint at the Node representing the model output, and tracks only the backward edges from output to input. Algorithm~\ref{alg:graph-construction} outlines the process of constructing an auxiliary graph from the autograd graph of a PyTorch model. This graph will allow access to any Node's in- and out-adjacencies, and will be used in the traversal algorithm.
+
+\begin{algorithm}[t]
+  \caption{Computation Graph Construction}
+  \label{alg:graph-construction}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$
+    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
+    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
+    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
+    \State $root \gets hidden\_states.grad\_fn$
+    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+    \Return $in\_adj$, $out\_adj$, $topo\_stack$
+    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \If{$fcn = \text{None}$ or $fcn \in visited$}
+        \State \Return
+      \EndIf
+      \State $visited \gets visited \cup \{fcn\}$
+      \For{each $child \in fcn.next\_functions$}
+        \State $out\_adj[fcn].append(child)$
+        \State $in\_adj[child].append(fcn)$
+        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+      \EndFor
+      \State $topo\_stack.push(fcn)$
+    \EndFunction
+  \end{algorithmic}
+\end{algorithm}
+
+\subsection{Operation-Level Relevance Propagation}
+
+We implement propagation rules for each type of autograd Node (a Node in this case maps to an operation call), then traverse the auxiliary graph in a style similar to Kahn's Algorithm (link to Appendix), but using a Depth-First heuristic instead of Breadth-First.
+The operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed set of fundamental tensor operations. Algorithm~\ref{alg:operation-propagation} describes the propagation process.
+
+\begin{algorithm}[H]
+  \caption{Operation-Level Relevance Propagation}
+  \label{alg:operation-propagation}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
+    \Ensure Input relevance $R_{in}$
+    \State Initialize $stack \gets [hidden\_states.grad\_fn]$
+    \State Initialize $nodes\_pending \gets \{ node : len(parents)$ for $node, parents \in in\_adj.items() \}$
+    \State Initialize $node\_inputs \gets \{ node : [ null$ for $parent$ in $parents$ ] for $node, parents \in in\_adj.items() \}$
+    \State Initialize $fcn\_map$ which maps $type(node)$ to its corresponding propagation function.
+    \State Set $node\_inputs[hidden\_states.grad\_fn] = [R\_out]$
+
+    \While{$stack$}
+      \State $curnode \gets stack.pop()$
+      \State $curnode\_in\_rel = node\_inputs[curnode]$
+      \If{$curnode == target\_node$}
+        \Return $R_{in} := curnode\_in\_rel$
+      \EndIf
+      \State $prop\_fcn \gets fcn\_map[type(curnode)]$
+      \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$ \footnotemark
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
+        \If{$nodes\_pending[child] == 0$}
+          \State $stack.push(child)$
+        \EndIf
+      \EndFor
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
+\footnotetext{Implementation details omitted for brevity; assume the system tracks the number of accumulated input relevances and aggregates them when all are available.}
+
+\subsection{A Caveat to Autograd}
+
+While the above solution seems sound, a subtle issue lies within defining the propagation functions for each Node type.
+
+Consider a simple approach for backpropagating $R_{c}$ to $R_{a}$ and $R_{b}$ for $c = a + b$ as follows using absolute value ratios:
+
+\begin{equation}
+  R_{a} = R_{c} \times \frac{a.abs()}{a.abs() + b.abs()} \quad\text{and}\quad R_{b} = R_{c} \times \frac{b.abs()}{a.abs() + b.abs()}
+\end{equation}
+
+We suggest this because we want to attribute relevance to each tensor component proportionally to the magnitude of its contribution to the operation result.
+
+Since autograd is a differentiation library, it only caches within its Nodes information necessary for computing the gradients w.r.t. its arguments.
+
+But for $c = a + b$, we see that $\frac{\partial a}{\partial c} = \frac{\partial b}{\partial c} = 1$. This implies that $a$ and $b$ need not be stored in any autograd `AddBackward0' Node, which indeed is the case.
+
+This poses a critical problem for us, since without $a$ and $b$, we are then unable to compute $R_{a}$ and $R_{b}$ faithfully when we traverse the `AddBackward0` Node.
+
+\subsection{The Promise System}
+
+When we reach a Node in traversal where propagation would halt from such a case, we instantiate a \textbf{Promise},
+which defers the propagation computations and retrieves the missing tensors from further down in the graph.
+
+Conceptually, a Promise acts as a \textit{placeholder} for missing activations. When an operation requires an unavailable
+tensor to compute relevance, the Promise suspends its propagation but continues propagating through the graph to recover
+the needed values. Once these are found, the relevance propagation at the Node in question is computed, and the
+propagation "catches up" across all the Nodes that were traversed during the search, without backtracking and retraversal
+of the computation graph.
+We will now formally define this system.\\
+
+\subsubsection{Basic Promise Mechanism}
+\begin{definition}[Promise]
+  A Promise is a mutable metadata object that is attached to a Node which requires some uncached forward pass input to compute its relevance propagation.
+  The core structure of a Promise object is defined below:
+  \begin{verbatim}
+    {
+      "rout": R_out_curnode,
+      "args": [ None ] * num_missing_inputs,
+      "rins": [ None ] * num_missing_inputs
+    }
+  \end{verbatim}
+\end{definition}
+
+\begin{definition}[Promise Origin Node]
+  A Promise's Origin Node refers to the Node for which the Promise was created.\\
+\end{definition}
+
+\begin{definition}[Promise Branch]
+  A Promise branch is always tied to a Promise, corresponding to exactly 1 missing forward input in the Origin Node.
+  Sibling Promise Branches all share full access to their corresponding Promise object. When we mention propagating a Promise, we are referring
+  to propagating one of its branches.\\
+\end{definition}
+
+The objective of a Promise is to act as a placeholder while we continue traversing the graph in search of the Origin Node's missing values.
+\\
+\begin{definition}[Promise Branch Arg Node]
+  A Promise Branch's Arg Node refers to the first Node along a Promise Branch in its forward pass output is retrievable from its own cached tensors.\\
+\end{definition}
+
+Each intermittent Node between the Origin and Arg Nodes contributes two closures, one for its forward
+operation and one for its relevance rule. These form a pair of executable chains, one forward, one backward.
+When an Arg Node is reached, its forward output tensor is extracted and iteratively passed through the forward
+function chain to reconstruct the activation at the Origin Node, which is then stored within the Promise. Once
+all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred relevance can be “fast-forwarded” down
+each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
+dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
+
+\subsubsection{Promise Nesting and Trees}
+Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
+\begin{definition}[Promise-Generating Operations]
+A Promise-Generating Operation is an autograd node $v_p$ that may potentially create a new Promise object during propagation.
+We categorize all Promise-Generating Operations as one of the following:
+\begin{itemize}
+  \item \textbf{Strict: }$v_p$ will always create a new Promise object, independent of its relevance input types.
+  \item \textbf{Dependent: }$v_p$ will create a new Promise object only if at least one of its relevance inputs is a Promise, otherwise it returns a tensor relevance.
+\end{itemize}
+
+Those which are Strict typically lack required forward activations during LRP traversal, necessitating promise-based resolution.
+Whereas Dependents do not have a mathematical dependency on the activations, but typically are operations which perform merging/splitting of data.
+We formalize and prove this generalization in the Appendix.
+
+Note that whether a Dependent Promise-Generating Node instantiates a new Promise or not is architecture-specific.
+
+When a Promise-Generating Node $v_p$ receives a Promise Branch $p$ as input, $v_p$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $p$ via parent-child connections, forming a Promise Tree.
+Promise Trees resolve bottom-up, starting with leaf Promise Branches, which encounter Arg Nodes, and forward-chain to reconstruct their
+ancestor Promises' activations via parent connections. Once all activations of the Promise at the root of the Tree have been recovered, the relevance is propagated back down the Tree via child connections
+and backward chains. See Appendix for the formal resolution algorithm.
+
+\subsubsection{Promise Deadlock}
+We show in the Appendix through a simple and common example that deadlock can occur from circular dependencies between branches of the same Promise, each waiting for the other to resolve.
+We also provide the solution to this by allowing Promises to break our defined traversal heuristic to prioritize the completion of Promise Branches over the heuristic.
+
+% Now consider some Promise Branch input $p_1$, and some node $v$ which receives it as an input. We have the following cases depending on what type of node $v$ is:
+% \begin{enumerate}
+%   \item $v$ is an Arg Node. We call \texttt{p.setarg()} with $v$'s forward output and either continue propagation or queue the node while waiting for $p_1$'s sibling branches to reach their Arg Nodes.
+%   \item $v$ is a one-to-one operation. We record the forward compute and backward relevance propagation function closures within $p_1$ at this node, then continue propagating $p_1$.
+%     If $v$ maps to a relevance-wise Identity function, we only record the forward closure.
+%   \item $v$ is a Promise-Generating Node. We go ahead and allow $v$ to create a new Promise, then we nest all of its branches as children within $p_1$, therefore creating a tree structure out of Promise Branches.
+% \end{enumerate}
+
+
+
+% \begin{itemize}
+%   \item The relevance propagation function of $v_p$ is a mathematical function of $v_p$'s forward call activations, but $v_p$ does not store these in its saved backward pass context.
+%   \item \textbf{OR} $v_p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
+% \end{itemize}
+
+
+This leads to an amended version of the previous propagation algorithm, Algorithm~\ref{alg:promise-propagation}
+
+
+Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
+Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
+within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in the Appendix.
+This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
+
+\subsection{Theoretical Analysis}
+
+We analyze the computational complexity of our promise-based LRP algorithm in terms of the architectural properties that determine promise resolution requirements.
+
+Let $V_P \subseteq V$ be the set of promise-generating operations in the computation graph $G = (V, E)$.
+At the time of writing, the set of promise-generating operations is:
+
+$$V_P = \{v \in V : \text{type}(v) \in \{\text{AddBackward}, \text{SumBackward}, \text{CatBackward}, \text{UnbindBackward}, \text{MeanBackward}, \text{StackBackward}\}\}$$
+\end{definition}
+
+\begin{definition}[Promise Density]
+The promise density of a neural network architecture is defined as:
+$$\rho = \frac{|V_P|}{|V|}$$
+where $|V_P|$ is the number of promise-generating operations and $|V|$ is the total number of operations in the computation graph.
+\end{definition}
+
+\begin{definition}[Promise Depth]
+For each promise-generating operation $v_p \in V_P$, let $d(p)$ be the graph distance from $v_p$ to the nearest operation that stores the forward activation required by $v_p$. The maximum promise depth is:
+$$D = \max_{v_p \in V_P} d(v_p)$$
+\end{definition}
+
+
+\begin{theorem}[Promise-Based LRP Complexity]
+Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $V_P$, and maximum promise depth $D$.
+
+Let $C_{fwd}, C_{bwd}$ be the most expensive forward and backward pass computation steps, respectively.
+
+Let $S$ be the size of the largest activation cached in the computation graph.
+
+Let $\delta = \sum_{v_p \in V_P} d(v_p)$
+
+Then, the promise-based LRP algorithm has runtime complexity $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$.
+% The promise-based LRP algorithm requires $F = 1 + |P| \cdot D$ forward passes and $B = 1$ backward pass, giving total complexity $O((1 + |P| \cdot D) \cdot n + m)$.
+\end{theorem}
+
+\begin{proof}
+First, we consider that the memory bound is straightforward, as each Promise stores a constant number of tensors representing the \texttt{rout}, \texttt{rins}, and \texttt{args}, and all tensors are bounded above by the largest activation in the model computation.
+
+To prove the time complexity, we analyze the algorithm in three distinct phases:
+
+\textbf{Phase 1 - Initial Forward Pass:} One forward pass is performed to generate the model output and construct the computation graph. This requires $O(C_{fwd} \cdot (n + m))$ time.
+
+\textbf{Phase 2 - Auxiliary Graph Construction:} The algorithm constructs the auxiliary graph $G'$ from the output's computation graph $G$, requiring only graph traversal and no numerical computation. This requires $O(n + m)$ time.
+
+\textbf{Phase 3a - Backward LRP Pass:} The algorithm performs exactly one backward pass through $G'$ to compute relevance propagation. This requires $O(C_{bwd} \cdot (n + m))$ time.
+
+\textbf{Phase 3b - Promise Resolution:} When the LRP traversal encounters a promise-generating operation $v_p \in V_P$ that lacks its required forward activation, a promise object is created. Each promise must traverse backward through the graph until it locates the operation storing its required activation. 
+
+Crucially, our implementation shows that promises never share the same internal nodes in their computation paths. Each promise maintains independent traversal paths (via distinct \texttt{fwd\_list}, \texttt{bwd\_list}, and \texttt{arg\_node\_ind} fields) and resolves separately through individual \texttt{setarg()} calls.
+Therefore, each promise requires exactly $d(v_p)$ traversal steps, leading to $d(v_p) \cdot C_{fwd}$ additional forward computations in the worst case, for a total of $\delta = \sum_{v_p \in V_P} d(v_p)$ forward computations when considering all Promises.
+Since all computation paths are mutually exclusive, we have that $\delta \leq n$, and so promise resolution overhead has time complexity $O(C_{fwd} \cdot \delta) \in O(C_{fwd} \cdot n)$.
+
+\textbf{Architectural Dependence:} The parameters $|V_P|$ and $D$ are fundamentally determined by the network architecture:
+\begin{itemize}
+\item \textbf{Feed-forward architectures} (e.g., basic CNNs): $|V_P| \approx 0 \Rightarrow \rho \approx 0$, giving optimal $O(n + m)$ complexity.
+\item \textbf{Residual architectures} (e.g., ResNets): $|V_P|$ proportional to the number of skip connections, $D$ bounded by the maximum skip distance.
+\item \textbf{Transformer architectures}: $|V_P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
+\end{itemize}
+
+Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
+\end{proof}
+
+This covers, however, only the first pass of the LRP algorithm. It is worth noting that repeated runs of LRP on the same model architecture yield an identical set of saved Promise computation paths.
+As a result, caching these paths can significantly improve the scalability of the algorithm.
+Once a Promise's computation path has been defined, it can effectively be reduced to a single node, therefore eliminating the graph traversal overhead of its internal nodes.
+
+Another benefit which arises from both the caching and this reduction is that the traversal order becomes strictly determined by the topological ordering of the nodes.
+Recall that due to the issue of Promise Deadlock that can be encountered during initial traversal, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
+However, if we know the Promise chains beforehand and can reduce them to single nodes, then the order in which we perform computations becomes fully deterministic and independent of edge connections, reducing the graph traversal overhead to $O(n)$.
+
+A slight observation that can then be made is that Promises must strictly represent only non-branching computation paths, which follows from both the definition of Promise-Generating Operations and the process of collapsing Promises into single nodes for subsequent passes.
+
+A detailed algorithm describing these subsequent passes is provided in the Appendix.
+
+\section{Experimental Setup}
+We aim to show through the following experiments that our proposed LRP solution remains mathematically sound and produces
+faithful and interpretable attributions consistent with existing methods. We also demonstrate that the
+Promise-based LRP maintains a predictable and efficient memory footprint and sufficient computation speed for
+research applications on large (100s of millions - 1 billion parameters) models of various architectures
+using consumer-grade hardware.
+
+Specifically, all experiments were run on a machine with 32GB RAM and an RTX 4070 Super with 12GB VRAM, with PyTorch v2.7.1 and CUDA v12.8.
+
+\subsection{Model and Dataset Selection}
+We used RoBERTa-large finetuned on the SQuAD-v2 question-answering dataset, DNABERT-2 finetuned on the GUE
+epigenetic marker prediction (EMP) task and H3 target, Llama-3.2-1B finetuned on the IMDB movie review dataset,
+and the ViT-b-16 and VGG16 base models to evaluate on the CIFAR-10 ImageNet dataset. Finetuned models were then used to
+evaluate examples from their respective datasets' validation splits.
+
+
+\subsection{Visualizing Attributions for Image Models}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
+  \caption{Comparing methods for VGG attributions.}
+\end{figure}
+
+\subsection{Measuring Faithfulness With Area Between Perturbation Curves}
+We measure faithfulness using the Area Between Perturbation Curves (ABPC), or \textit{Degradation}, as proposed by \cite{schulz2020abpc}.
+In this metric, we first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
+Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most relevant features from each input sample. We also do this inversely,
+masking/occluding the top-i least relevant features from each input sample, to compute the Least-Relevant First (LeRF) curve.
+The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=1.0\textwidth]{../documentation/vit_abpc_comparisons.png}
+  \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from ImageNet CIFAR-10's test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
+\end{figure}
+
+\begin{table}
+\begin{center}
+  \caption{ABPC and attribution efficiency metrics for ViT experiments.}
+  \label{vit-table}
+  \begin{tabular}{ | c | c c c c c | }
+    \hline
+    Method & ABPC ($\uparrow$) & Comprehensiveness ($\uparrow$) & Sufficiency ($\downarrow$) & Speed (it/s, $\uparrow$) & Peak VRAM ($\downarrow$) \\
+    \hline
+    Integrated Gradients & 0.10 & 0.95 & 0.85 & N/A* & >12GB \\ 
+    InputXGradient & -0.0030 & 0.90 & 0.90 & \textbf{59.89} & 2.1GB \\ 
+    GradientSHAP & 0.074 & 0.94 & 0.87 & 3.32 & 8.6GB \\
+    Random & -0.023 & 0.88 & 0.90 & - & - \\
+    AttnLRP & 1.20 & 1.59 & 0.39 & 6.02 & \textbf{0.96GB} \\
+    \hline
+    Ours & \textbf{1.36} & \textbf{1.73} & \textbf{0.36} & 9.74 & 1.6GB \\
+    \hline
+  \end{tabular}
+  \\ [0.5ex]
+\end{center}
+*N/A in the Speed column signifies that GPU memory limits caused thrashing and prevented the observation of method's true speed.
+\end{table}
+
+\section{Discussion}
+
+\subsection{Comparing the Attribution Methods of Table 1}
+We see that among all the attribution methods tested, ours and AttnLRP stand among the top of the ABPC metrics. Comprehensiveness is defined as $AUC(y = baseline) - AUC(MoRF)$ and Sufficiency as $AUC(y = baseline) - AUC(LeRF)$.
+
+While AttnLRP, which is built off of the XAI library Zennit \cite{anders2021zennit}, performs noticeably better in speed and memory usage, we demonstrate that our dynamic LRP is in fact more faithful than it in the ViT experiment,
+and much better than all other alternative methods in every category present, barring the speed of InputXGradient. We attribute this improvement to our LRP being able to capture a more holistic picture of the entire model data flow.
+The the inclusion of the residual stream's contributions to the output within the attribution computation is likely a large factor in this. Being a crucial pathway which allows the transformer architecture to shape its predictions,
+it lends itself well in nature to LRP. Later layers, which get visited first in LRP, will combine with residual outputs that are sequentially and semantically closer the final output, acting as a relevance boost to the most significant
+regions of the stream. This is an important theoretical consideration that is overlooked by the current LRP landscape, since residual connections are almost always within output classes or at the extremities of an attention module,
+never the direct focus of relevance propagation. With our framework, considering these connections is built-in.
+
+What we also demonstrate is the framework's capability to adopt rules defined by other implementations. In this experiment, we tuned our LRP to behave under the specifications defined in AttnLRP \cite{achtibat2024attnlrp}.
+We used $\gamma$-LRP for Convolutional and Linear layers ($\gamma = 100$, $\gamma = 1$, respectively), and attributed attention modules using CP-LRP, as also suggested by the AttnLRP authors for image models.
+
+The memory improvement of AttnLRP over our LRP is likely due to the fact that Zennit does not require the full autograd computation graph to be stored, only the subgraphs associated with the above mentioned layers/modules,
+as well as activations and normalization layers. Any additional operations performed do not have autograd nodes saved, and thus reduce total peak VRAM usage, as opposed to our method which tracks such operations.
+
+The difference in computation speed is likely also a result of the additional propagations taken across the entire computation graph. However, we also use a different approach to computing the propagations of Linear and
+Convolutional layers, opting for an explicit, analytical redistribution instead of using the gradient-based approach, which computes the gradients of the inputs and weights w.r.t. the relevance contributions.
+However, these two methods are mathematically equivalent.
+
+\subsection{Weighing the Costs of Maintainability}
+While we are optimistic that a generalized form of LRP will empower and enable researchers to explain increasingly complex model architectures, we are equally aware of skepticism surrounding its long-term feasibility.
+Specifically, because we break LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
+We therefore provide the following considerations to address such concerns:
+
+\paragraph{We concern ourselves only with shape and mathematical operators.} Although these still consititue the majority of PyTorch's operator set, they are a bounded and well-defined subset which we are interested in. 
+Each operation we handle must take some tensor input and return some tensor output as part of the its forward call. This sets a tangible and conceptual limit on our implementation scope. 
+\paragraph{Shape operations are easy.} Shape operations do not numerically transform any parts of a tensor, only its structure. Thus, the task of backpropagating relevance through such operations reduces to the task of 
+reassigning or accumulating relevance at the input positions that produced the output. Notice that in these cases, LRP and gradient backpropagation align naturally in intent and behaviour, if we replace relevance with gradients.
+Thus, this propagation pattern is already implemented in autograd, and existing autograd nodes can be reused directly, providing exactly the propagation functions we require for LRP.
+\paragraph{Activations are typically treated as identities.} In previous LRP literature, activation functions such as ReLU, GELU, etc. have established and stable propagation rules which simply pass relevance along unchanged.
+\paragraph{New operations may reuse old ones, explicitly or conceptually.} Fused operations and renamed combinations of existing primitives are common. In these cases, the cost of supporting them is minimal. They can either 
+directly reuse already-supported operators, or be decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into components we already handle.
+\paragraph{Our contribution is the framework, further theory can follow.} Even if future work extends LRP to new, more complex operations, our contribution provides a structured place for these rules to live in and be reused 
+indefinitely. While we acknowledge that the derivation and definition of such rules may be non-trivial, we believe that further work in broadening LRP's reach will be a collective effort led by those who continue to see its 
+value in model interpretability. Through this work, we aim to renew interest in LRP by providing a unified, modular framework that prioritizes compatibility, ease of use, and competitive efficiency. Our hope is that by lowering 
+the barrier to entry, we encourage others to explore, refine, and extend LRP across modern architectures.
+
+To reinforce this premise, one can look to PyTorch's own design history. Autograd itself was one such project which required countless manual definitions of functions and derivatives, living in configuration files, but it is 
+now a stable and established core to the foundation of machine learning. Likewise, the structured kernels initiative required the porting of hundreds of PyTorch operators but ended up enhancing maintainability of operator 
+variants and enabling meta-execution of computation graphs, which were big wins for scalability and performance.
+
+The takeaway is that if we want to care about extensibility and rigor of our methods, and if we deem LRP a method worth sustaining, then the effort is justified. With this framework, LRP can become as accessible as autograd, 
+but in the long run, we hope that this contribution can widen the scope of what else can be adapted to use the computation graph in future research.
+
+\bibliography{main}
+\iftoggle{arxiv}{
+  % arXiv references in a generic style, or ICLR style
+  \bibliographystyle{iclr2025_conference}
+}{
+  % bst style for the journal/conference version goes here
+  % For NeurIPS there is no house bst file; you can use ICLR bst instead
+  % \bibliographystyle{iclr2025_conference}
+}
+
+\appendix
+% Appendix TOC
+\section*{Appendices}
+%\startcontents[sections]
+%\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}
+\subsection{Implementation Details}
+Our implementation uses PyTorch hooks to record operations during the forward pass and constructs the computation graph dynamically. Each operation creates a promise object, which stores the propagation rule and tracks readiness and completeness.
+
+\textbf{Python Example: Promise-based LRP Engine}
+Below is a simplified Python pseudocode that captures the core logic of the promise-based LRP engine:
+
+\begin{verbatim}
+class Promise:
+  def __init__(self, op_type, inputs):
+    self.op_type = op_type
+    self.inputs = inputs
+    self.ready = False
+    self.complete = False
+    self.relevance = None
+
+  def resolve(self, output_relevance):
+    # Custom propagation rule for each op_type
+    self.relevance = propagate_relevance(self.op_type, self.inputs, output_relevance)
+    self.ready = True
+    return self.relevance
+
+def lrp_engine(graph, output_relevance):
+  # Traverse graph in reverse topological order
+  for node in reversed(graph.topo_order()):
+    promise = node.promise
+    if all(child.promise.complete for child in node.outputs):
+      input_relevance = promise.resolve(node.output_relevance)
+      for inp in node.inputs:
+        inp.promise.relevance = input_relevance[inp]
+      promise.complete = True
+  return [node.promise.relevance for node in graph.input_nodes()]
+\end{verbatim}
+
+\textbf{Explicit Steps in the Algorithm}
+\begin{enumerate}
+  \item \textbf{Forward Pass:} Register hooks to record each operation and build the computation graph.
+  \item \textbf{Promise Creation:} For each operation, instantiate a promise object with its propagation rule.
+  \item \textbf{Backward Pass:} Starting from the output, traverse the graph in reverse topological order. Each promise is resolved when all output relevance is received, and marked complete when it distributes relevance to its inputs.
+  \item \textbf{Relevance Aggregation:} Input nodes collect relevance from all incoming promises, yielding the final attribution scores.
+\end{enumerate}
+
+\textbf{Readiness and Completeness}
+\begin{itemize}
+  \item \textbf{Readiness:} A promise is ready when all output relevance (from downstream nodes) has been received.
+  \item \textbf{Completeness:} A promise is complete when it has distributed its relevance to all inputs according to its propagation rule.
+\end{itemize}
+
+This mechanism ensures that relevance is propagated in accordance with the mathematical definition of LRP, maintaining conservation and proportionality at each node.
+
+\textbf{Promise Deadlock}
+The introduction of Promises can cause issues with the traversal heuristic we use. Consider the following configuration of nodes. Let A be a Promise-Generating Node, and let B and E be Arg Nodes, coloured orange.
+Nodes coloured red are traversed, green are untraversed.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[anode] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[anode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west);
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+Recall that our traversal heuristic states that we may only consider a node for traversal if all of its in-neighbours have propagated to it. In this case, A creates a Promise $P$, propagates its Promise Branches
+$p_1$, $p_2$ to B and D, and we see that the number of inputs landed at B equals B's in-degree. We traverse B first, propagating the Promise Branch $p_1$ to it.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[node] (node4) [below=of node3, xshift=-8mm] {D};
+\node[anode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west);
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+B is an Arg Node, so the Promise Branch will retrieve its forward output and forward-chain it to obtain the activation at A, then save it to the Promise.
+We now stall traversal and enqueue B until the Promise is complete. Our only next option for traversal is D, which has received the other Promise Branch $p_2$ from A as input.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[bnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[anode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west);
+\end{tikzpicture}
+\end{center}
+
+We know that now E must be traversed, but see that we never traversed into it from the A->B->C path, so its incoming relevance inputs will never equal its in-degree, and we cannot consider it
+for traversal. This creates a circular dependency: C is stalled waiting for A's Promise $P$ to complete, but $P$ cannot complete because its second branch $p_2$ requires accessing E's activation,
+and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
+
+\textbf{Pre-Promises}
+
+The solution to Promise Deadlock is to allow Promise Branches to "reach ahead" past the traversal frontier to locate their Arg Nodes, without triggering full relevance backpropagation.
+
+When a node $v$ receives a Promise Branch input $p_1$ but is still waiting for other inputs (i.e., landed inputs < in-degree), we instantiate a \textbf{Pre-Promise}, which only has one branch $p_2$, at $v$
+(since it only has one branch, we simply refer to the Pre-Promise as its branch $p_2$). This Pre-Promise:
+
+\begin{enumerate}
+    \item Has a parent connection to $p_1$ (enabling forward-chaining of activations)
+    \item Does NOT register as a child of $p_1$ (preventing backward-chaining of relevance)
+    \item Continues traversal to find its Arg Node
+\end{enumerate}
+
+The parent-child asymmetry creates the desired behavior: $p_2$ can reach its Arg Node, forward-chain the activation back through its parent connection to satisfy $p_1$'s requirements, but relevance propagation is blocked at $v$ until the traversal heuristic naturally revisits it (when all inputs have landed).
+
+Once $v$'s in-degree is satisfied later in the traversal:
+\begin{itemize}
+    \item The Pre-Promise $p_2$ is "promoted" by establishing its child connection to $p_1$
+    \item If $p_1$'s Promise is now complete (all args resolved), backward-chaining proceeds
+    \item The traversal continues normally from $p_2$'s Arg Node after backward-chaining.
+\end{itemize}
+
+See Appendix for the formal safety proof that Pre-Promises maintain correctness.
+
+To illustrate the function of Pre-Promises, we will pick up where the last example left off. We have that D is trying to propagate a Promise Branch to E, but E does not
+have all its inputs yet. Therefore, we create a Pre-Promise $p_3$, and allow traversal to continue at E, now giving $p_3$ as E's input from D.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[bnode] (node1) {A};
+\node[bnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[bnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[bnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+$p_3$ retrieves and forward-chains the activation at E to $p_2$, which then forward-chains it to obtain A's missing activation. We now have that A, B, D, E have gone through
+forward-chaining. We colour them as teal to signify this.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[dnode] (node1) {A};
+\node[dnode, label={\small stalled}] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[dnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[dnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+This is followed by $P$ triggering relevance backpropagation through all of its branches. Blue nodes signify that true relevance values have been propagated through them.
+Crucially, E does not continue this propagation due to the lack of a child connection from $p_2$ to $p_3$.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[cnode] (node1) {A};
+\node[cnode] (node2) [right=of node1] {B};
+\node[node] (node3) [right=of node2] {C};
+\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[dnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+Now, C is able to be traversed.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[cnode] (node1) {A};
+\node[cnode] (node2) [right=of node1] {B};
+\node[bnode] (node3) [right=of node2] {C};
+\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[dnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+And we propagate through it to E, finally.
+
+\begin{center}
+\begin{tikzpicture}
+%Nodes
+\node[cnode] (node1) {A};
+\node[cnode] (node2) [right=of node1] {B};
+\node[cnode] (node3) [right=of node2] {C};
+\node[cnode] (node4) [below=of node3, xshift=-8mm] {D};
+\node[bnode] (node5) [right=of node3] {E};
+
+%Lines
+\draw[->] (node1.east) -- (node2.west) node[midway, above] {$p_1$};
+\draw[->] (node2.east) -- (node3.west);
+\draw[->] (node3.east) -- (node5.west);
+\draw[->] (node1.east) .. controls +(down:7mm) and +(left:7mm) .. (node4.west) node[midway, above] {$p_2$};
+\draw[->] (node4.east) .. controls +(up:7mm) and +(left:7mm) .. (node5.west) node[midway, below] {$p_3$};
+\end{tikzpicture}
+\end{center}
+
+\textbf{Promise-Aware LRP Algorithm}
+\begin{algorithm}[H]
+  \caption{Operation-Level Relevance Propagation With Promises}
+  \label{alg:promise-propagation}
+  \begin{algorithmic}[1]
+    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
+    \Ensure Input relevance $R_{in}$
+    \State Initialize as in Algorithm 2
+
+    \While{$stack$}
+      \State $curnode \gets stack.pop()$
+      \State $curnode\_in\_rel = node\_inputs[curnode]$
+      \If{$curnode == target\_node$}
+        \Return $R_{in} := curnode\_in\_rel$
+      \ElsIf{$curnode$ requires Promise}
+        \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
+        \State $curnode\_outputs \gets curnode.promise.branches$
+      \Else
+        \State $prop\_fcn \gets fcn\_map[type(curnode)]$
+        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+      \EndIf
+      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
+        \If{$nodes\_pending[child] == 0$}
+          \State $stack.push(child)$
+        \EndIf
+      \EndFor
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
+
+We extend the standard propagation functions to handle Promise inputs. Depending on whether the current node is an
+Arg Node, the function either records the chain or resolves and completes the Promise.
+
+\begin{algorithm}[H]
+  \caption{Non-Arg Node Propagation Function Promise Handling}
+  \label{alg:non-argnode-propagation}
+  \begin{algorithmic}[1]
+    \Require Autograd Node $node$, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
+
+    \If{$R_{out}$ is a Promise Branch}
+      \State Define $fwd$ as a closure of $node$'s forward pass.
+      \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
+      \State $R_{out}.record(fwd, bwd)$
+      \Return $R_{out}$
+    \EndIf
+
+    \State \textit{// Propagate $R_{out}$...}
+    \Return $R_{in}$
+  \end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+  \caption{Arg Node Propagation Function Promise Handling}
+  \label{alg:argnode-propagation}
+  \begin{algorithmic}[1]
+    \Require Autograd Node $node$, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
+
+    \If{$R_{out}$ is a Promise Branch}
+      \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
+      \State $activation = retrieve\_fwd\_output(node)$
+      \State $R_{out}.set\_arg(activation)$
+      \State $R_{out}.trigger\_promise\_completion()$
+      \If{$R_{out}.promise\_is\_complete$}
+        $R_{out} = R_{out}.propagated\_relevance$
+      \Else
+        \State \textit{// Signal for queueing this Node until the Promise is complete}
+        \Return
+      \EndIf
+    \EndIf
+
+    \State \textit{// Propagate $R_{out}$...}
+    \Return $R_{in}$
+  \end{algorithmic}
+\end{algorithm}
+
+\end{document}

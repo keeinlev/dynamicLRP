@@ -46,6 +46,7 @@ class LRPEngine:
         "CatBackward",
         "MeanBackward",
         "StackBackward",
+        "SoftmaxBackward",
     ]
 
     def __init__(self,
@@ -55,7 +56,8 @@ class LRPEngine:
                  use_z_plus=False,
                  relevance_filter=1.0,
                  starting_relevance=None,
-                 topk=1,):
+                 topk=1,
+                 dtype=torch.float32,):
         assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
         self.out_adj_list : Union[set[Node], set[int]] = None
         self.topo_exec_order : list[int] = None
@@ -71,6 +73,8 @@ class LRPEngine:
         self.mm_counter = 0
         self.starting_relevance = starting_relevance
         self.topk = topk
+        LRPPropFunctions.dtype = dtype
+        PromiseBucket.dtype = dtype
     
     @staticmethod
     def group_and_categorize_inputs(input_tracker_list: list[tuple[Union[Promise, torch.Tensor], int]], run_mode: RunMode):
@@ -152,9 +156,14 @@ class LRPEngine:
                                 raise ValueError(f"LRP Engine received model outputs of unexpected size {dim}.")
                     relevances.append(r)
                 relevances = tuple(relevances)
-                
             else:
-                relevances = (self.starting_relevance,)
+                if isinstance(self.starting_relevance, torch.Tensor):
+                    relevances = (self.starting_relevance,)
+                elif isinstance(self.starting_relevance, tuple):
+                    assert all( isinstance(sr, torch.Tensor) for sr in self.starting_relevance ), "Starting relevances must be either a single tensor or a tuple of tensors."
+                    relevances = self.starting_relevance
+                else:
+                    raise TypeError(f"Starting relevance expected type tensor or tuple[tensor], instead got {type(self.starting_relevance)}.")
                 assert len(relevances) == len(output_tuple_or_tensor), \
                     f"Starting relevance mismatched model outputs on length (given {len(relevances)}, expected {len(output_tuple_or_tensor)}."
                 assert all( sr is None or sr.shape == ot.shape for sr, ot in zip(relevances, output_tuple_or_tensor)), \
@@ -191,7 +200,6 @@ class LRPEngine:
         ret[0] is the list of all hooked LRPCheckpoint relevances
         ret[1] is the list of all parameter Nodes (AccumulateGrad's) corresponding to the parameters in 
             self.params_to_interpret."""
-        out_adj_list = self.out_adj_list
         topo_exec_order = self.topo_exec_order
         fcn_map = self.fcn_map
         params_to_interpret = self.params_to_interpret
@@ -199,8 +207,13 @@ class LRPEngine:
         promise_bucket = self.promise_bucket
 
         in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes = make_graph(root_nodes, params_to_interpret, return_topo_dict=True)
-
+        fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
         root_nodes = updated_roots
+
+        # Save these for now, param_node_inds and topo_exec_order get saved at the end.
+        # self.in_adj_list = in_adj_list
+        self.out_adj_list = out_adj_list
+        self.fcn_map = fcn_map
 
         promise_bucket.ind_to_node = ind_to_node
 
@@ -208,8 +221,6 @@ class LRPEngine:
         checkpoints = list(filter(lambda k: type(k).__name__ == "LRPCheckpointBackward", list(in_adj_list.keys())))
         num_params_reached = 0
         num_checkpoints_reached = 0
-
-        fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
 
         visited = set()
 
@@ -292,6 +303,12 @@ class LRPEngine:
             sorted_and_merged_inputs = {}
             if not RUN_MODE.is_fulfillment:
                 curnode_inputs = input_tracker[curnode]
+
+                # print(curnode)
+                # for input_, idx in curnode_inputs:
+                #     print(input_, idx)
+                #     if isinstance(input_, torch.Tensor):
+                #         print(input_.dtype)
 
                 # Group all inputs by their indices then categorize into either pending promises, complete promises, or tensors
                 try:
@@ -440,6 +457,10 @@ class LRPEngine:
 
             # Call the propagation function for the node
             try:
+                # if curnode.metadata["topo_ind"] == 1519 and type(curnode).__name__ == "ScaledDotProductEfficientAttentionBackward0":
+                #     print(curnode_outputs)
+                # elif curnode.metadata["topo_ind"] == 1789 and type(curnode).__name__ == "BmmBackward0":
+                #     print(curnode_outputs)
                 curnode_outputs = fcn_map[type(curnode).__name__](curnode, finalized_inputs)
             except Exception as e:
                 print(e)
@@ -592,12 +613,12 @@ class LRPEngine:
 
         # If we want to reuse the graph, we need to re-define it in terms of the topological sort order.
         # Convert autograd-based Node graph into topo_ind graph
-        in_adj_list, out_adj_list = convert_graph_to_index_based(in_adj_list, out_adj_list)
+        index_based_in_adj_list, index_based_out_adj_list = convert_graph_to_index_based(in_adj_list, out_adj_list)
 
         # Filter down the indices of nodes to only what is necessary for computing checkpoints
         topo_exec_order = create_checkpoint_execution_plan(
             [ checkpoint.metadata["topo_ind"] for checkpoint in checkpoints ],
-            in_adj_list,
+            index_based_in_adj_list,
             num_nodes,
             root.metadata["topo_ind"],
             promise_bucket.all_inner_nodes,
@@ -609,12 +630,13 @@ class LRPEngine:
         
         promise_bucket.repair_all_parent_child_connections()
 
-        # Save the artifacts for subsequent passes
-        self.out_adj_list = out_adj_list
+        # Save for subsequent passes
+        self.out_adj_list = index_based_out_adj_list
         self.topo_exec_order = topo_exec_order
-        self.fcn_map = fcn_map
         self.param_node_inds = param_node_inds
         self.params_to_interpret = None
+
+        torch.cuda.empty_cache()
 
         return checkpoint_vals, param_node_vals
 
@@ -654,7 +676,7 @@ class LRPEngine:
             input_frontier[root.metadata["topo_ind"]] = {0: sr}
 
         # First pre-process all Promises by updating the starting fwd_shapes and setting every leaf Promise arg
-        promise_bucket.update_all_starting_fwd_shapes()
+        promise_bucket.update_all_starting_fwd_shapes(recompile=(not no_recompile))
         leaf_promise: Promise
         for leaf_promise in promise_bucket.leaf_promises:
             if leaf_promise.arg_node_ind is not None:
@@ -727,7 +749,7 @@ class LRPEngine:
                     rel = rel[0]
                 try:
                     res = fcn_map[type(node).__name__](node, rel)
-                except (AttributeError, RuntimeError) as e:
+                except (AttributeError, RuntimeError, TypeError) as e:
                     print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind])
                     raise e
                 # Distribute the relevance the same way as first pass

@@ -16,6 +16,7 @@ def make_hook(disabled_head_ind):
         start = disabled_head_ind * HEAD_DIM
         end = start + HEAD_DIM
 
+        output = output.clone()
         output[:,start:end].zero_()
 
         return output

@@ -1,4 +1,4 @@
-\begin{thebibliography}{24}
+\begin{thebibliography}{34}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -11,6 +11,14 @@ Reduan Achtibat, Sayed Mohammad~Vakilzadeh Hatefi, Maximilian Dreyer, et~al.
 \newblock Attnlrp: Attention-aware layer-wise relevance propagation for
   transformers.
 \newblock \emph{arXiv preprint arXiv:2402.05602}, 2024.
+
+\bibitem[Alber et~al.(2018)Alber, Lapuschkin, Seegerer, Hägele, Schütt,
+  Montavon, Samek, Müller, Dähne, and Kindermans]{alber2018innvestigate}
+Maximilian Alber, Sebastian Lapuschkin, Philipp Seegerer, Miriam Hägele,
+  Kristof~T. Schütt, Grégoire Montavon, Wojciech Samek, Klaus-Robert Müller,
+  Sven Dähne, and Pieter-Jan Kindermans.
+\newblock innvestigate neural networks!, 2018.
+\newblock URL \url{https://arxiv.org/abs/1808.04260}.
 
 \bibitem[Ancona et~al.(2018)Ancona, Ceolini, {\"O}ztireli, and
   Gross]{ancona2018towards}
@@ -53,12 +61,42 @@ Moritz Böhle, Fabian Eitel, Martin Weygandt, and Kerstin Ritter.
 \newblock URL
   \url{https://www.frontiersin.org/journals/aging-neuroscience/articles/10.3389/fnagi.2019.00194}.
 
+\bibitem[Chan et~al.(2021)Chan, Möller, Pietsch, and
+  Soni]{chan2021robertasquadv2}
+Branden Chan, Timo Möller, Malte Pietsch, and Tanay Soni.
+\newblock roberta-large for extractive qa, 2021.
+\newblock URL \url{https://huggingface.co/deepset/roberta-large-squad2}.
+\newblock Accessed: 2025-12-06.
+
+\bibitem[Chung et~al.(2022)Chung, Hou, Longpre, Zoph, Tay, Fedus, Li, Wang,
+  Dehghani, Brahma, Webson, Gu, Dai, Suzgun, Chen, Chowdhery, Narang, Mishra,
+  Yu, Zhao, Huang, Dai, Yu, Petrov, Chi, Dean, Devlin, Roberts, Zhou, Le, and
+  Wei]{chung2022flant5}
+Hyung~Won Chung, Le~Hou, Shayne Longpre, Barret Zoph, Yi~Tay, William Fedus,
+  Eric Li, Xuezhi Wang, Mostafa Dehghani, Siddhartha Brahma, Albert Webson,
+  Shixiang~Shane Gu, Zhuyun Dai, Mirac Suzgun, Xinyun Chen, Aakanksha
+  Chowdhery, Sharan Narang, Gaurav Mishra, Adams Yu, Vincent Zhao, Yanping
+  Huang, Andrew Dai, Hongkun Yu, Slav Petrov, Ed~H. Chi, Jeff Dean, Jacob
+  Devlin, Adam Roberts, Denny Zhou, Quoc~V. Le, and Jason Wei.
+\newblock Scaling instruction-finetuned language models, 2022.
+\newblock URL \url{https://arxiv.org/abs/2210.11416}.
+
 \bibitem[Covert et~al.(2020)Covert, Lundberg, and Lee]{covert2020understanding}
 Ian Covert, Scott~M Lundberg, and Su-In Lee.
 \newblock Understanding global feature contributions with additive importance
   measures.
 \newblock \emph{Advances in Neural Information Processing Systems},
   33:\penalty0 17212--17223, 2020.
+
+\bibitem[Dosovitskiy et~al.(2021)Dosovitskiy, Beyer, Kolesnikov, Weissenborn,
+  Zhai, Unterthiner, Dehghani, Minderer, Heigold, Gelly, Uszkoreit, and
+  Houlsby]{dosovitskiy2021vit}
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn,
+  Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg
+  Heigold, Sylvain Gelly, Jakob Uszkoreit, and Neil Houlsby.
+\newblock An image is worth 16x16 words: Transformers for image recognition at
+  scale, 2021.
+\newblock URL \url{https://arxiv.org/abs/2010.11929}.
 
 \bibitem[Howard(2019)]{howard2019imagenette}
 Jeremy Howard.
@@ -70,9 +108,18 @@ Jeremy Howard.
   Uchida]{iwana2019lrpexplainingcnns}
 Brian~K. Iwana, Ryohei Kuroki, and Seiichi Uchida.
 \newblock Explaining convolutional neural networks using softmax gradient
-  layer-wise relevance propagation.
-\newblock 2019.
+  layer-wise relevance propagation, 2019.
 \newblock URL \url{https://arxiv.org/abs/1908.04351}.
+
+\bibitem[Kokhlikyan et~al.(2020)Kokhlikyan, Miglani, Martin, Wang, Alsallakh,
+  Reynolds, Melnikov, Kliushkina, Araya, Yan, and
+  Reblitz-Richardson]{kokhlikyan2020captum}
+Narine Kokhlikyan, Vivek Miglani, Miguel Martin, Edward Wang, Bilal Alsallakh,
+  Jonathan Reynolds, Alexander Melnikov, Natalia Kliushkina, Carlos Araya, Siqi
+  Yan, and Orion Reblitz-Richardson.
+\newblock Captum: A unified and generic model interpretability library for
+  pytorch, 2020.
+\newblock URL \url{https://arxiv.org/abs/2009.07896}.
 
 \bibitem[Krizhevsky \& Hinton(2009)Krizhevsky and
   Hinton]{krizhevsky2009learning}
@@ -81,6 +128,19 @@ Alex Krizhevsky and Geoffrey Hinton.
 \newblock Technical Report~0, University of Toronto, Toronto, Ontario, 2009.
 \newblock URL
   \url{https://www.cs.toronto.edu/~kriz/learning-features-2009-TR.pdf}.
+
+\bibitem[Lee(2023)]{lee2023flant5squadv2}
+Sebastian~Husch Lee.
+\newblock flan-t5-large for extractive qa, 2023.
+\newblock URL \url{https://huggingface.co/sjrhuschlee/flan-t5-large-squad2}.
+\newblock Accessed: 2025-12-06.
+
+\bibitem[Liu et~al.(2019)Liu, Ott, Goyal, Du, Joshi, Chen, Levy, Lewis,
+  Zettlemoyer, and Stoyanov]{liu2019roberta}
+Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer
+  Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov.
+\newblock Roberta: {A} robustly optimized {BERT} pretraining approach, 2019.
+\newblock URL \url{http://arxiv.org/abs/1907.11692}.
 
 \bibitem[Lundberg \& Lee(2017)Lundberg and Lee]{lundberg2017unified}
 Scott~M Lundberg and Su-In Lee.
@@ -114,9 +174,13 @@ Gr{\'e}goire Montavon, Alexander Binder, Sebastian Lapuschkin, Wojciech Samek,
 Seitaro Otsuki, Tsumugi Iida, Félix Doublet, Tsubasa Hirakawa, Takayoshi
   Yamashita, Hironobu Fujiyoshi, and Komei Sugiura.
 \newblock Layer-wise relevance propagation with conservation property for
-  resnet.
-\newblock 2024.
+  resnet, 2024.
 \newblock URL \url{https://arxiv.org/abs/2407.09115}.
+
+\bibitem[Rajpurkar et~al.(2018)Rajpurkar, Jia, and Liang]{rajpurkar2018squadv2}
+Pranav Rajpurkar, Robin Jia, and Percy Liang.
+\newblock Know what you don't know: Unanswerable questions for squad, 2018.
+\newblock URL \url{https://arxiv.org/abs/1806.03822}.
 
 \bibitem[Ribeiro et~al.(2016)Ribeiro, Singh, and Guestrin]{ribeiro2016should}
 Marco~Tulio Ribeiro, Sameer Singh, and Carlos Guestrin.
@@ -124,6 +188,17 @@ Marco~Tulio Ribeiro, Sameer Singh, and Carlos Guestrin.
   classifier.
 \newblock \emph{Proceedings of the 22nd ACM SIGKDD international conference on
   knowledge discovery and data mining}, pp.\  1135--1144, 2016.
+
+\bibitem[Samek et~al.(2021)Samek, Montavon, Lapuschkin, Anders, and
+  Muller]{samek2021xaireview}
+Wojciech Samek, Gregoire Montavon, Sebastian Lapuschkin, Christopher~J. Anders,
+  and Klaus-Robert Muller.
+\newblock Explaining deep neural networks and beyond: A review of methods and
+  applications.
+\newblock \emph{Proceedings of the IEEE}, 109\penalty0 (3), 2021.
+\newblock ISSN 1558-2256.
+\newblock \doi{10.1109/jproc.2021.3060483}.
+\newblock URL \url{http://dx.doi.org/10.1109/JPROC.2021.3060483}.
 
 \bibitem[Schulz et~al.(2020)Schulz, Sixt, Tombari, and
   Landgraf]{schulz2020abpc}
@@ -140,6 +215,12 @@ Ramprasaath~R Selvaraju, Michael Cogswell, Abhishek Das, Ramakrishna Vedantam,
   localization.
 \newblock \emph{Proceedings of the IEEE international conference on computer
   vision}, pp.\  618--626, 2017.
+
+\bibitem[Simonyan \& Zisserman(2015)Simonyan and Zisserman]{simonyan2015vgg}
+Karen Simonyan and Andrew Zisserman.
+\newblock Very deep convolutional networks for large-scale image recognition,
+  2015.
+\newblock URL \url{https://arxiv.org/abs/1409.1556}.
 
 \bibitem[Simonyan et~al.(2014)Simonyan, Vedaldi, and
   Zisserman]{simonyan2014deep}
@@ -159,8 +240,7 @@ Daniel Smilkov, Nikhil Thorat, Been Kim, Fernanda Vi{\'e}gas, and Martin
   Binder]{sun2021lrpfinetuning}
 Jiamei Sun, Sebastian Lapuschkin, Wojciech Samek, and Alexander Binder.
 \newblock Explain and improve: Lrp-inference fine-tuning for image captioning
-  models.
-\newblock 2021.
+  models, 2021.
 \newblock URL \url{https://arxiv.org/abs/2001.01037}.
 
 \bibitem[Sundararajan et~al.(2017)Sundararajan, Taly, and

@@ -66,7 +66,7 @@
   % Things just for the journal/conference version go here
 }
 
-\title{Always keep your promises: A model-agnostic solution to Layer-wise Relevance Propagation}
+\title{Always keep your promises: Introducing DynamicLRP, a model-agnostic solution to Layer-wise Relevance Propagation}
 
 \author[1]{FIRST AUTHOR NAME}
 \affil[1]{FIRST AFFILIATION}
@@ -145,18 +145,8 @@ processes of large-scale transformer systems \cite{vaswani2017attention} remain 
 As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding
 \emph{why} they make specific predictions has become a critical scientific and societal imperative.
 
-Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
-differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
-chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
-but suffer from gradient saturation and linearity assumptions that fail to capture complex nonlinear interactions
-\cite{ancona2018towards}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
-\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
-yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
-Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
-localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
-
-Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer a
-compelling alternative through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity,
+Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer
+compelling results through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity,
 LRP decomposes the actual prediction by backpropagating relevance scores while preserving conservation properties. This
 approach enables customizable propagation rules tailored to specific architectural components \cite{montavon2017explaining}.
 This approach has proven remarkably effective for convolutional networks and demonstrated theoretical
@@ -173,15 +163,28 @@ LRP—despite its proven effectiveness and computational advantages.
 We address this gap by proposing DynamicLRP, an LRP framework that extends rule-based attribution to arbitrary neural
 architectures with minimal overhead. We define LRP rules for individual tensor operations, analogous to generalized
 gradient computation found in auto-differentiation libraries (like PyTorch), which can be applied to any network topology.
-Through our novel \textbf{"Promise System"} for handling missing forward activations, our approach repurposes the computation
-graph used in auto-differentiation, and maintains LRP's theoretical guarantees while achieving computational efficiency
-within the asymptotic bounds of standard backpropagation.
+Through our novel \textbf{"Promise System"} for handling missing activations in the backward pass, our approach repurposes
+the computation graph used in auto-differentiation, and maintains LRP's theoretical guarantees while achieving computational
+efficiency within the asymptotic bounds of standard backpropagation.
 
 We aim to show through experiments across multiple modalities that our proposed LRP solution remains mathematically sound and produces
 faithful and interpretable attributions consistent with existing methods. We also demonstrate that the Promise-based LRP maintains a
 practical memory footprint and speed for research applications on medium-large (100s of millions - 1 billion parameters) models of various
 architectures using consumer-grade hardware.
 
+\paragraph{Contributions.} We make three primary contributions:
+\begin{itemize}
+  \item \textbf{Model-agnostic, operation-level LRP framework} (\ref{sec:op-level-lrp}): We decompose LRP from module-level
+  to operation-level, defining propagation rules for fundamental tensor operations rather than composite neural network
+  modules to enable model agnosticity.
+  \item \textbf{Promise System} (\ref{sec:promise-system}): We introduce a novel mechanism for deferred relevance propagation
+  and backward pass activation retrieval through the computation graph so that LRP can function without graph modification.
+  The technique generalizes to arbitrary non-gradient computations on computation graphs used by auto-differentiation.
+  We provide proven complexity bounds on memory and computation.
+  \item \textbf{Faithfulness validation} (\ref{sec:experiments}): We demonstrate faithfulness matching or exceeding specialized
+  implementations across vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) while maintaining practical efficiency. Our
+  framework additionally enables training-time attribution as a natural consequence of its design.
+\end{itemize}
 
 % Alongside this unprecendented generality over architectures for LRP, we demonstrate that our framework enables new applications of LRP in
 % training-time interpretability, through layer relevance normalizations and attribution-based gradient weighting.
@@ -298,9 +301,45 @@ where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, re
 
 % This theoretical foundation underscores the flexibility and scalability of the promise-based approach, making it well-suited for modern deep learning models.
 
-\section{Methods}
+\section{Related Work}
+\subsection{Explainability Methods}
+Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
+differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
+chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
+but suffer from gradient saturation, gradient shattering, and linearity assumptions that fail to capture complex nonlinear interactions
+\cite{ancona2018towards, samek2021xaireview}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
+\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
+yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
+Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
+localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
+This positions LRP as a strong explainability method when used in the correct domains, as it does not suffer from these
+pitfalls due to its tight rooting in the model architecture and efficient computation requirements of a single backward
+pass \cite{samek2021xaireview}.
 
+\subsection{LRP Implementations}
+We examine and compare against Zennit, an explainability library built for PyTorch and focused on LRP and other rule-based
+methods \cite{anders2021zennit}. As of currently, Zennit is the most flexible, readily available, and up-to-date
+implementation of LRP, when compared to other libraries such as Captum \cite{kokhlikyan2020captum} and iNNvestigate
+\cite{alber2018innvestigate}, which both make LRP customization difficult \cite{anders2021zennit}. Anders et al. base
+their framework on the PyTorch \texttt{Module} structure, making great use of \texttt{Module Hooks} to transform the
+\texttt{Autograd} backward pass to propagate relevance instead of gradients. They also introduce multiple user-facing APIs
+(Module rules, Composites, and Canonizers) to enable the mapping of foundational LRP rules to new modules and architectural
+patterns. However, adapting these to unseen patterns is a task in and of itself.
+
+AttnLRP, a recent advancement which derived new propagation rules suitable for attention modules, provides an implementation
+named LxT (LRP eXplains Transformers) built on top of Zennit which highlights the limitations of this model-to-model
+configuration-based design \cite{achtibat2024attnlrp}. The list of architectures currently supported by LxT is limited to
+Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. Each model requires a custom copied implementation of
+itself which patches and hooks the Attention, Linear, Convolution, Normalization, and Activation modules to new functions
+which invoke the LRP propagation rules for those modules.
+
+While implementation of new rules is claimed to be trivial in Zennit, there is undoubtedly reasonable conceptual overhead
+to understanding how to correctly merge, split, and modify modules to fit within the framework, and additional management
+overhead with the requirement for new configurations and codebase semantics for adding support for other architectures.
+
+\section{Methods}
 \subsection{Operation-Level Relevance Propagation}
+\label{sec:op-level-lrp}
 We motivate shifting the level of abstraction of LRP from layer/module-wise to operation-wise through careful consideration of the modern-day deep learning
 paradigm and the practices used by existing LRP implementations. We define a module as an object lying at the maximal granularity
 within a model structure defined by a deep learning framework (e.g. Linear, Convolution, Attention, LayerNorm).
@@ -365,7 +404,7 @@ But for $c = a + b$, we see that $\frac{\partial a}{\partial c} = \frac{\partial
 This poses a critical problem for us, since without $a$ and $b$, we are then unable to compute $R_{a}$ and $R_{b}$ faithfully when we traverse an Addition Node, and this operation is not the only example of this case.
 
 \subsection{The Promise System}
-
+\label{sec:promise-system}
 When we reach a Node in traversal where propagation would halt from such a case, we instantiate a \textbf{Promise},
 which defers the propagation computations and retrieves the missing tensors from further down in the graph.
 
@@ -584,7 +623,7 @@ Since all computation paths are mutually exclusive, we have that $\delta \leq n$
 % \item \textbf{Transformer architectures}: $|V_P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
 % \end{itemize}
 
-Therefore, the total complexity is $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
+Therefore, the total complexity is in $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, the asymptotic class of a standard backward pass, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
 \end{proof}
 
 \subsubsection{Caching Promise Structures}
@@ -610,37 +649,56 @@ which only applied purpose-built LRP to CNNs and final FC layers, respectively, 
 \cite{sun2021lrpfinetuning}.
 
 \section{Experimental Setup}
+\label{sec:experiments}
 \textcolor{red}{Give a rundown of the hardware used}
 
-\subsection{Model and Dataset Selection}
-We used RoBERTa-large finetuned on the SQuAD-v2 question-answering dataset, DNABERT-2 finetuned on the GUE
-epigenetic marker prediction (EMP) task and H3 target, Llama-3.2-1B finetuned on the IMDB movie review dataset,
-and the ViT-b-16 and VGG16 base models to evaluate on the CIFAR-10 ImageNet dataset. Finetuned models were then used to
-evaluate examples from their respective datasets' validation splits.
+\subsection{Models and Datasets}
+To evaluate faithfulness, we used finetuned versions of RoBERTa-large (335M) \cite{liu2019roberta} and Flan-T5-large (780M) \cite{chung2022flant5}
+with the SQuAD-v2 question-answering dataset \cite{rajpurkar2018squadv2, chan2021robertasquadv2, lee2023flant5squadv2} for text.
+For visual tests, we used the base ViT-b-16 \cite{dosovitskiy2021vit} with the ImageNette-320 \cite{howard2019imagenette} test set and base
+VGG16 \cite{simonyan2015vgg} from TorchVision on the CIFAR-10 ImageNet dataset \cite{krizhevsky2009learning}.
+The transformer models were all downloaded from HuggingFace. Finetuning settings can be found in respective model cards linked in citations.
 
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
-  \caption{Comparing methods for VGG attributions.}
-\end{figure}
+\subsection{Evaluating Attributions in Question-Answering Tasks}
+We measure the faithfulness of attributions via the accuracy of the top-1 and top-2 attributed tokens being within the answer span predicted
+by the model, and the accuracy of the top-1 token being within the span of the ground truth answer. We include also the Intersection-over-Union
+(IoU) between the top-2 attributed tokens and the model predicted span. The top-2 accuracy was chosen since QA models produce only two primary
+signals for the answer span, not necessarily one for all tokens in the span. We use these top-2 metrics only on with model predictions since
+LRP is meant to attribute the model's decision process, not be a predictor of the answer itself. Though, alignment of the top-1 label accuracy
+and model exact match rate and F1 score can emphasize explainability strength of the attribution method.
+We make use of all answerable examples in the SQuADv2 validation set, and skip examples which the model blatantly predicts incorrectly (when
+the start index is after the end index). We run LRP-$\gamma$ with $\gamma_{linear} = 0.001$ for both models, and only enable AttnLRP rules
+for the Flan-T5 attributions. See Table~\ref{squadv2-table}
 
-\subsection{Measuring Faithfulness With Area Between Perturbation Curves}
+\subsection{Measuring Visual Attribution Faithfulness With Area Between Perturbation Curves}
 We measure faithfulness using the Area Between Perturbation Curves (ABPC), as proposed by \cite{schulz2020abpc}.
-In this metric, we first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
+We first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
 Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most relevant features from each input sample. We also do this inversely,
 masking/occluding the top-i least relevant features from each input sample, to compute the Least-Relevant First (LeRF) curve.
 The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
+All image inputs are 3-channel and 224x224 pixels in size. For each step, we occlude 1024 pixels (for the sake of computation time) from each
+image by replacing them with their values in a Gaussian-blurred version of the image ($\text{kernel} size=51$, $\sigma=20$). For ViT-b-16, we occlude
+the top 4 16x16 patches pooled by max relevance at each step, and for VGG16 we occlude the individual pixels. See Table~\ref{vit-table},
+Table~\ref{vgg-table}.
 
 \section{Results}
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=1.0\textwidth]{../documentation/vit_abpc_comparisons.png}
-  \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from the ImageNet CIFAR-10 test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
-\end{figure}
-
-\begin{table}
+\begin{table}[h]
 \begin{center}
-  \caption{ABPC and attribution efficiency metrics for ViT-b-16 experiments. 1000 examples from CIFAR-10 test set \cite{krizhevsky2009learning}.}
+  \caption{DynamicLRP Attribution faithfulness measured by top attributed token accuracy against model predictions and labels and IoU with
+  predictions with the entire SQuADv2 validation set. EM = Exact Match. Higher is better for all but last two columns. Columns marked with
+  (P) are w.r.t. model predictions, (L) are w.r.t. labels. Top-2 accuracy and IoU values in parentheses signify strict matching to only
+  the predicted start/end indices, and none of the indices between them. Non-parenthesized values here allow hits on indices within the span.}
+  \label{squadv2-table}
+  \begin{tabular}{ | c | c c c c c c c c | }
+    \hline
+    Model & EM & F1 & top-1 (L) & top-1 (P) & top-2 (P) & IoU (P) & Examples & Skipped \\
+    \hline
+    RoBERTa-large & 82.29 & 86.27 & 93.70 & 97.47 & 96.22 (88.95) & 92.70 (80.09) & 5844 & 45 \\
+    Flan-T5-large &  &  &  &  &  &  &  &  \\
+    \hline
+  \end{tabular}
+  \vspace{10pt}
+  \caption{ABPC and attribution efficiency metrics for ViT-b-16 experiments. 1000 examples from CIFAR-10 test set.}
   \label{vit-table}
   \begin{tabular}{ | c | c c c c c | }
     \hline
@@ -655,15 +713,12 @@ The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
     Ours & \textbf{1.46} & \textbf{1.78} & \textbf{0.32} & 9.74 & 1.6GB \\
     \hline
   \end{tabular}
-  \\ [0.5ex]
 \end{center}
 *N/A in the Speed column signifies that GPU memory limits caused thrashing and prevented the observation of method's true speed.
-\end{table}
-
-\begin{table}
+\vspace{10pt}
 \begin{center}
-  \caption{ABPC and attribution efficiency metrics for VGG experiments. 3800 examples from ImageNette (320px) validation set \cite{howard2019imagenette}}.
-  \label{vit-table}
+  \caption{ABPC and attribution efficiency metrics for VGG experiments. 3800 examples from ImageNette (320px) validation set.}
+  \label{vgg-table}
   \begin{tabular}{ | c | c c c c c | }
     \hline
     Method & ABPC ($\uparrow$) & Comprehensiveness ($\uparrow$) & Sufficiency ($\downarrow$) & Speed (it/s, $\uparrow$) & Peak VRAM ($\downarrow$) \\
@@ -676,17 +731,47 @@ The ABPC is then the difference of their integrals, or $AUC(LeRF) - AUC(MoRF)$.
     Ours & \textbf{1.77} & 2.65 & \textbf{0.88} & 21.79 & 2.3GB \\
     \hline
   \end{tabular}
-  \\ [0.5ex]
+\end{center}
+\end{table}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
+  \caption{Comparing methods for VGG attributions.}
+\end{figure}
+
+\subsection{Architecture-Specific Factors on LRP Performance}
+We present in Table~\ref{architecture-promises-table} the $d_{model}$, model depth, number of Promises, number of internal nodes in Promise paths, average Promise path
+length, Promise Density, and number of autograd nodes specific to each tested architecture.
+
+\begin{table}[h]
+\begin{center}
+  \caption{Architecture-specific values relating to the Promise System's impact on LRP efficiency. We include a separate row for the
+  (F)ine(T)uned version of Flan-T5-large which uses LoRA adapters, changing some of these values drastically.
+  Depth is in terms of either number of (T)ransformer layers or (C)onvolutional layers.}
+  \label{architecture-promises-table}
+  \begin{tabular}{ | c | c c c c c c c | }
+    \hline
+    Model & $d_{model}$ & Depth & Promises & Promise internal nodes & $\delta$ & $\rho$ & Total nodes \\
+    \hline
+    RoBERTa-large & 1024 & 24 (T) & 243 & 48 & 438 & 0.166 & 1465 \\ 
+    Flan-T5-large & 1024 & 48 (T) & 798 & 348 & 980 & 0.140 & 5713 \\ 
+    Flan-T5-large (FT) & 1024 & 50 (T) & 847 & 1524 & 2972 & 0.0777 & 10897 \\ 
+    ViT-b-16 & 768 & 1 (C) 12 (T) & 224 & 27 & 227 & 0.288 & 779 \\ 
+    VGG16 & 512 & 13 (C) & 32 & 0 & 32 & 0.356 & 90 \\ 
+    \hline
+  \end{tabular}
 \end{center}
 \end{table}
 
-
-\subsection{Comparing the Attribution Methods of Table 1}
-We see that among all the attribution methods tested, ours and AttnLRP stand among the top of the ABPC metrics. Comprehensiveness is defined as $AUC(y = baseline) - AUC(MoRF)$ and Sufficiency as $AUC(y = baseline) - AUC(LeRF)$.
+The text experiments of Table~\ref{squadv2-table} show DynamicLRP attributions to be strong explainers of model behaviour in LLM question answering.
+We compare these to the results obtained by Achtibat et al. from LxT (0.94 Top-1 accuracy, 0.84 IoU), though in computing IoU, they consider
+hits among the entire ground truth mask, whereas we compare against the model predicted mask and then only its endpoints.
+Meanwhile, we see that among all the attribution methods tested in Tables ~\ref{vit-table} and \ref{vgg-table}, ours and AttnLRP stand among the top of the ABPC metrics. Comprehensiveness is defined
+as $AUC(y = baseline) - AUC(MoRF)$ and Sufficiency as $AUC(y = baseline) - AUC(LeRF)$.
 
 We demonstrate that DynamicLRP is as faithful than the leading implementation of AttnLRP in the ViT experiment,
 and much better than all other alternative methods in every category present, barring the speed of InputXGradient.
-In addition, DynamicLRP clearly outperforms the Zennit \cite{anders2021zennit} implementation in the VGG evaluations as well.
+In addition, DynamicLRP clearly outperforms the Zennit \cite{anders2021zennit} implementation in the VGG evaluations.
 We attribute this improvement to our LRP being able to capture a more holistic picture of the entire model data flow.
 % The the inclusion of the residual stream's contributions to the output within the attribution computation is likely a large factor in this. Being a crucial pathway which allows the transformer architecture to shape its predictions,
 % it lends itself well in nature to LRP. Later layers, which get visited first in LRP, will combine with residual outputs that are sequentially and semantically closer the final output, acting as a relevance boost to the most significant
@@ -697,6 +782,11 @@ What we also demonstrate is the framework's capability to adopt rules defined by
 We used $\gamma$-LRP for Convolutional and Linear layers ($\gamma_{conv} = 130$, $\gamma_{linear} = 0.001$), and attributed attention modules using CP-LRP, as also suggested by the AttnLRP authors for image models.
 
 \section{Discussion}
+
+The recorded values from Table~\ref{architecture-promises-table} provide insight on how the Promise System affects runtime and provide
+empirical $|V_P|$ and $\delta$ to help reason about the theoretical memory and runtime complexities.
+The most striking observation comes from the difference in $\rho$ between the two versions of Flan-T5-large. While the finetuned T5 has
+nearly twice as many autograd nodes and much higher $\delta$, the number of Promises does not increase by nearly the same scale.
 
 The memory improvement of AttnLRP over our LRP is likely due to the fact that it does not require the full autograd
 computation graph to be stored, only the subgraphs associated with the above mentioned layers/modules, as well as activations
@@ -1873,5 +1963,13 @@ traversal and incorrect accumulation of relevance from multiple Promise Branches
 all Promises is bounded by $\delta = \sum_{v_p \in V_P} d(v_p) \leq |V|$, as stated 
 in Theorem 1 (\ref{sec:lrp-complexity}). Each node contributes to at most one Promise's internal chain, preventing 
 double-counting in complexity analysis.
+
+\subsection{Attribution Faithfulness Evaluation Figures}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=1.0\textwidth]{../documentation/vit_abpc_comparisons.png}
+  \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from the ImageNet CIFAR-10 test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
+\end{figure}
 
 \end{document}

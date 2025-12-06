@@ -5,7 +5,6 @@ from .util import (
     decompose_addmmbackward,
     decompose_convbackward,
     decompose_addcmulbackward,
-    LRPCheckpoint,
 )
 
 DECOMPOSABLE_FUNCTIONS = (

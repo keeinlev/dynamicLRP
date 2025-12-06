@@ -1,6 +1,6 @@
 import torch
 
-DISABLED_HEAD_EVAL = False
+DISABLED_HEAD_EVAL = True
 NUM_HEADS = 12
 HEAD_DIM = 64
 

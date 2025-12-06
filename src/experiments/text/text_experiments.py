@@ -7,7 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
-from captum.attr import IntegratedGradients, GradientShap, LayerIntegratedGradients, LayerGradientShap
+# from captum.attr import IntegratedGradients, GradientShap, LayerIntegratedGradients, LayerGradientShap
 from sklearn.metrics import auc
 
 
@@ -24,7 +24,7 @@ from src.lrp_engine import LRPEngine, checkpoint_hook
 from src.lrp_engine.lrp_prop_fcns import LRPPropFunctions
 # Try importing lxt, handle if it fails (though it should succeed based on setup)
 try:
-    from lxt.efficient import monkey_patch
+    from lxt.explicit.models.llama import LlamaForSequenceClassification, attnlrp
 except ImportError:
     print("Warning: Could not import lxt.efficient.monkey_patch. LXT baseline might fail.")
 
@@ -40,6 +40,7 @@ def get_model_and_tokenizer(model_name, task, device):
             torch_dtype=torch.bfloat16,
             device_map=device
         )
+        # attnlrp.register(model)
         model.config.pad_token_id = model.config.eos_token_id
     else: # wiki
         model = AutoModelForCausalLM.from_pretrained(
@@ -94,58 +95,58 @@ def get_embedding_layer(model):
             return model.model.embeddings.word_embeddings
     return None
 
-def run_ig(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
-    # Integrated Gradients on Embeddings
-    # We wrap the model to handle dtype and output selection
-    def forward_wrapper(inputs_embeds):
-        # inputs_embeds might be float32 from Captum, model might be bfloat16
-        if inputs_embeds.dtype != model.dtype:
-            inputs_embeds = inputs_embeds.to(model.dtype)
+# def run_ig(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
+#     # Integrated Gradients on Embeddings
+#     # We wrap the model to handle dtype and output selection
+#     def forward_wrapper(inputs_embeds):
+#         # inputs_embeds might be float32 from Captum, model might be bfloat16
+#         if inputs_embeds.dtype != model.dtype:
+#             inputs_embeds = inputs_embeds.to(model.dtype)
         
-        outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
-        logits = outputs.logits
+#         outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+#         logits = outputs.logits
         
-        # Select the target logit
-        if logits.dim() == 2: # Classification [batch, num_labels]
-            return logits[:, target]
-        else: # NWP [batch, seq, vocab]
-            # Captum expands batch dim, so we use : for batch
-            return logits[:, target_idx, target]
+#         # Select the target logit
+#         if logits.dim() == 2: # Classification [batch, num_labels]
+#             return logits[:, target]
+#         else: # NWP [batch, seq, vocab]
+#             # Captum expands batch dim, so we use : for batch
+#             return logits[:, target_idx, target]
 
-    inputs_embeds = embedding_layer(input_ids).detach()
-    # Run in float32 for Captum stability
-    inputs_embeds_float = inputs_embeds.float()
-    inputs_embeds_float.requires_grad = True
+#     inputs_embeds = embedding_layer(input_ids).detach()
+#     # Run in float32 for Captum stability
+#     inputs_embeds_float = inputs_embeds.float()
+#     inputs_embeds_float.requires_grad = True
     
-    ig = IntegratedGradients(forward_wrapper)
-    attributions = ig.attribute(inputs_embeds_float, n_steps=50)
-    return attributions.sum(dim=-1).detach().cpu()
+#     ig = IntegratedGradients(forward_wrapper)
+#     attributions = ig.attribute(inputs_embeds_float, n_steps=50)
+#     return attributions.sum(dim=-1).detach().cpu()
 
-def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
-    # GradientSHAP on Embeddings
-    def forward_wrapper(inputs_embeds):
-        if inputs_embeds.dtype != model.dtype:
-            inputs_embeds = inputs_embeds.to(model.dtype)
+# def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
+#     # GradientSHAP on Embeddings
+#     def forward_wrapper(inputs_embeds):
+#         if inputs_embeds.dtype != model.dtype:
+#             inputs_embeds = inputs_embeds.to(model.dtype)
         
-        outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
-        logits = outputs.logits
+#         outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+#         logits = outputs.logits
         
-        if logits.dim() == 2:
-            return logits[:, target]
-        else:
-            return logits[:, target_idx, target]
+#         if logits.dim() == 2:
+#             return logits[:, target]
+#         else:
+#             return logits[:, target_idx, target]
 
-    inputs_embeds = embedding_layer(input_ids).detach()
-    inputs_embeds_float = inputs_embeds.float()
-    inputs_embeds_float.requires_grad = True
+#     inputs_embeds = embedding_layer(input_ids).detach()
+#     inputs_embeds_float = inputs_embeds.float()
+#     inputs_embeds_float.requires_grad = True
     
-    baseline = torch.zeros_like(inputs_embeds_float)
+#     baseline = torch.zeros_like(inputs_embeds_float)
     
-    gs = GradientShap(forward_wrapper)
-    attributions = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=50)
-    return attributions.sum(dim=-1).detach().cpu()
+#     gs = GradientShap(forward_wrapper)
+#     attributions = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=50)
+#     return attributions.sum(dim=-1).detach().cpu()
 
-def run_lxt(model, input_ids, attention_mask, target, embedding_layer):
+def run_lxt(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
     # LRP-eXplains-Transformers
     # We need to monkey patch the model. 
     # Note: Monkey patching modifies the model class. This might interfere with other methods if run sequentially on the same model instance.
@@ -159,26 +160,29 @@ def run_lxt(model, input_ids, attention_mask, target, embedding_layer):
     # The prompt says: "Patch module first... Forward pass... Backward...".
     
     # We will assume we can patch. 
-    monkey_patch(model)
+    # monkey_patch(model)
     
     inputs_embeds = embedding_layer(input_ids).detach()
     inputs_embeds.requires_grad = True
     
     outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+    logits = outputs.logits
+    pred_idx = logits.argmax()
     
     if target is not None:
         # For classification/NWP, we want relevance of the target class/token
         # outputs.logits is [batch, seq_len, vocab] or [batch, num_labels]
         
         if outputs.logits.dim() == 2: # Classification
-            score = outputs.logits[0, target]
+            score = outputs.logits.max()
+            # score = outputs.logits[0, target]
         else: # NWP (last token)
             score = outputs.logits[0, -1, target]
             
         score.backward()
         
         relevance = (inputs_embeds * inputs_embeds.grad).sum(-1)
-        return relevance.detach().cpu()
+        return relevance.detach().cpu(), pred_idx
     return None
 
 def run_dynamic_lrp(model, input_ids, attention_mask, target, lrp, target_idx=-1):
@@ -188,7 +192,7 @@ def run_dynamic_lrp(model, input_ids, attention_mask, target, lrp, target_idx=-1
     with torch.enable_grad():
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
         logits = outputs.logits
-        
+
         if logits.dim() == 2: # Classification
             target_logit = logits[0, target]
         else: # NWP
@@ -196,9 +200,11 @@ def run_dynamic_lrp(model, input_ids, attention_mask, target, lrp, target_idx=-1
             
         pass
     
-    checkpoint_rels = lrp.run(target_logit.unsqueeze(0))
+    pred_idx = logits.argmax()
     
-    return checkpoint_rels[1][0].detach().cpu()
+    checkpoint_rels = lrp.run(target_logit.unsqueeze(0))
+
+    return checkpoint_rels[1][0].detach().cpu(), pred_idx
 
 def evaluate_faithfulness(model, input_ids, attention_mask, attributions, target, baseline_token_id, target_idx=-1, steps=10):
     # MoRF: Remove most relevant first
@@ -299,7 +305,7 @@ def main():
     # Load Data
     print(f"Loading dataset {args.dataset}...")
     dataset = load_data(args.dataset, tokenizer, num_samples=args.samples, seed=args.seed)
-    
+
     results = []
     
     # Baselines
@@ -307,15 +313,14 @@ def main():
         # "IG": run_ig,
         # "GradSHAP": run_gradshap,
         "DynamicLRP": run_dynamic_lrp,
+        # "LXT": run_lxt,
     }
     
     # Add LXT if available
-    # if "lxt.efficient" in sys.modules:
-    #     methods["LXT"] = run_lxt
 
     print("Starting evaluation...")
 
-    lrp = LRPEngine(dtype=torch.bfloat16)
+    lrp = LRPEngine(use_attn_lrp=True, dtype=torch.bfloat16)
     
     for i in tqdm(range(len(dataset))):
         sample = dataset[i]
@@ -341,14 +346,14 @@ def main():
         baseline_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
         
         # Run non-destructive methods first
-        current_methods = {k: v for k, v in methods.items() if k != "LXT"}
+        current_methods = {k: v for k, v in methods.items()}
         
         for method_name, method_fn in current_methods.items():
             try:
-                if method_name in ["IG", "GradSHAP"]:
-                    attributions = method_fn(model, input_ids, attention_mask, target, embedding_layer, target_idx=target_idx)
+                if method_name in ["IG", "GradSHAP", "LXT"]:
+                    attributions, pred_idx = method_fn(model, input_ids, attention_mask, target, embedding_layer, target_idx=target_idx)
                 elif method_name == "DynamicLRP":
-                    attributions = method_fn(model, input_ids, attention_mask, target, lrp, target_idx=target_idx)
+                    attributions, pred_idx = method_fn(model, input_ids, attention_mask, target, lrp, target_idx=target_idx)
                 
                 morf_auc, lerf_auc = evaluate_faithfulness(
                     model, input_ids, attention_mask, attributions[0], target, baseline_token_id, target_idx=target_idx
@@ -357,6 +362,9 @@ def main():
                 results.append({
                     "method": method_name,
                     "sample_id": i,
+                    "pred_idx": pred_idx,
+                    "label_idx": target,
+                    "correct_pred": int(pred_idx == target),
                     "morf_auc": morf_auc,
                     "lerf_auc": lerf_auc
                 })
@@ -389,13 +397,13 @@ def main():
     # Save results
     df = pd.DataFrame(results)
     os.makedirs(args.output_dir, exist_ok=True)
-    df.to_csv(os.path.join(args.output_dir, f"{args.dataset}_results.csv"), index=False)
+    df.to_csv(os.path.join(args.output_dir, f"{args.dataset}_results_our_attnlrp.csv"), index=False)
     
     # Summary
-    summary = df.groupby("method")[["morf_auc", "lerf_auc"]].mean()
+    summary = df.groupby(["method", "correct_pred"])[["morf_auc", "lerf_auc"]].mean()
     print("\nResults Summary:")
     print(summary)
-    summary.to_csv(os.path.join(args.output_dir, f"{args.dataset}_summary.csv"))
+    summary.to_csv(os.path.join(args.output_dir, f"{args.dataset}_summary_our_attnlrp.csv"))
 
 if __name__ == "__main__":
     main()

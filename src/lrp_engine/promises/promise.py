@@ -59,6 +59,7 @@ class PromiseBucket:
         self.start_nodes_to_promise : dict[int, Promise] = {}
         self.leaf_promises : list[Promise] = []
         self.ind_to_node = {}
+        self.all_promises = []
     
     def repair_all_parent_child_connections(self):
         """Ensures that every Promise is linked to any Promises that see it as a child or parent."""
@@ -176,6 +177,7 @@ class Promise:
         self.path : set[int] = set()
 
         self.bucket : PromiseBucket = bucket
+        bucket.all_promises.append(self)
 
         if traversal_ind not in bucket.start_nodes_to_promise:
             # This implicitly makes it so that if a Node had a pre-promise associated to it, but also receives
@@ -472,7 +474,7 @@ class Promise:
             self.compile_fwd_bwd()
 
         if isinstance(value, torch.Tensor):
-            self._setarg(self.fwd(value))
+            self._setarg(self.fwd(value.detach()))
         else:
             self._setarg(0.0)
         # self.promise["args"][self.idx] = self.fwd(value)

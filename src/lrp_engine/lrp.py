@@ -211,6 +211,9 @@ class LRPEngine:
             if DEBUG:
                 print(f"Propagation took {time.time() - start_time}s")
 
+            if torch.cuda.max_memory_reserved() > 5368709120: # 5GB
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
             return res
 
     def _run_lrp_first_pass(self, root_nodes: tuple[torch.Tensor], starting_relevances: tuple[torch.Tensor]):
@@ -639,6 +642,9 @@ class LRPEngine:
             for node in param_nodes:
                 param_node_inds.append(node.metadata["topo_ind"])
                 param_node_vals.append(node.metadata["relevance"])
+                node.metadata["relevance"] = None
+            for node in checkpoints:
+                node.metadata["relevance"] = None
         except KeyError as e:
             print(f"Some checkpoints were not reached during traversal, see metadata objects: {[ node.metadata for node in checkpoints ]}")
             return curnode, checkpoints, in_adj_list, out_adj_list, e
@@ -729,7 +735,7 @@ class LRPEngine:
 
             self.node_preprocess(node)
 
-            rel = tuple([ elem if i in input_frontier[node_ind] else None for i, elem in list(input_frontier[node_ind].items()) ])
+            rel = tuple([ input_frontier[node_ind][i] if i in input_frontier[node_ind] else None for i in range(max(list(input_frontier[node_ind].keys())) + 1) ])
             # if len(rel) == 1:
             #     rel = rel[0]
 
@@ -822,5 +828,8 @@ class LRPEngine:
         checkpoint_vals = [ checkpoint.metadata["relevance" ] for checkpoint in checkpoints ]
 
         param_node_vals = [ ind_to_node[node_ind].metadata["relevance"] for node_ind in param_node_inds ]
+
+        for node in checkpoints + [ ind_to_node[node_ind] for node_ind in param_node_inds ]:
+            node.metadata["relevance"] = None
 
         return checkpoint_vals, param_node_vals

@@ -14,7 +14,7 @@ tasks = {
     ## The keys here are TASKS
     "EMP": [
         ## The strings in here are TARGETS
-    #     "H3",
+        "H3",
     #     "H3K14ac",
     #     "H3K36me3",
     #     "H3K4me1",
@@ -70,7 +70,7 @@ for task, targets in list(tasks.items()):
         fig, axs = plt.subplots((len(metrics) + 1) // 2, 2, figsize=(10,10))
         fig.subplots_adjust(top=1.0)
         
-        with open(os.path.join(results_path, f"DNABERT2_{task}_{target}", "disabled_head_results.json"), "r") as fileIn:
+        with open(os.path.join(results_path, f"DNABERT2_{task}_{target}", "dh", "disabled_head_results.json"), "r") as fileIn:
             results = json.load(fileIn)
 
         # Parse the results JSON file, organize into the metric_matrices map
@@ -90,7 +90,7 @@ for task, targets in list(tasks.items()):
         fig.suptitle(f"{task}-{target} task single head disabling evaluation results")
         fig.tight_layout()
 
-        fig_save_path = os.path.join("eval_heatmaps", task)
+        fig_save_path = os.path.join("../attribution_guided_training", "eval_heatmaps")
         if not os.path.isdir(fig_save_path):
             os.mkdir(fig_save_path)
         fig.savefig(os.path.join(fig_save_path, f"{task}_{target}.png"))

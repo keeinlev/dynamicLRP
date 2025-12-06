@@ -17,7 +17,7 @@ class SumBackwardPromise(DummyPromise):
                 saved_dim = list(saved_dim)
             
             for i in range(len(saved_dim)):
-                saved_dim[i] = handle_neg_index(saved_dim, len(self.fwd_shape))
+                saved_dim[i] = handle_neg_index(saved_dim[i], len(self.fwd_shape))
 
             self.dim = tuple(saved_dim)
             self.sum_type = 1

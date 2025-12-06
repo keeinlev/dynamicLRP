@@ -6,25 +6,25 @@ from functools import reduce
 DEBUG = False
 
 # For denominator stability in relevance distribution
-epsilon = 10e-6
+epsilon = 10e-12
 
-def renormalize_epsilon(rz, rx, ry):
-    """Renormalizes output relevances after dividing by a denominator with epsilon added to preserve conservation"""
-    scale = rz / (rx + ry)
-    return torch.nan_to_num(rx * scale, nan=0.0), torch.nan_to_num(ry * scale, nan=0.0)
+# def renormalize_epsilon(rz, rx, ry):
+#     """Renormalizes output relevances after dividing by a denominator with epsilon added to preserve conservation"""
+#     scale = rz / (rx + ry)
+#     return torch.nan_to_num(rx * scale, nan=0.0), torch.nan_to_num(ry * scale, nan=0.0)
 
-def renormalize_epsilon_scalar(rz, rx, ry):
-    """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
-    scale = rz.nansum() / (rx.nansum() + ry.nansum())
-    return rx * scale, ry * scale
+# def renormalize_epsilon_scalar(rz, rx, ry):
+#     """Renormalizes output relevances which have different shapes by using a scalar renormalization factor based on sums"""
+#     scale = rz.nansum() / (rx.nansum() + ry.nansum())
+#     return rx * scale, ry * scale
 
-def shift_and_renormalize(rz, rx, alpha=0.5):
-    """Shifts rx by alpha in the positive direction, then renormalizes rx to rz via scalar sums"""
-    # if rx.max() - rx.min() <= rz.sum():
-    #   return rx
-    rx = rx + alpha
-    scale = rz.nansum() / rx.nansum()
-    return rx * scale
+# def shift_and_renormalize(rz, rx, alpha=0.5):
+#     """Shifts rx by alpha in the positive direction, then renormalizes rx to rz via scalar sums"""
+#     # if rx.max() - rx.min() <= rz.sum():
+#     #   return rx
+#     rx = rx + alpha
+#     scale = rz.nansum() / rx.nansum()
+#     return rx * scale
 
 
 # Handling AddMmBackward0 is not the exact same as just AddBackward0. The calculation of the in-relevances
@@ -173,9 +173,13 @@ def merge_input_shapes(grad_fn):
 
     return out_shape
 
-def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, w_transposed=True):
+def epsilon_lrp_matmul(x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, w_transposed=True, bilinear=False):
     sign = ((z == 0.).to(z) + z.sign())
-    z_stabilized = 2 * z + epsilon * sign
+
+    if bilinear:
+        z_stabilized = 2 * z + epsilon * sign
+    else:
+        z_stabilized = z + epsilon * sign
     tmp = r / z_stabilized
 
     if w_transposed:
@@ -195,7 +199,7 @@ def gammma_lrp_matmul_grad(x: torch.Tensor, w: torch.Tensor, r: torch.Tensor, fi
     rin_input = rin_input
 
     rin_weight = w * (x.t() @ r) # s o
-    rin_weight = rin_weight / 2
+    rin_weight = rin_weight
 
     return relevance_filter(rin_input, filter_val), rin_weight
 
@@ -209,14 +213,15 @@ def gamma_lrp_conv2d_grad(conv_T: Callable, module_kwargs: dict, x: torch.Tensor
     grad_w = torch.nn.grad.conv2d_weight(x, w.shape, r, **{k:v for k,v in list(module_kwargs.items()) if k != "output_padding"})
     r_weight = w * grad_w
 
-    return r_input, r_weight / 2
+    return r_input, r_weight
 
 def gamma_lrp_general(module_op: Callable, module_T_op: Callable, module_kwargs: dict, x: torch.Tensor, w: torch.Tensor, z: torch.Tensor, r: torch.Tensor, gamma, filter_val=1.0):
     """Analytical Gamma-LRP using clamped input and weights"""
-    x = x.detach()
-    w = w.detach()
-    z = z.detach()
-    r = r.detach()
+    if not r.requires_grad:
+        x = x.detach()
+        w = w.detach()
+        z = z.detach()
+        r = r.detach()
 
     # Create clamped components, track each one individually for correct gamma-LRP
     x_pos = x.clamp(min=0.0)
@@ -279,9 +284,9 @@ def gamma_lrp_general(module_op: Callable, module_T_op: Callable, module_kwargs:
     rins_x_w = reduce(lambda x, y: (x[0] + y[0], x[1] + y[1]), rins_x_w)
 
     if module_T_op is None:
-        return rins_x_w[0], rins_x_w[1]
+        return relevance_filter(rins_x_w[0], filter_val), rins_x_w[1]
     else:
-        return rins_x_w[0], rins_x_w[1], 0.0
+        return relevance_filter(rins_x_w[0], filter_val), rins_x_w[1], 0.0
 
     # THE ABOVE IS MEANT TO BE EQUIVALENT TO THE FOLLOWING:
     # gradients = torch.autograd.grad(

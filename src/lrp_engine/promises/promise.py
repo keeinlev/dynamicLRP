@@ -52,11 +52,12 @@ except ImportError:
 class PromiseBucket:
     """Holder for all Promises used for a certain model LRP."""
     dtype = torch.float32
+    with_grad = False
 
     def __init__(self):
         self.all_inner_nodes : set[int] = set()
         self.start_nodes_to_promise : dict[int, Promise] = {}
-        self.leaf_promises = []
+        self.leaf_promises : list[Promise] = []
         self.ind_to_node = {}
     
     def repair_all_parent_child_connections(self):
@@ -85,12 +86,12 @@ class PromiseBucket:
                 if type(node).__name__ == "CatBackward0":
                     if "shapes" not in node.metadata:
                         # Refresh the shapes of the cat arguments
-                        node.metadata["shapes"] = [ out.shape for out in node(torch.rand(node._input_metadata[0].shape)) ]
+                        node.metadata["shapes"] = [ out.shape for out in node(torch.rand(node._input_metadata[0].shape, requires_grad=PromiseBucket.with_grad)) ]
                     curr_promise.fwd_shape = node.metadata["shapes"][curr_promise.idx]
                 else:
                     curr_promise.fwd_shape = node._input_metadata[0].shape
                 
-                curr_promise.set_rout(torch.zeros(node._input_metadata[0].shape, dtype=curr_promise.rout.dtype, device=curr_promise.rout.device))
+                curr_promise.set_rout(torch.zeros(node._input_metadata[0].shape, dtype=curr_promise.rout.dtype, device=curr_promise.rout.device, requires_grad=PromiseBucket.with_grad))
 
                 if hasattr(curr_promise, "refresh_metadata"):
                     curr_promise.refresh_metadata(node)
@@ -108,6 +109,7 @@ class PromiseBucket:
             p.promise["complete"] = False
             p.promise["ready"] = False
             p.promise["pending_parents"] = len(p.parents)
+            p.promise["tail_nodes"] = None
 
 def ensure_dtype(func):
     def wrapper(*args, **kwargs):
@@ -271,6 +273,7 @@ class Promise:
     def fwd(self, x):
         """Applies all operations to the operand found from a branch to the origin of the Promise."""
         for fcn in self.compiled_fwd[::-1]:
+            x = x.detach()
             x = fcn(x)
         return x
 
@@ -339,23 +342,30 @@ class Promise:
     def set_rout(self, new_rout):
         self.promise["rout"] = new_rout
 
-    @ensure_dtype
     @abstractmethod
     def _setarg(self, value):
         """Function that actually changes the value of self.promise["args"][self.idx].
         Some Promise types may require unique behaviour."""
+        ## YOU NEED TO ADD @ensure_dtype TO CUSTOM PROMISE IMPLS OF THIS FCN
         ...
 
-    @ensure_dtype
     @abstractmethod
     def set_rin(self, new_rin):
         """Like _setarg, sets self.promise["rins"][self.idx], but some Promise types need custom behaviour."""
+        ## YOU NEED TO ADD @ensure_dtype TO CUSTOM PROMISE IMPLS OF THIS FCN
         ...
 
     @ensure_dtype
     def accumulate_rout(self, new_rout, parent_idx=None):
         assert type(new_rout) == torch.Tensor, f"New rout was not a tensor, but {type(new_rout)}"
-        self.promise["rout"] = self.rout + new_rout # Important to do it this way to broadcast
+        if len(self.rout.shape) == len(new_rout.shape) and self.rout.shape[0] != new_rout.shape[0] and self.rout.shape[1:] == new_rout.shape[1:]:
+            # Broadcastable argument shape was incorrectly inferred at Promise creation, fix
+            self.promise["rout"] = self.rout.sum(dim=0)
+        if self.rout.shape == new_rout.shape[1:]:
+            # Broadcastable argument shape was incorrectly inferred for incoming relevance, fix
+            new_rout = new_rout.sum(dim=0)
+        
+        self.promise["rout"] = self.rout + new_rout # Important to do it this way to broadcast from new_rout shape to self.rout shape.
 
     def exec_bwd(self) -> torch.Tensor:
         """Perform the saved backward execution chain to propagate relevance back down the branch.
@@ -376,7 +386,7 @@ class Promise:
         Saves the results in self.promise["rins"]."""
         ...
 
-    def trigger_promise_completion(self, fwd_only=False, recompile=True):
+    def trigger_promise_completion(self, fwd_only=False, recompile=True, accumulate_leaf_promises=None):
         """Triggers the completion of a Promise tree from the bottom-up.
         If the Promise is ready, and it has parents that are not complete, it propagates its op_result as the arg for
         all of its parents, calling parent.setarg(self.op_result), and therefore triggering the completion of its parents
@@ -413,18 +423,20 @@ class Promise:
             curr_branch = self
             i = 0
             while (curr_branch != self or i == 0) and curr_branch is not None:
+                if not curr_branch.children and accumulate_leaf_promises is not None:
+                    accumulate_leaf_promises.append(curr_branch)
                 for child_promise in curr_branch.children:
                     # TODO: I think a Promise can only have one child...
                     if isinstance(child_promise, tuple): # Branches of the same child promise
                         child_promise[0].pending_parents -= 1
                         child_promise[0].accumulate_rout(all_branch_res[i], child_promise[0].parent_idxs.get(self))
                         if child_promise[0].pending_parents == 0:
-                            child_promise[0].trigger_promise_completion()
+                            child_promise[0].trigger_promise_completion(accumulate_leaf_promises=accumulate_leaf_promises)
                     else:
                         child_promise.pending_parents -= 1
                         child_promise.accumulate_rout(all_branch_res[i], child_promise.parent_idxs.get(self))
                         if child_promise.pending_parents == 0:
-                            child_promise.trigger_promise_completion()
+                            child_promise.trigger_promise_completion(accumulate_leaf_promises=accumulate_leaf_promises)
                 curr_branch = curr_branch.other_branch
                 i += 1
 
@@ -434,7 +446,8 @@ class Promise:
             op_result = self.op_result
             for i, parent in enumerate(self.parents):
                 # Setting the arg of all parents using the op_result of this Promise.
-                parent.promise["tail_nodes"].update(self.promise["tail_nodes"])
+                if parent.promise["tail_nodes"] is not None:
+                    parent.promise["tail_nodes"].update(self.promise["tail_nodes"])
                 if parent.arg is None:
                     if isinstance(op_result, tuple):
                         parent.setarg(op_result[self.parent_idxs[parent]], fwd_only=fwd_only, recompile=recompile)
@@ -445,7 +458,8 @@ class Promise:
         """Set the corresponding arg for this branch and check if the promise is ready.
         If it is ready, trigger its completion."""
         if arg_node and ret_fcn:
-            self.promise["tail_nodes"].add(arg_node)
+            if self.promise["tail_nodes"] is not None:
+                self.promise["tail_nodes"].add(arg_node)
             self.arg_node_retrieval_fcn = ret_fcn
             self.bucket.leaf_promises.append(self)
             self.arg_node_ind = arg_node.metadata["topo_ind"]
@@ -457,7 +471,7 @@ class Promise:
             # Compile the functions
             self.compile_fwd_bwd()
 
-        if not isinstance(value, float) or value != 0.0:
+        if isinstance(value, torch.Tensor):
             self._setarg(self.fwd(value))
         else:
             self._setarg(0.0)

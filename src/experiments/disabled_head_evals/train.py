@@ -21,6 +21,11 @@ from peft import (
 
 from disable_head import make_hook, DISABLED_HEAD_EVAL
 
+import sys
+module_path = os.path.join(os.getcwd(), '../..')
+sys.path.append(module_path)
+from lrp_engine import LRPEngine, checkpoint_hook
+
 
 @dataclass
 class ModelArguments:
@@ -291,6 +296,11 @@ def train():
                                    train_dataset=train_dataset,
                                    eval_dataset=val_dataset,
                                    data_collator=data_collator)
+    
+    # model.bert.encoder.layer[0].attention.self.register_forward_hook(checkpoint_hook)
+    # trainer.train_lrp_engine = LRPEngine()
+    # trainer.eval_lrp_engine = LRPEngine()
+
     trainer.train()
 
     if training_args.save_model:

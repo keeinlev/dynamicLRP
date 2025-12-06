@@ -1,7 +1,7 @@
 import torch
 from ..util import (
     epsilon,
-    renormalize_epsilon_scalar,
+    # renormalize_epsilon_scalar,
 )
 from .dummy_promise import DummyPromise
 
@@ -54,4 +54,4 @@ class SumBackwardPromise(DummyPromise):
                 unsqueezed_shape = [1 if i in self.dim else s for i, s in enumerate(self.arg.shape)]
                 contribs = ratios * self.rout.reshape(unsqueezed_shape)
         
-        self.set_rin(renormalize_epsilon_scalar(self.rout, contribs, torch.zeros_like(contribs))[0])
+        self.set_rin(contribs)#renormalize_epsilon_scalar(self.rout, contribs, torch.zeros_like(contribs))[0])

@@ -53,11 +53,16 @@ class LRPEngine:
                  params_to_interpret=None,
                  no_recompile=False,
                  use_gamma=False,
+                 conv_gamma=100.0,
+                 mm_gamma=1.0,
                  use_z_plus=False,
+                 use_attn_lrp=False,
+                 use_bilinear_mm=False,
                  relevance_filter=1.0,
                  starting_relevance=None,
                  topk=1,
-                 dtype=torch.float32,):
+                 dtype=torch.float32,
+                 with_grad=False):
         assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
         self.out_adj_list : Union[set[Node], set[int]] = None
         self.topo_exec_order : list[int] = None
@@ -65,16 +70,30 @@ class LRPEngine:
         self.params_to_interpret : list[torch.Tensor] = params_to_interpret
         self.param_node_inds : list[int] = None
         self.no_recompile : bool = no_recompile
-        self.use_gamma : bool = use_gamma
+        self.use_gamma_conv : Union[bool, tuple[bool]] = use_gamma[0] if isinstance(use_gamma, tuple) else use_gamma
+        self.use_gamma_mm : Union[bool, tuple[bool]] = use_gamma[1] if isinstance(use_gamma, tuple) else use_gamma
+        self.conv_gamma = conv_gamma
+        self.mm_gamma = mm_gamma
         self.use_z_plus : bool = use_z_plus
+        self.use_attn_lrp : bool = use_attn_lrp
+        self.use_bilinear_mm : bool = use_attn_lrp or use_bilinear_mm
         self.relevance_filter : float = relevance_filter
         self.promise_bucket = PromiseBucket()
         self.conv_counter = 0
         self.mm_counter = 0
         self.starting_relevance = starting_relevance
         self.topk = topk
+        self.with_grad : bool = with_grad
         LRPPropFunctions.dtype = dtype
+        LRPPropFunctions.with_grad = with_grad
         PromiseBucket.dtype = dtype
+        PromiseBucket.with_grad = with_grad
+
+
+    @staticmethod
+    def get_model_operations(model_output):
+        g = make_graph(model_output)
+        return g[2], g[4]
     
     @staticmethod
     def group_and_categorize_inputs(input_tracker_list: list[tuple[Union[Promise, torch.Tensor], int]], run_mode: RunMode):
@@ -110,24 +129,31 @@ class LRPEngine:
         node_name = type(curnode).__name__
         if node_name[:-1] in self.promise_generating_nodes:
             curnode.metadata["bucket"] = self.promise_bucket
-        elif node_name == "DecomposedConvolutionBackward0":
+        if node_name == "DecomposedConvolutionBackward0":
             curnode.metadata["conv_layer"] = self.conv_counter
-            curnode.metadata["use_gamma"] = self.use_gamma
+            curnode.metadata["use_gamma"] = self.use_gamma_conv
+            curnode.metadata["gamma"] = self.conv_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
             self.conv_counter += 1
         elif node_name == "MmBackward0":
             curnode.metadata["mm_layer"] = self.mm_counter
-            curnode.metadata["use_gamma"] = self.use_gamma
+            curnode.metadata["use_gamma"] = self.use_gamma_mm
+            curnode.metadata["gamma"] = self.mm_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
             self.mm_counter += 1
+        elif node_name == "BmmBackward0":
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
+        elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0", "SoftmaxBackward0"]:
+            curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
 
     def run(self, output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor]):
         """Runs LRP by using the computation graph rooted at hidden_states"""
         self.conv_counter = 0
         self.mm_counter = 0
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.with_grad):
             if isinstance(output_tuple_or_tensor, torch.Tensor):
                 output_tuple_or_tensor = (output_tuple_or_tensor,)
             elif not isinstance(output_tuple_or_tensor, tuple) or not all(isinstance(ot, torch.Tensor) for ot in output_tuple_or_tensor):
@@ -170,10 +196,15 @@ class LRPEngine:
                     f"If overriding starting relevances, their shapes must match those of the model outputs, given {[ sr.shape for sr in relevances ]}, expected {[ ot.shape for ot in output_tuple_or_tensor ]}."
             start_time = time.time()
 
+            # if self.with_grad:
+            #     for r in relevances:
+            #         r.requires_grad_()
+
             # TODO: Add a graph hashing system to evaluate if a new model architecture has been given.
             if self.out_adj_list is None or self.topo_exec_order is None or self.fcn_map is None:
                 res = self._run_lrp_first_pass(output_tuple_or_tensor, relevances)
             else:
+                self.promise_bucket.clear_all()
                 res = self._run_lrp_subsequent_pass(output_tuple_or_tensor, relevances)
 
             if DEBUG:
@@ -211,7 +242,6 @@ class LRPEngine:
         root_nodes = updated_roots
 
         # Save these for now, param_node_inds and topo_exec_order get saved at the end.
-        # self.in_adj_list = in_adj_list
         self.out_adj_list = out_adj_list
         self.fcn_map = fcn_map
 
@@ -330,7 +360,8 @@ class LRPEngine:
                     # each NTM case breaks down into 2 sub-cases, revisiting Pre-Promise or not.
 
                     # Aggregate all inputs into one Tensor or Promise
-                    curnode_in_rel = sum(tensor_inputs)
+                    if tensor_inputs:
+                        curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
 
                     ####### PRE-PROMISE RETRIEVAL
                     # Consider that we traverse the same Node at most twice at this stage. Once possibly for PTM, and the second
@@ -624,14 +655,12 @@ class LRPEngine:
             promise_bucket.all_inner_nodes,
             param_node_inds
         )
-
-        if not DEBUG:
-            promise_bucket.clear_all()
         
         promise_bucket.repair_all_parent_child_connections()
 
         # Save for subsequent passes
         self.out_adj_list = index_based_out_adj_list
+        self.in_adj_list = index_based_in_adj_list
         self.topo_exec_order = topo_exec_order
         self.param_node_inds = param_node_inds
         self.params_to_interpret = None
@@ -705,6 +734,8 @@ class LRPEngine:
 
             if (promise := promise_bucket.start_nodes_to_promise.get(node_ind)) and isinstance(promise, Promise) and promise not in fulfilled_promises and \
                     promise.start_ind != promise.arg_node_ind:
+                # if promise.parents != []:
+                #     continue
                 if not promise.ready:
                     print(node_ind, promise.start_ind, promise.arg_node_ind)
                 assert promise.ready, f"During running of execution plan, promise was missing arg(s) {promise.promise}"
@@ -720,6 +751,13 @@ class LRPEngine:
                 if isinstance(promise.rout, float):
                     print(promise.promise, promise.start_ind)
                     raise TypeError
+                
+                # leaf_promises = []
+                # promise.trigger_promise_completion(accumulate_leaf_promises=leaf_promises)
+                # print(leaf_promises)
+                # for p in leaf_promises:
+                #     rin_landing_ind = p.arg_node_input_index(out_adj_list)
+                #     input_frontier[p.arg_node_ind][rin_landing_ind] += p.rin
                 promise.compute_rins()
 
                 # Do the same for other branches if applicable
@@ -742,8 +780,9 @@ class LRPEngine:
                     is_start = False
                 
                 promise.set_complete()
-                promise.clear_args_and_rout()
-                promise.clear_rins()
+                if not DEBUG:
+                    promise.clear_args_and_rout()
+                    promise.clear_rins()
             else:
                 if len(rel) == 1:
                     rel = rel[0]
@@ -782,8 +821,5 @@ class LRPEngine:
         checkpoint_vals = [ checkpoint.metadata["relevance" ] for checkpoint in checkpoints ]
 
         param_node_vals = [ ind_to_node[node_ind].metadata["relevance"] for node_ind in param_node_inds ]
-
-        if not DEBUG:
-            promise_bucket.clear_all()
 
         return checkpoint_vals, param_node_vals

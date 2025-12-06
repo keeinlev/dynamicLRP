@@ -15,3 +15,7 @@ aclImdb
 *.blg
 *.gz
 *.pt
+imagenette2-320
+heatmaps
+src/experiments/*.txt
+src/experiments/*.png

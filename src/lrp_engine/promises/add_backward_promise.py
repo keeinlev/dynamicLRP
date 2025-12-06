@@ -1,8 +1,12 @@
+import torch
 from ..util import (
     epsilon,
-    renormalize_epsilon,
+    # renormalize_epsilon,
 )
-from .promise import Promise
+from .promise import (
+    Promise,
+    ensure_dtype
+)
 
 class AddBackwardPromise(Promise):
     """
@@ -33,15 +37,16 @@ class AddBackwardPromise(Promise):
     def rin(self):
         return self.promise["rins"][self.idx]
 
-    def set_rout(self, new_rout):
-        self.promise["rout"] = new_rout
-
+    @ensure_dtype
     def set_rin(self, new_rin):
         self.promise["rins"][self.idx] = new_rin
 
     def compute_rins(self):
         """Compute base branch relevances based on sum of squares ratios."""
         assert self.ready and self.pending_parents == 0, f"Expected Promise {self.id}, {self} to be ready and have 0 pending parents, instead the following state was found: ready: {self.ready}, pending_parents: {self.pending_parents}"
+        if (non_residual_idx := self.promise.get("non_residual_idx")) is not None:
+            self.promise["rins"][non_residual_idx] = self.promise["rout"]
+            self.promise["rins"][1 - non_residual_idx] = torch.zeros_like(self.promise["args"][1 - non_residual_idx])
         arg1, arg2 = self.promise["args"]
         r = self.promise["rout"]
         if not isinstance(arg1, float):
@@ -49,9 +54,11 @@ class AddBackwardPromise(Promise):
         if not isinstance(arg2, float):
             arg2 = arg2.abs()
         denom = arg1 + arg2 + epsilon
+
         r1 = (arg1 / denom) * r
         r2 = (arg2 / denom) * r
-        self.promise["rins"][0], self.promise["rins"][1] = renormalize_epsilon(r, r1, r2)
+        self.promise["rins"][0], self.promise["rins"][1] = r1, r2#renormalize_epsilon(r, r1, r2)
 
+    @ensure_dtype
     def _setarg(self, value):
         self.promise["args"][self.idx] = value

@@ -1,11 +1,30 @@
 # Dynamic Layerwise Relevance Propagation
 ## By Kevin Lee and Dr. Pablo M. Arias
 ## June - December 2025
+## [Paper (submission pending)](https://arxiv.org/submit/7057400/view)
+
+![Operation-level LRP](documentation/op-level-lrp-motivation.png)
+
 A framework based on <a href="#ref1">Bach et al.'s 2015 LRP method</a>, incorporating work done by <a href="#ref2">Achtibat et al. (2024) in extending LRP to Transformers</a>, and applied to methodologies inspired by <a href="#ref3">Michel et al.</a> and <a href="#ref4">Voita et al.</a>'s work in analyzing disproportionate importance across heads in multi-head attention.
 
-Improves upon theoretical and currently implemented LRP methods by decomposing LRP's defined rules to a per-operation level to enable model-agnostic capability. This is similar to how libraries like <a href="#ref5">PyTorch's autograd</a> generalized the <a href="#ref6">gradient backpropagation method</a> to any model architecture programmable in their framework. We thus provide a central platform for the implementation of new rules based on individual tensor operations created for emerging machine learning architectures.
+Improves upon theoretical and currently implemented LRP methods (<a href="#ref5">Zennit</a> being the latest) by decomposing LRP's defined rules to a per-operation level to enable model-agnostic capability. This is similar to how libraries like <a href="#ref6">PyTorch's autograd</a> generalized the <a href="#ref7">gradient backpropagation method</a> to any model architecture programmable in their framework. We thus provide a central platform for the implementation of new rules based on individual tensor operations created for emerging machine learning architectures.
 
-We also referred to a past <a href="#ref7">LRP implementation by Fischer, K.</a> for including the idea of the relevance filter and some testing/visualization code on VGG image examples.
+We also referred to a past <a href="#ref8">LRP implementation by Fischer, K.</a> for including the idea of the relevance filter and some testing/visualization code on VGG image examples.
+
+Our attributions obtain equal or greater Area Between Perturbation Curves in pixel flipping evaluations than specialized implementations on visual tasks with ViT-b-16 and VGG16, and demonstrate high top-1 attribution-to-prediction accuracy in SQuADv2 Question-Answering tasks with RoBERTa-large (98%) and Flan-T5-large (97%).
+
+<table>
+  <tr>
+    <td width="32%">Original Image</td>
+     <td width="32%">Zennit LRP</td>
+     <td width="32%">DynamicLRP</td>
+  </tr>
+  <tr>
+    <td><img src="documentation/garbage_truck.png" ></td>
+    <td><img src="documentation/zennitlrp_garbage_truck.png"></td>
+    <td><img src="documentation/ourlrp_garbage_truck.png"></td>
+  </tr>
+ </table>
 
 # Usage
 Clone this repository and make use of the `LRPEngine` class from the `lrp` Python module.
@@ -46,7 +65,8 @@ checkpoint_rels, param_rels = lrp.run(logits)
     <li id="ref3">Michel P, Levy O, Neubig G. (2019) Are Sixteen Heads Really Better Than One? URL: 
     https://doi.org/10.48550/arXiv.1905.10650</li>
     <li id="ref4">Voita E, Talbot D, Moiseev F, Sennrich R, Titov I. (2019) Analyzing Multi-Head Self-Attention: Specialized Heads Do the Heavy Lifting, the Rest Can Be Pruned. URL: https://doi.org/10.48550/arXiv.1905.09418</li>
-    <li id="ref5">Paszke A, Gross S, Chintala S, Chanan G, Yang E, DeVito Z, Lin Z, Desmaison A, Antiga L, Lerer A. (2017) Automatic differentiation in PyTorch. URL: https://openreview.net/pdf?id=BJJsrmfCZ</li>
-    <li id="ref6">Rumelhart DE, Hinton GE, Williams RJ. (1986) Learning representations by back-propagating errors. Nature 323(9) pp. 533-536. URL: https://doi.org/10.1038/323533a0</li>
-    <li id="ref7">Fischer K. (2021) Relevance Propagation with PyTorch. URL: https://kaifishr.github.io/2021/12/15/relevance-propagation-pytorch.html</li>
+    <li id="ref5">Anders CJ, Neumann D, Samek W, Müller KR, Lapuschkin S. (2023) Software for Dataset-wide XAI: From Local Explanations to Global Insights with Zennit, CoRelAy, and ViRelAy. URL: https://arxiv.org/abs/2106.13200
+    <li id="ref6">Paszke A, Gross S, Chintala S, Chanan G, Yang E, DeVito Z, Lin Z, Desmaison A, Antiga L, Lerer A. (2017) Automatic differentiation in PyTorch. URL: https://openreview.net/pdf?id=BJJsrmfCZ</li>
+    <li id="ref7">Rumelhart DE, Hinton GE, Williams RJ. (1986) Learning representations by back-propagating errors. Nature 323(9) pp. 533-536. URL: https://doi.org/10.1038/323533a0</li>
+    <li id="ref8">Fischer K. (2021) Relevance Propagation with PyTorch. URL: https://kaifishr.github.io/2021/12/15/relevance-propagation-pytorch.html</li>
 </ol>

@@ -67,7 +67,7 @@
   % Things just for the journal/conference version go here
 }
 
-\title{Always Keep Your Promises: Introducing DynamicLRP, A Model-Agnostic Solution To Layer-Wise Relevance Propagation}
+\title{Always Keep Your Promises: DynamicLRP, A Model-Agnostic Solution To Layer-Wise Relevance Propagation}
 
 \author[1]{Kevin Lee}
 \author[1, \textdagger]{Pablo Millan Arias}
@@ -103,6 +103,28 @@ We achieved 99.92\% node coverage across 31,465 computation graph nodes from 15 
 audio transformers (Whisper), and multimodal systems (DePlot) without any model-specific code with rules for 47 fundamental operations implemented.
 Our operation-level decomposition and Promise System establish a sustainable, extensible foundation for LRP across evolving architectures.
 \end{abstract}
+
+\begin{figure}
+\centering
+\begin{minipage}{.3\textwidth}
+  \centering
+  \includegraphics[width=0.8\linewidth]{figures/garbage_truck.png}
+  \captionof{figure}{ImageNette-320 example}
+  \label{fig:garbage-truck}
+\end{minipage}
+\begin{minipage}{.3\textwidth}
+  \centering
+  \includegraphics[width=.8\linewidth]{figures/zennitlrp_garbage_truck.png}
+  \captionof{figure}{Zennit LRP Attributions}
+  \label{fig:garbage-truck-zennit}
+\end{minipage}
+\begin{minipage}{.3\textwidth}
+  \centering
+  \includegraphics[width=.8\linewidth]{figures/ourlrp_garbage_truck.png}
+  \captionof{figure}{Our LRP Attributions}
+  \label{fig:garbage-truck-ours}
+\end{minipage}
+\end{figure}
 
 \section{Introduction}
 While significant progress has been made in explaining medium-scale models and established architectures, the decision-making
@@ -141,7 +163,7 @@ architectures using consumer-grade hardware.
 \begin{itemize}
   \item \textbf{Model-agnostic, operation-level LRP framework} (Sec~\ref{sec:op-level-lrp}): We decompose LRP from module-level
   to operation-level, defining propagation rules for fundamental tensor operations rather than composite neural network
-  modules to enable model agnosticity. Complete with rules for 47 fundamental tensor operations already implemented (See Table~\ref{supported-operations-table}).
+  modules to enable model agnosticity. Complete with rules for 47 fundamental tensor operations already implemented (See Appendix~\ref{appendix:covered-operations}).
   \item \textbf{Promise System} (Sec~\ref{sec:promise-system}): We introduce a novel mechanism for deferred relevance propagation
   and backward pass activation retrieval through the computation graph so that LRP can function without graph modification.
   The technique generalizes to arbitrary non-gradient computations on computation graphs used by auto-differentiation.
@@ -279,7 +301,7 @@ be defined before all architectures that reduce to that set of operations are su
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=1.0\textwidth]{../documentation/op-level-lrp-motivation.png}
+  \includegraphics[width=1.0\textwidth]{figures/op-level-lrp-motivation.png}
   \caption{Visualizing the difference between a module-level and operation-level approach for a simplified Transformer block.
   The rightmost diagram represents some fabricated toy example architecture that shares the same operation set as the Transformer, and thus
   does not require any new implementation to be covered by operation-level LRP, but would need new rules and configurations under module-level LRP.}
@@ -362,7 +384,7 @@ function chain to reconstruct the activation at the Origin Node, which is then s
 all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred relevance can be “fast-forwarded” down
 each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
 dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
-We provide a full example of this mechanism in \ref{appendix:basic-promise-example}.
+We provide a full example of this mechanism in Appendix~\ref{appendix:basic-promise-example}.
 
 \subsubsection{Promise Nesting and Trees}
 Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
@@ -379,7 +401,7 @@ Note that whether a Dependent Promise-Generating Node instantiates a new Promise
 When a Promise-Generating Node $v$ receives a Promise Branch $b_P$ as input, $v$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $b_P$ via parent-child connections, forming a Promise Tree.
 Promise Trees resolve bottom-up, starting with leaf Promise Branches, which encounter Arg Nodes, and forward-chain to reconstruct their
 ancestor Promises' activations via parent connections. Once all activations of the Promise at the root of the Tree have been recovered, the relevance is propagated back down the Tree via child connections
-and backward chains. See ~\ref{appendix:promise-trees} for the formal resolution algorithm.
+and backward chains. See Appendix~\ref{appendix:promise-trees} for the formal resolution algorithm.
 
 \subsubsection{Promise Deadlock}
 Promises can cause circular dependencies between Promise Branches. Consider the following graph, reflecting a pattern found in
@@ -451,13 +473,13 @@ for traversal. This creates a circular dependency: C is stalled waiting for A's 
 and E cannot be visited because it is waiting for C to propagate. The traversal is deadlocked.
 
 The solution, in brief, is to break our traversal heuristic upon such situations, and allow Promise Branches to fully propagate until they reach Arg Nodes.
-The specific manner in which this is done is explained fully in \ref{appendix:pre-promises}.
+The specific manner in which this is done is explained fully in Appendix~\ref{appendix:pre-promises}.
 
 A simplified version of the propagation algorithm which considers all these is presented as Algorithm~\ref{alg:promise-propagation}.
 
 Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
 Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
-within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in \ref{appendix:unique-chains}.
+within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in Appendix~\ref{appendix:unique-chains}.
 This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
 
 \subsection{Theoretical Analysis}
@@ -543,7 +565,7 @@ the start index is after the end index). We run LRP-$\gamma$ with $\gamma_{linea
 for the Flan-T5 attributions. See Table~\ref{squadv2-table}
 
 \subsection{Measuring Visual Attribution Faithfulness With Area Between Perturbation Curves}
-We measure faithfulness using the Area Between Perturbation Curves (ABPC), as proposed by \cite{schulz2020abpc}.
+We measure faithfulness using the Area Between Perturbation Curves (ABPC) \cite{schulz2020abpc, blucher2024pixelflipping}.
 We first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
 Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most relevant features from each input sample. We also do this inversely,
 masking/occluding the top-i least relevant features from each input sample, to compute the Least-Relevant First (LeRF) curve.
@@ -759,10 +781,10 @@ be overcome by our framework.
 
 \appendix
 \section{List of Covered Operations}
+\label{appendix:covered-operations}
 Below is the list of currently supported operations for DynamicLRP.
 \begin{table}[!h]
 \begin{center}
-  \label{supported-operations-table}
   \begin{tabular}{ll}
     \toprule
     \textbf{Category} & \textbf{Operations} \\
@@ -1894,14 +1916,14 @@ double-counting in complexity analysis.
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=1.0\textwidth]{../documentation/VGG_attributions.png}
+  \includegraphics[width=1.0\textwidth]{figures/VGG_attributions.png}
   \caption{Comparing methods for VGG attributions.}
 \end{figure}
 
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=1.0\textwidth]{../documentation/vit_abpc_comparisons.png}
+  \includegraphics[width=1.0\textwidth]{figures/vit_abpc_comparisons.png}
   \caption{Comparing faithfulness of methods using ABPC from pretrained ViT-b-16 performance on 1000 examples from the ImageNet CIFAR-10 test set. Occlusion is applied by replacing 16x16 patches with the corresponding regions from a Gaussian-blurred version of the image (kernel size = 51, $\sigma$ = 20). Red = MoRF curve, Blue = LeRF curve.}
 \end{figure}
 

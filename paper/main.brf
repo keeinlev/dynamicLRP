@@ -7,7 +7,7 @@
 \backcite {achtibat2024attnlrp}{{1}{1}{section.1}}
 \backcite {otsuki2024lrpresidualconnections}{{1}{1}{section.1}}
 \backcite {machiraju2024prospector}{{1}{1}{section.1}}
-\backcite {montavon2019lrp}{{2}{2.2.1}{subsubsection.2.2.1}}
+\backcite {montavon2019lrp}{{3}{2.2.1}{subsubsection.2.2.1}}
 \backcite {achtibat2024attnlrp}{{3}{2.2.2}{subsubsection.2.2.2}}
 \backcite {simonyan2014deep}{{4}{3.1}{subsection.3.1}}
 \backcite {sundararajan2017axiomatic}{{4}{3.1}{subsection.3.1}}
@@ -38,3 +38,18 @@
 \backcite {anders2021zennit}{{10}{6}{table.caption.2}}
 \backcite {achtibat2024attnlrp}{{10}{6}{table.caption.3}}
 \backcite {anders2021zennit}{{11}{7}{section.7}}
+\backcite {simonyan2015vgg}{{11}{5}{table.caption.5}}
+\backcite {he2015resnet}{{11}{5}{table.caption.5}}
+\backcite {dosovitskiy2021vit}{{11}{5}{table.caption.5}}
+\backcite {tan2021efficientnetv2}{{11}{5}{table.caption.5}}
+\backcite {tschannen2025siglip2}{{11}{5}{table.caption.5}}
+\backcite {babu2021xlsr}{{11}{5}{table.caption.5}}
+\backcite {radford2022whisper}{{11}{5}{table.caption.5}}
+\backcite {radford2019gpt2}{{11}{5}{table.caption.5}}
+\backcite {liu2019roberta}{{11}{5}{table.caption.5}}
+\backcite {dubey2024llama3}{{11}{5}{table.caption.5}}
+\backcite {gemmateam2025gemma3}{{11}{5}{table.caption.5}}
+\backcite {yang2025qwen3}{{11}{5}{table.caption.5}}
+\backcite {chung2022flant5}{{11}{5}{table.caption.5}}
+\backcite {liu2022deplot}{{11}{5}{table.caption.5}}
+\backcite {gu2024mamba}{{11}{5}{table.caption.5}}

@@ -6,6 +6,24 @@
 \input{preamble}
 \input{math_commands}
 
+
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,decorations.pathreplacing}
+
+\tikzset{
+  maincircle/.style={circle, draw, minimum size=13mm, inner sep=2pt, font=\footnotesize, align=center},
+  fwd/.style={->, thick, >=Latex},
+  promise/.style={->, dashed, thick, >=Latex,
+                  preaction={draw, white, line width=3pt}}, % halo for visibility
+  diamondnode/.style={diamond, draw=green!60, fill=green!5, very thick, minimum size=7mm},
+  node/.style={circle, draw=green!60, fill=green!5, very thick, minimum size=7mm},
+  orange/.style={draw=orange!60, fill=orange!5},
+  red/.style={draw=red!60, fill=red!5},
+  blue/.style={draw=blue!60, fill=blue!5},
+  teal/.style={draw=teal!60, fill=teal!5},
+  purple/.style={draw=purple!60, fill=purple!5},
+  highlight/.style={ultra thick},
+}
 \usepackage{natbib}
 \usepackage{etoolbox}       % Provides toggle
 \newtoggle{arxiv}% Swap between arXiv and journal/conference version
@@ -25,23 +43,6 @@
     %showframe% to show your page design, normally not used
   ]{geometry}
 
-  \usepackage{tikz}
-  \usetikzlibrary{positioning,arrows.meta,shapes.geometric,decorations.pathreplacing}
-
-  \tikzset{
-  maincircle/.style={circle, draw, minimum size=13mm, inner sep=2pt, font=\footnotesize, align=center},
-  fwd/.style={->, thick, >=Latex},
-  promise/.style={->, dashed, thick, >=Latex,
-                  preaction={draw, white, line width=3pt}}, % halo for visibility
-  diamondnode/.style={diamond, draw=green!60, fill=green!5, very thick, minimum size=7mm},
-  node/.style={circle, draw=green!60, fill=green!5, very thick, minimum size=7mm},
-  orange/.style={draw=orange!60, fill=orange!5},
-  red/.style={draw=red!60, fill=red!5},
-  blue/.style={draw=blue!60, fill=blue!5},
-  teal/.style={draw=teal!60, fill=teal!5},
-  purple/.style={draw=purple!60, fill=purple!5},
-  highlight/.style={ultra thick},
-}
   \newlength{\defbaselineskip}
   \setlength{\defbaselineskip}{\baselineskip}
   % \setlength{\marginparwidth}{0.8in}
@@ -68,11 +69,13 @@
 
 \title{Always keep your promises: Introducing DynamicLRP, a model-agnostic solution to Layer-wise Relevance Propagation}
 
-\author[1]{FIRST AUTHOR NAME}
-\affil[1]{FIRST AFFILIATION}
+\author[1]{Kevin Lee}
+\author[1, \textdagger]{Pablo Millan Arias}
+\affil[1]{University of Waterloo}
+\affil[$\text{\textdagger}$]{Senior Author}
 \affil[ ]{%
-\texttt{AUTHOR1@EMAIL.ADDRESS}\quad
-\texttt{AUTHOR2@EMAIL.ADDRESS}
+\texttt{k327lee@uwaterloo.ca}\quad
+\texttt{pmillana@uwaterloo.ca}
 }
 
 \date{}% Suppress date
@@ -178,7 +181,7 @@ architectures using consumer-grade hardware.
 \begin{itemize}
   \item \textbf{Model-agnostic, operation-level LRP framework} (Sec~\ref{sec:op-level-lrp}): We decompose LRP from module-level
   to operation-level, defining propagation rules for fundamental tensor operations rather than composite neural network
-  modules to enable model agnosticity. Complete with rules for 47 fundamental tensor operations already implemented.
+  modules to enable model agnosticity. Complete with rules for 47 fundamental tensor operations already implemented (See Table~\ref{supported-operations-table}).
   \item \textbf{Promise System} (Sec~\ref{sec:promise-system}): We introduce a novel mechanism for deferred relevance propagation
   and backward pass activation retrieval through the computation graph so that LRP can function without graph modification.
   The technique generalizes to arbitrary non-gradient computations on computation graphs used by auto-differentiation.
@@ -803,31 +806,43 @@ Any additional operations performed do not have autograd nodes saved, and thus r
 
 \subsection{Operation Coverage}
 
+By breaking LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
+However, consider that the set of tensor operations we are interested in, specifically mathematical and shape operations, is a bounded and well-defined set. 
+This places a tangible and conceptual limit on our implementation scope.
+% Defining rules for operations instead of modules also better reflects the properties of the Chain Rule, a more modularized task than defining module-level rules.
+
+There are also case-by-case implementation considerations.
+In shape operations, which manipulate only the structure of tensors, the task of relevance propagation reduces to accumulating relevance at the
+inputs which map to the output. Here, we simply reuse the functions from gradient backpropagation, which do exactly this and are produced by the auto-differentiation library.
+Activation functions such as ReLU, GELU, etc. have been shown to correspond to Identity propagation functions, requiring no implementation overhead.
+Finally, fused/composite operations can re-routed or decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into
+components we already handle.
+
 \begin{table}[!h]
 \begin{center}
   \caption{DynamicLRP operation coverage breakdown of 15 models spanning vision, text, and audio modalities. \textbf{Unique Ops} indicates the number of distinct operation types in each model's computation graph.}
   \label{coverage-table}
   \begin{tabular}{ lcccc }
     \toprule
-    \textbf{Model} & \textbf{Modality} & \textbf{Covered Nodes} & \textbf{Covered \%} & \textbf{Unique Ops covered} \\
+    \textbf{Model} & \textbf{Modality} & \textbf{Covered Nodes} & \textbf{Unique Ops covered} \\
     \midrule
-    VGG16 & Vision & 90/90 & 100 & 9/9 \\
-    ResNet-50 & Vision & 339/339 & 100 & 10/10 \\
-    ViT-b-16 & Vision & 779/779 & 100 & 16/16 \\
-    EfficientNetv2-medium & Vision & 1,526/1,526 & 100 & 12/12 \\
-    SigLIP-2-So400m-base14-384 & Vision & 2,178/2,178 & 100 & 19/19 \\
-    Wav2Vec2-xls-r-300m & Audio & 2,021/2,022 & 99.95 & 18/19 \\
-    whisper-small & Audio & 2,729/2,729 & 100 & 22/22 \\
-    GPT-2 & Language & 885/885 & 100 & 19/19 \\
-    RoBERTa-large & Language & 1,461/1,461 & 100 & 14/14 \\
-    Llama3.2-1B & Language & 1,787/1,787 & 100 & 24/24 \\
-    Gemma-3-270m-it & Language & 2,482/2,482 & 100 & 24/24 \\
-    Qwen-0.6B & Language & 2,590/2,590 & 100 & 18/18 \\
-    Flan-T5-large & Language & 5,713/5,713 & 100 & 24/24 \\
-    DePlot & Vision/Language & 2,863/2,863 & 100 & 23/23 \\
-    Mamba-130m & State Space & 3,397/3,421 & 99.30 & 25/26 \\
+    VGG16 \cite{simonyan2015vgg} & Vision & 90/90 & 9/9 \\
+    ResNet-50 \cite{he2015resnet} & Vision & 339/339 & 10/10 \\
+    ViT-b-16 \cite{dosovitskiy2021vit} & Vision & 779/779 & 16/16 \\
+    EfficientNetv2-medium \cite{tan2021efficientnetv2} & Vision & 1,526/1,526 & 12/12 \\
+    SigLIP-2-So400m-base14-384 \cite{tschannen2025siglip2} & Vision & 2,178/2,178 & 19/19 \\
+    Wav2Vec2-xls-r-300m \cite{babu2021xlsr} & Audio & 2,021/2,022 & 18/19 \\
+    whisper-small \cite{radford2022whisper} & Audio & 2,729/2,729 & 22/22 \\
+    GPT-2 \cite{radford2019gpt2} & Language & 885/885 & 19/19 \\
+    RoBERTa-large \cite{liu2019roberta} & Language & 1,461/1,461 & 14/14 \\
+    Llama3.2-1B \cite{dubey2024llama3} & Language & 1,787/1,787 & 24/24 \\
+    Gemma-3-270m-it \cite{gemmateam2025gemma3} & Language & 2,482/2,482 & 24/24 \\
+    Qwen3-0.6B \cite{yang2025qwen3} & Language & 2,590/2,590 & 18/18 \\
+    Flan-T5-large \cite{chung2022flant5} & Language & 5,713/5,713 & 24/24 \\
+    DePlot \cite{liu2022deplot} & Vision/Language & 2,863/2,863 & 23/23 \\
+    Mamba-130m \cite{gu2024mamba} & State Space & 3,397/3,421 & 25/26 \\
     \midrule
-    \textbf{Aggregate} & - & \textbf{31,440/31,465} & \textbf{99.92} & - \\
+    \textbf{Aggregate} & - & \textbf{31,440/31,465} & - \\
     \bottomrule
   \end{tabular}
   \vspace{5pt}
@@ -844,21 +859,9 @@ Any additional operations performed do not have autograd nodes saved, and thus r
 \end{center}
 \end{table}
 
-By breaking LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
-However, consider that the set of tensor operations we are interested in, specifically mathematical and shape operations, is a bounded and well-defined set. 
-This places a tangible and conceptual limit on our implementation scope.
-% Defining rules for operations instead of modules also better reflects the properties of the Chain Rule, a more modularized task than defining module-level rules.
-
-There are also case-by-case implementation considerations.
-In shape operations, which manipulate only the structure of tensors, the task of relevance propagation reduces to accumulating relevance at the
-inputs which map to the output. Here, we simply reuse the functions from gradient backpropagation, which do exactly this and are produced by the auto-differentiation library.
-Activation functions such as ReLU, GELU, etc. have been shown to correspond to Identity propagation functions, requiring no implementation overhead.
-Finally, fused/composite operations can re-routed or decomposed during auxiliary graph construction (Algorithm \ref{alg:graph-construction}) into
-components we already handle.
-
 We validated model-agnostic coverage by analyzing computation graphs from 15 diverse architectures spanning vision (CNNs, ViTs), language (GPT, BERT, T5, Llama), audio
-(Wav2Vec2, Whisper), multimodal (DePlot), and state-space models (Mamba). As shown in Table~\ref{coverage-table}, our implementation achieved 99.92\% node coverage
-(31,440/31,465 nodes) across all architectures \textbf{without any model-specific code modifications}. The 25 uncovered nodes (0.08\%) correspond to two operations:
+(Wav2Vec2, Whisper), multimodal (DePlot), and state-space models (Mamba). As shown in Table~\ref{coverage-table}, our implementation achieved \textbf{99.92\% node coverage
+(31,440/31,465 nodes)} across all architectures \textbf{without any model-specific code modifications}. The 25 uncovered nodes (0.08\%) correspond to two operations:
 \texttt{WeightNormInterface} (weight normalization utility, 1 node) and \texttt{SplitWithSize} (variant of \texttt{Split}, 24 nodes). Both could be trivially
 supported by extending existing rules. We see that despite increasing model sizes and diversity, modern architectures are composed of only a small set of operations.
 
@@ -908,8 +911,10 @@ be overcome by our framework.
 %\startcontents[sections]
 %\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}
 \subsection{List of Covered Operations}
+Below is the list of currently supported operations for DynamicLRP.
 \begin{table}[!h]
 \begin{center}
+  \label{supported-operations-table}
   \begin{tabular}{ll}
     \toprule
     \textbf{Category} & \textbf{Operations} \\

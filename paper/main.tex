@@ -86,25 +86,6 @@
 \maketitle
 
 \begin{abstract}
-
-% (to intro?) Since the introduction of scaling laws, AI interpretability has been generally divided into two main schools: eXplainable AI (XAI), which
-% focuses on pure mathematical methods to attribute signals to individual neurons and features in deep learning models, and Mechanistic
-% Interpretability, which is draws from the axioms of biology and neuroscience, aiming to disentangle the black-box of objective-based training
-% to map the resulting model parameters to tangible and understandable patterns or concepts.
-% Foundational work in XAI has developed promising mathematically faithful and numerically stable attribution methods for inputs and parameters,
-% which include gradient, perturbation, and backpropagation methods. Meanwhile, Mechanistic Interpretability has introduced novel architectures
-% such as the Sparse Auto-Encoder and the Weight-Sparse Transformer which have been shown to enable identification and isolation of human-
-% understandable semantic features within the parameter space.
-
-% We see that XAI has roots in saliency maps of pre-transformer image models and the explanation of visual features to detect biases in
-% captioning and classification tasks (Clever Hans and IFT), and in recent history, these methods have needed to be slowly adapted to perform
-% similar attributions on SoTA LLMs and vision transformers.
-
-% (possibly?) With the exponential increase of resources dedicated to training
-% and serving these models, and an explosion in the number of end users, stakes are incredibly high as we enter a stage where AI for critical
-% applications are beginning to arise.
-
-
 Layer-wise Relevance Propagation (LRP) provides principled attribution for neural networks through conservation properties and foundations
 in Deep Taylor Decomposition. However, existing implementations operate at the module level, requiring architecture-specific propagation
 rules and model modifications. These limit the generality of target model, use cases in explanation-augmented training contexts, and
@@ -121,30 +102,9 @@ maintaining practical efficiency on models with hundreds of millions of paramete
 We achieved 99.92\% node coverage across 31,465 computation graph nodes from 15 diverse architectures, including state-space models (Mamba),
 audio transformers (Whisper), and multimodal systems (DePlot) without any model-specific code with rules for 47 fundamental operations implemented.
 Our operation-level decomposition and Promise System establish a sustainable, extensible foundation for LRP across evolving architectures.
+\end{abstract}
 
-% \textcolor{red}{me riffing}
-% With the recent rise of the importance of AI model safety and alignment, Mechanistic Interpretability has gained a much momentum in the hopes
-% of approaching these objectives. However, previous work of eXplainable AI (XAI) has been rarely mentioned in the works of MechInterp.
-% This incites the observation of gaps between XAI and Mechanistic Interpretability, which are keeping XAI from the forefront of modern
-% interpretability. There exists an architectural gap, which stems from XAI methods having emanated from the need for bias detection in
-% pre-transformer image models, and a conceptual gap, as XAI is based on purely mathematical methods but MechInterp has made its name
-% in the patenting of novel architectures which enable an unprecedented disentanglement of the mechanisms of objective-based learning.
-% XAI holistically consists of many methods spanning gradient-, perturbation-, and backpropagation-based methods. We focus on Layer-wise
-% Relevance Propagation (LRP), a backpropagation-based method, as it has been shown to produce higher quality attributions via the alignment
-% of signal strength and model performance in ablations. Recent work in the field of LRP has established new theory and applications for bridging
-% these gaps, defining novel propagation rules which vastly improved faithfulness of attributions on Transformer architectures, and later using
-% these advancements for the express application of circuit discovery, behaviour correction, and model compression in LLMs, all pertinent in the
-% current landscape of MechInterp. However, there exists yet another gap within the implementations of LRP themselves, which is the adherence
-% to a layer-/module-based propagation. We show that this level of granularity is comparably unsustainable to an operation-level approach,
-% inspired by the use of computation graphs in auto-differentiation, and that the latter enables, out-of-the-box, true model agnosticity,
-% support for dynamic computation, and extensibility across any deep learning framework with an auto-differentiation library. We propose
-% alongside this, a novel contribution named the Promise System, which allows an auto-differentiation computation graph to be repurposed for
-% arbitrary non-gradient-based computations while keeping the graph's original structure and all existing internal training machinery intact,
-% enabling the parallelization of such processes with traditional training loops.
-
-\end{abstract} 
 \section{Introduction}
-
 While significant progress has been made in explaining medium-scale models and established architectures, the decision-making
 processes of large-scale transformer systems \cite{vaswani2017attention} remain challenging to interpret comprehensively.
 As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding
@@ -189,35 +149,6 @@ architectures using consumer-grade hardware.
   \item \textbf{Faithfulness validation} (Sec~\ref{sec:experiments}): We demonstrate faithfulness matching or exceeding specialized
   implementations across vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) while maintaining practical efficiency.
 \end{itemize}
-
-% Alongside this unprecendented generality over architectures for LRP, we demonstrate that our framework enables new applications of LRP in
-% training-time interpretability, through layer relevance normalizations and attribution-based gradient weighting.
-
-% Maybe for another paper
-% \section{Related Work}
-
-% AttnLRP, one of the more recent and impactful architectural advancements in LRP theory, derived novel propagation rules
-% for the unique components in attention blocks through Deep Taylor Decomposition \cite{achtibat2024attnlrp}.
-% It showed clear empirical improvements over existing explainability methods (SmoothGrad, GradCAM, KernelSHAP, AttnRollout,
-% Original LRP) in both visual and textual tasks. Its extension to concepts in Mechanistic Interpretability, an effort to
-% identify structural components in trained models, has shown empirical results for principled model pruning and alignment
-% with desired human-friendly behaviours in LLMs \cite{hatefi2025pruningcircuitcompression}.
-
-% The usefulness of LRP in CNN explainability has been explored for bias mitigation in image captioning and classification tasks.
-% Anders et al. proposed additional learned layers which consume LRP pixel heatmaps to identify and unlearn the associations
-% to out-of-distribution artifacts while amplifying those of the true object information. This targeted behaviour known as
-% the Clever Hans effect, and introduced a novel training framework leveraging spectral clustering to cleanse training data
-% \cite{anders2020cleverhans}.
-
-% However, later exploration of differentiable LRP allowed attributions to directly influence gradient descent without
-% additional training mechanisms, all while staying within the realm of loss-based training. This was shown to be applicable to
-% arbitrary DNNs with ISNet \cite{bassi2024isnet, bassi2024fasterisnet}, and remained applicable for Attention-LSTM hybrids such
-% as Ada(Adaptive Attention)-LSTM and MH(Multi-Head Attention)-FC \cite{sun2021lrpfinetuning}, though this only used LRP on the last Linear
-% layer in each architecture.
-
-% While these works show a clear usefulness of LRP, they remain somewhat bottlenecked and constrained in that they remain purpose-built, in
-% the domain of image-based tasks, pure Fully-Connected or Convolutional architectures, and a small subset of SoTA transformer models.
-% We see the potential of the applied concepts, and our work aims to generalize them across the deep learning landscape.
 
 \section{Background}
 \subsection{Classic LRP via Taylor Approximation}
@@ -289,12 +220,6 @@ For example, a matrix multiplication node $v_{mm}$ from a linear layer will have
 The in-edge pointing to $v$ would come from a node $v_{add}$, which represents the next operation in the forward pass, the bias addition $f_{add}(z, b) = z + b$. 
 The two out-edges leaving $v$ point to a terminal node representing $W$, indicating it is a parameter, and the node representing the operation which produced $x$ in the forward pass.
 
-% The backward pass in deep learning leverages the chain rule of calculus to compute gradients efficiently. For a scalar loss function $L$ and a parameter $\theta$, the gradient $\frac{\partial L}{\partial \theta}$ is computed by traversing the graph in reverse order:
-% \begin{equation}
-% \frac{\partial L}{\partial \theta} = \sum_{v \in \text{children}(\theta)} \frac{\partial L}{\partial f_v} \cdot \frac{\partial f_v}{\partial \theta},
-% \end{equation}
-% where $\text{children}(\theta)$ are the nodes that depend on $\theta$.
-
 Our proposed attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers as standard functionality.
 By leveraging the DAG structure constructed by a reliable learning framework, the algorithm ensures that relevance is propagated efficiently and faithfully.
 The LRP conservation principle is thus adhered to on an operation-wise basis, instead of layer-wise.
@@ -302,8 +227,6 @@ The LRP conservation principle is thus adhered to on an operation-wise basis, in
 \sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
 \end{equation}
 where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
-
-% This theoretical foundation underscores the flexibility and scalability of the promise-based approach, making it well-suited for modern deep learning models.
 
 \section{Related Work}
 \subsection{Explainability Methods}
@@ -369,11 +292,6 @@ operations, but still require two unique propagation rule definitions.
 Our operation-level approach modularizes relevance propagation, reducing any model architecture to a fixed and bounded set of fundamental
 tensor operations, treating operations as first-class citizens in propagation. We implement propagation rules for each type of Node in the
 computation graph (a Node in this case maps to an operation call).
-
-% Another practical advantage of our design is that it does not modify any of the existing forward and backward pass functions.
-% Current LRP implementations will patch and hook modules so that the built-in backpropagation machinery can be reused, however this
-% explicitly changes the behaviour of both passes and the computation graph structure to suit LRP. This enforces the model to always be either
-% in training mode or LRP mode, never both at the same time. DynamicLRP has no such constraint, enabling training and LRP to run simultaenously.
 
 \subsection{Propagating Through the Computation Graph}
 We traverse the computation graph with the following heuristic:
@@ -456,10 +374,6 @@ We categorize all Promise-Generating Operations as one of the following:
   \item \textbf{Dependent: }$v_p$ will create a new Promise object only if at least one of its relevance inputs is a Promise, otherwise it returns a tensor relevance.
 \end{itemize}
 
-% Those which are Strict typically lack required forward activations during LRP traversal, necessitating promise-based resolution.
-% Whereas Dependents do not have a mathematical dependency on the activations, but typically are operations which perform merging/splitting of data.
-% We formalize and prove this generalization in the Appendix \textcolor{red}{Think about if you are actually going to do this}.
-
 Note that whether a Dependent Promise-Generating Node instantiates a new Promise or not is architecture-specific.
 
 When a Promise-Generating Node $v$ receives a Promise Branch $b_P$ as input, $v$ creates a new Promise $P'$ and nests all of $P'$'s branches as children of $b_P$ via parent-child connections, forming a Promise Tree.
@@ -539,29 +453,12 @@ and E cannot be visited because it is waiting for C to propagate. The traversal 
 The solution, in brief, is to break our traversal heuristic upon such situations, and allow Promise Branches to fully propagate until they reach Arg Nodes.
 The specific manner in which this is done is explained fully in \ref{appendix:pre-promises}.
 
-% Now consider some Promise Branch input $p_1$, and some node $v$ which receives it as an input. We have the following cases depending on what type of node $v$ is:
-% \begin{enumerate}
-%   \item $v$ is an Arg Node. We call \texttt{p.setarg()} with $v$'s forward output and either continue propagation or queue the node while waiting for $p_1$'s sibling branches to reach their Arg Nodes.
-%   \item $v$ is a one-to-one operation. We record the forward compute and backward relevance propagation function closures within $p_1$ at this node, then continue propagating $p_1$.
-%     If $v$ maps to a relevance-wise Identity function, we only record the forward closure.
-%   \item $v$ is a Promise-Generating Node. We go ahead and allow $v$ to create a new Promise, then we nest all of its branches as children within $p_1$, therefore creating a tree structure out of Promise Branches.
-% \end{enumerate}
-
-
-
-% \begin{itemize}
-%   \item The relevance propagation function of $v_p$ is a mathematical function of $v_p$'s forward call activations, but $v_p$ does not store these in its saved backward pass context.
-%   \item \textbf{OR} $v_p$ represents a function which is not a bijection, meaning the flow of information across it is not one-to-one in terms of its inputs and outputs.
-% \end{itemize}
-
-
 A simplified version of the propagation algorithm which considers all these is presented as Algorithm~\ref{alg:promise-propagation}.
 
 Note that this allows delayed computation to occur without the graph traversal pointer having to backtrack or revisit any node not on the current traversal frontier.
 Propagation across any given node only occurs once, either directly via tensor relevances or in a delayed manner via Promises. We claim that it follows that the internal nodes recorded
 within each Promise's computation path are mutually exclusive among all Promises, though multple Promises may share the same Origin or Arg nodes. We prove this in \ref{appendix:unique-chains}.
 This allows us to define clear upper bounds on the computational and memory overhead introduced by the Promise system.
-
 
 \subsection{Theoretical Analysis}
 \label{sec:lrp-complexity}
@@ -612,15 +509,6 @@ Crucially, our implementation shows that promises never share the same internal 
 Therefore, each promise requires exactly $d(v_p)$ traversal steps, leading to $d(v_p) \cdot C_{fwd}$ additional forward computations in the worst case, for a total of $\delta = \sum_{v_p \in V_P} d(v_p)$ forward computations when considering all Promises.
 Since all computation paths are mutually exclusive, we have that $\delta \leq n$, and so promise resolution overhead has time complexity $O(C_{fwd} \cdot \delta) \in O(C_{fwd} \cdot n)$.
 
-
-% (possibly move to appendix)
-% \textbf{Architectural Dependence:} The parameters $|V_P|$ and $D$ are fundamentally determined by the network architecture:
-% \begin{itemize}
-% \item \textbf{Feed-forward architectures} (e.g., basic CNNs): $|V_P| \approx 0 \Rightarrow \rho \approx 0$, giving optimal $O(n + m)$ complexity.
-% \item \textbf{Residual architectures} (e.g., ResNets): $|V_P|$ proportional to the number of skip connections, $D$ bounded by the maximum skip distance.
-% \item \textbf{Transformer architectures}: $|V_P|$ grows with the number of attention layers and residual connections, $D$ typically bounded by layer depth.
-% \end{itemize}
-
 Therefore, the total complexity is in $O((C_{fwd} + C_{bwd}) \cdot (n + m))$, the asymptotic class of a standard backward pass, and memory overhead complexity $O(\delta \cdot S)$, where both $\delta$ and $S$ depend on architectural choices, and $\delta$ is independent of input size.
 \end{proof}
 
@@ -633,18 +521,6 @@ Once a Promise's computation path has been defined, it can effectively be reduce
 Another benefit which arises from both the caching and this reduction is that the traversal order becomes strictly determined by the topological ordering of the nodes.
 Recall that due to the issue of Promise Deadlock that can be encountered during initial traversal, propagation of Promises may cause the traversal to temporarily disobey this ordering for the sake of searching ahead for missing activations.
 However, if we know the Promise chains beforehand and can reduce them to single nodes, then the order in which we perform computations becomes fully deterministic and independent of edge connections, reducing the graph traversal overhead to $O(n)$.
-
-% \subsection{Differentiable Attribution}
-
-% Since DynamicLRP does not change any functionality in the model forward and backward passes, it operates on the full, unabridged computation
-% graph. This allows DynamicLRP to run as a standalone process to the backward pass, and can thus be computed as a parallel process on another
-% device during a training optimizer step.
-
-% To take this a step further, DynamicLRP itself is a differentiable process, and we provide a mode where it constructs its own computation
-% graph, reusing cached activations from the original graph where possible. We may thus factor attribution signals into model gradient updates
-% by combining task objectives with attribution values in a combined loss function, generalizing the works of Bassi et al. and Sun et al.,
-% which only applied purpose-built LRP to CNNs and final FC layers, respectively, to arbitrary model architectures \cite{bassi2024fasterisnet},
-% \cite{sun2021lrpfinetuning}.
 
 \section{Experimental Setup}
 \label{sec:experiments}
@@ -780,13 +656,8 @@ length, Promise Density, and number of autograd nodes specific to each tested ar
   \end{tabular}
 \end{center}
 \end{table}
-% The the inclusion of the residual stream's contributions to the output within the attribution computation is likely a large factor in this. Being a crucial pathway which allows the transformer architecture to shape its predictions,
-% it lends itself well in nature to LRP. Later layers, which get visited first in LRP, will combine with residual outputs that are sequentially and semantically closer the final output, acting as a relevance boost to the most significant
-% regions of the stream. This is an important theoretical consideration that is overlooked by the current LRP landscape, since residual connections are almost always within output classes or at the extremities of an attention module,
-% never the direct focus of relevance propagation. With our framework, considering these connections is built-in.
 
 \section{Discussion}
-
 The recorded values from Table~\ref{architecture-promises-table} provide insight on how the Promise System affects runtime and provide
 empirical $|V_P|$ and $\delta$ to help reason about the theoretical memory and runtime complexities.
 The most striking observation comes from the difference in $\rho$ between the two versions of Flan-T5-large. While the finetuned T5 has
@@ -797,19 +668,11 @@ computation graph to be stored, only the subgraphs associated with the above men
 and normalization layers. This is characteristic to the implementation, which is built on the Zennit library \cite{anders2021zennit}.
 Any additional operations performed do not have autograd nodes saved, and thus reduce total peak VRAM usage, as opposed to our method which tracks such operations.
 
-% Additionally, DynamicLRP shows better speed than AttnLRP in the ViT test, which indicates that our elementary relevance
-% computations remain in the same order of computational complexity as current implementations, even while processing the whole
-% computation graph. However, we also use a different approach to computing the propagations of Linear and Convolutional layers,
-% opting for an explicit, analytical redistribution instead of using the gradient-based approach via the patching of built-in
-% backward pass mechanisms.
-% We show that these two methods are mathematically equivalent. \textcolor{red}{Still need to show a derivation in the Appendix}
-
 \subsection{Operation Coverage}
 
 By breaking LRP down to the level of tensor operations, we knowingly take on the task of covering a sufficiently large portion of the operation space to make this useful across a wide range of models.
 However, consider that the set of tensor operations we are interested in, specifically mathematical and shape operations, is a bounded and well-defined set. 
 This places a tangible and conceptual limit on our implementation scope.
-% Defining rules for operations instead of modules also better reflects the properties of the Chain Rule, a more modularized task than defining module-level rules.
 
 There are also case-by-case implementation considerations.
 In shape operations, which manipulate only the structure of tensors, the task of relevance propagation reduces to accumulating relevance at the
@@ -864,19 +727,6 @@ We validated model-agnostic coverage by analyzing computation graphs from 15 div
 (31,440/31,465 nodes)} across all architectures \textbf{without any model-specific code modifications}. The 25 uncovered nodes (0.08\%) correspond to two operations:
 \texttt{WeightNormInterface} (weight normalization utility, 1 node) and \texttt{SplitWithSize} (variant of \texttt{Split}, 24 nodes). Both could be trivially
 supported by extending existing rules. We see that despite increasing model sizes and diversity, modern architectures are composed of only a small set of operations.
-
-% \paragraph{We remind readers that our contribution is the framework, further theory can follow.}
-% We acknowledge that further work in broadening LRP's reach will be a collective effort led by those who continue to see its
-% value in model interpretability. However, the aim of DynamicLRP is to renew interest in LRP by providing this unified,
-% modular framework that prioritizes compatibility and ease of use while maintaining practical efficiency. Our hope is that by
-% lowering the barrier to entry, we enable further refinement and extension of LRP across modern architectures.
-
-% In this, we feel similarities to PyTorch's own design history, which included multiple large-scale manual effort projects
-% such as autograd itself and the structured kernels initiative, which were, knowingly or unknowingly, large contributors to
-% the framework's efficiency and popularity. The core idea is that if we care about extensibility and rigor of our methods, and
-% if we deem LRP a method worth sustaining, then the effort is justified. With this framework, LRP can become as accessible as
-% autograd, and we hope that this contribution will widen the scope of how LRP and computation graphs can be leveraged in
-% future research.
 
 \subsection{Extensibility to Other Deep Learning Frameworks}
 While it may seem that this design is strictly PyTorch-specific, we claim that the Promise-based Dynamic LRP can be extended to any deep learning

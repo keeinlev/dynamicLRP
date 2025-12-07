@@ -750,6 +750,25 @@ class LRPPropFunctions:
             return r
 
         return grad_fn(r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def AsStridedBackwardProp(cls, grad_fn, r):
+
+        def fwd_factory(node):
+            size = node._saved_size
+            stride = node._saved_stride
+            def fwd_as_strided(x):
+                return x.as_strided(size=size, stride=stride)
+            return fwd_as_strided
+
+        if isinstance(r, Promise):
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
+            return r
+
+        return grad_fn(r)
     
     @staticmethod
     @output_relevances
@@ -767,6 +786,12 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def ToCopyBackwardProp(grad_fn, r):
+        return r
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def CopySlicesBackwardProp(grad_fn, r):
         return r
 
     @staticmethod
@@ -967,7 +992,13 @@ class LRPPropFunctions:
         r_input = x * c
         r_input = r_input
 
-        grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        if num_dims == 1:
+            grad_w = torch.nn.grad.conv1d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        elif num_dims == 2:
+            grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        else:
+            grad_w = torch.nn.grad.conv3d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        
         r_weight = weights * grad_w  # elementwise, scales by weight itself
         r_weight = r_weight
 

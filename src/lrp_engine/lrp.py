@@ -94,7 +94,7 @@ class LRPEngine:
     def get_model_operations(model_output):
         """Returns a set of autograd Node names in the first value and the total number of Nodes in the second value"""
         g = make_graph(model_output)
-        return g[2], g[4]
+        return g[2], len(g[2]), g[4]
     
     @staticmethod
     def group_and_categorize_inputs(input_tracker_list: list[tuple[Union[Promise, torch.Tensor], int]], run_mode: RunMode):

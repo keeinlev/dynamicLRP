@@ -25,8 +25,6 @@
 \backcite {alber2018innvestigate}{{4}{3.2}{subsection.3.2}}
 \backcite {anders2021zennit}{{4}{3.2}{subsection.3.2}}
 \backcite {achtibat2024attnlrp}{{4}{3.2}{subsection.3.2}}
-\backcite {bassi2024fasterisnet}{{9}{4.5}{subsection.4.5}}
-\backcite {sun2021lrpfinetuning}{{9}{4.5}{subsection.4.5}}
 \backcite {liu2019roberta}{{9}{5.1}{subsection.5.1}}
 \backcite {chung2022flant5}{{9}{5.1}{subsection.5.1}}
 \backcite {rajpurkar2018squadv2}{{9}{5.1}{subsection.5.1}}
@@ -37,6 +35,6 @@
 \backcite {simonyan2015vgg}{{9}{5.1}{subsection.5.1}}
 \backcite {krizhevsky2009learning}{{9}{5.1}{subsection.5.1}}
 \backcite {schulz2020abpc}{{9}{5.3}{subsection.5.3}}
-\backcite {anders2021zennit}{{10}{6.1}{table.caption.5}}
-\backcite {achtibat2024attnlrp}{{10}{6.1}{table.caption.5}}
+\backcite {anders2021zennit}{{10}{6}{table.caption.2}}
+\backcite {achtibat2024attnlrp}{{10}{6}{table.caption.3}}
 \backcite {anders2021zennit}{{11}{7}{section.7}}

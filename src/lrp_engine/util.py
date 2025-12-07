@@ -152,6 +152,10 @@ def decompose_convbackward(grad_fn):
     result_shape = grad_fn._input_metadata[0].shape
     bias_shape = (result_shape[1], *[ 1 for _ in result_shape[2:] ])
     conv_fn = DecomposedConvolutionBackward0((*grad_fn.next_functions[:2], (None, 0)), grad_fn._sequence_nr(), result_shape, grad_fn._saved_input, grad_fn._saved_weight, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+
+    if grad_fn._saved_bias_sym_sizes_opt == (0,):
+        return conv_fn
+
     bias_accumulate = AccumulateGrad(grad_fn._sequence_nr(), bias_shape, grad_fn.next_functions[2][0].variable.reshape((bias_shape)))
     add_fn = AddBackward0(((bias_accumulate, 0), (conv_fn, 0)), grad_fn._sequence_nr(), result_shape)
 

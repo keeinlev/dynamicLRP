@@ -1,6 +1,6 @@
 # Dynamic Layerwise Relevance Propagation
 ## By Kevin Lee and Dr. Pablo M. Arias
-## June - October 2025
+## June - December 2025
 A framework based on <a href="#ref1">Bach et al.'s 2015 LRP method</a>, incorporating work done by <a href="#ref2">Achtibat et al. (2024) in extending LRP to Transformers</a>, and applied to methodologies inspired by <a href="#ref3">Michel et al.</a> and <a href="#ref4">Voita et al.</a>'s work in analyzing disproportionate importance across heads in multi-head attention.
 
 Improves upon theoretical and currently implemented LRP methods by decomposing LRP's defined rules to a per-operation level to enable model-agnostic capability. This is similar to how libraries like <a href="#ref5">PyTorch's autograd</a> generalized the <a href="#ref6">gradient backpropagation method</a> to any model architecture programmable in their framework. We thus provide a central platform for the implementation of new rules based on individual tensor operations created for emerging machine learning architectures.

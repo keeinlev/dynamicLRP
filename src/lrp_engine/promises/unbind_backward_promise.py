@@ -1,16 +1,12 @@
 import torch
 from .dummy_promise import DummyPromise
+from ..util import handle_neg_index
 
 class UnbindBackwardPromise(DummyPromise):
 
     def __init__(self, promise, traversal_ind, bucket, saved_dim):
         super().__init__(promise, traversal_ind, bucket)
-        
-        # Negative indices -i get saved as 2**32 - i
-        if saved_dim > len(self.fwd_shape) - 1:
-            saved_dim -= 2**32
-
-        self.dim = saved_dim
+        self.dim = handle_neg_index(saved_dim, len(self.fwd_shape))
 
     def op_result(self):
         return torch.unbind(self.arg, self.dim)

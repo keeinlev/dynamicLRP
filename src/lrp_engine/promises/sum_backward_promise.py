@@ -1,6 +1,7 @@
 import torch
 from ..util import (
     epsilon,
+    handle_neg_index
     # renormalize_epsilon_scalar,
 )
 from .dummy_promise import DummyPromise
@@ -16,9 +17,7 @@ class SumBackwardPromise(DummyPromise):
                 saved_dim = list(saved_dim)
             
             for i in range(len(saved_dim)):
-                # Negative indices -i get saved as 2**32 - i
-                if saved_dim[i] > len(self.fwd_shape) - 1:
-                    saved_dim[i] -= 2**32
+                saved_dim[i] = handle_neg_index(saved_dim[i], len(self.fwd_shape))
 
             self.dim = tuple(saved_dim)
             self.sum_type = 1

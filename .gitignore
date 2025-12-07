@@ -19,3 +19,4 @@ imagenette2-320
 heatmaps
 src/experiments/*.txt
 src/experiments/*.png
+main_rough.tex

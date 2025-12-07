@@ -1,5 +1,6 @@
 import torch
 from .dummy_promise import DummyPromise
+from ..util import handle_neg_index
 
 class SplitBackwardPromise(DummyPromise):
 
@@ -7,13 +8,8 @@ class SplitBackwardPromise(DummyPromise):
         assert saved_dim is not None, f"SplitBackwardPromise at topo-ind {traversal_ind} got None for dim"
         assert saved_slice_size is not None, f"SplitBackwardPromise at topo-ind {traversal_ind} got None for slice size"
         super().__init__(promise, traversal_ind, bucket)
-        
-        # Negative indices -i get saved as 2**32 - i
-        if saved_dim > len(self.fwd_shape) - 1:
-            saved_dim -= 2**32
-
+        self.dim = handle_neg_index(saved_dim, len(self.fwd_shape))
         self.slice_size = saved_slice_size
-        self.dim = saved_dim
 
     def op_result(self):
         return torch.split(self.arg, self.slice_size, self.dim)

@@ -14,6 +14,7 @@ from .util import (
     merge_input_shapes,
     gamma_lrp_general,
     epsilon_lrp_matmul,
+    handle_neg_index,
 )
 from .relevance_filter import relevance_filter
 from .model_specific.mosaicbert import IndexFirstAxis, IndexPutFirstAxis
@@ -160,7 +161,7 @@ class LRPPropFunctions:
     with_grad = False
 
     @classmethod
-    def detach_if_grad(cls, x: torch.Tensor):
+    def detach_if_no_grad(cls, x: torch.Tensor):
         return x if cls.with_grad else x.detach()
 
     @staticmethod
@@ -320,7 +321,7 @@ class LRPPropFunctions:
     def StackBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
             unstacked_shape = list(r.fwd_shape)
-            stack_dim = grad_fn._saved_dim
+            stack_dim = handle_neg_index(grad_fn._saved_dim, len(unstacked_shape))
             num_args = unstacked_shape[stack_dim]
             unstacked_shape = tuple(unstacked_shape[:stack_dim] + unstacked_shape[stack_dim + 1:])
             promise = {
@@ -461,8 +462,10 @@ class LRPPropFunctions:
                     return r
             else:
                 def factory_fcn(node):
+                    fwd_shape = node._input_metadata[0].shape
+                    saved_dim = handle_neg_index(node._saved_dim, len(fwd_shape))
                     def fwd_max(x):
-                        return torch.max(x, dim=node._saved_dim, keepdim=node._saved_keepdim)
+                        return torch.max(x, dim=saved_dim, keepdim=node._saved_keepdim)
                     return fwd_max
 
                 r.nest_fwd(factory_fcn, grad_fn.metadata["topo_ind"])
@@ -494,10 +497,10 @@ class LRPPropFunctions:
     def GatherBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
             def fwd_gather(node):
-                saved_dim = node._saved_dim
-                if saved_dim > len(node._saved_self.shape) - 1:
-                    saved_dim -= 2**32
-                return torch.gather(node._saved_self, saved_dim, node._saved_index)
+                upstream_shape = node._saved_self.shape
+                saved_dim = handle_neg_index(node._saved_dim, len(upstream_shape))
+                saved_index = node._saved_index # Gather does not allow negative indices :)
+                return torch.gather(node._saved_self, saved_dim, saved_index)
             r.setarg(fwd_gather(grad_fn), grad_fn, fwd_gather)
             if r.complete:
                 r = r.rin
@@ -553,18 +556,17 @@ class LRPPropFunctions:
         def get_clean_start_end(node):
             expected_fwd_shape = node._input_metadata[0].shape
             upstream_shape = node._saved_self_sym_sizes
-            sliced_dim = node._saved_dim
-            start = node._saved_start # TODO: Come back to take care of the negative index case.
+            sliced_dim = handle_neg_index(node._saved_dim, len(upstream_shape))
             full_size = upstream_shape[sliced_dim]
-            if start > full_size:
-                start = full_size - (2**32 - start)
+            start = handle_neg_index(node._saved_start, full_size)
             end = start + expected_fwd_shape[sliced_dim]
-            return start, end, full_size
+            if start < 0 and end == 0:
+                end = None
+            return start, end, full_size, sliced_dim
 
         def create_pad(node):
             upstream_shape = node._saved_self_sym_sizes
-            sliced_dim = node._saved_dim
-            start, end, full_size = get_clean_start_end(node)
+            start, end, full_size, sliced_dim = get_clean_start_end(node)
 
             # We wish to pad r so that it becomes the correct size along the sliced dimension
             pad = []
@@ -580,9 +582,9 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             def fwd_factory(node):
-                start, end, _ = get_clean_start_end(node)
+                start, end, _, saved_dim = get_clean_start_end(node)
                 def fwd_slice(x):
-                    return torch.ops.aten.slice(x, node._saved_dim, start, end)
+                    return torch.ops.aten.slice(x, saved_dim, start, end)
                 return fwd_slice
             
             def bwd_factory(node):
@@ -593,7 +595,7 @@ class LRPPropFunctions:
             r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
             r.nest_bwd("self", grad_fn.metadata["topo_ind"])
             return r
-        return F.pad(r, create_pad(grad_fn))
+        return grad_fn(r)#F.pad(r, create_pad(grad_fn))
 
     @staticmethod
     @output_relevances
@@ -608,15 +610,6 @@ class LRPPropFunctions:
             r.nest_fwd(fwd_factory, grad_fn._metadata["topo_ind"])
             r.nest_bwd("self", grad_fn.metadata["topo_ind"])
             return r
-        return grad_fn(r)
-    
-    @staticmethod
-    def SimpleShapeBackwardProp(grad_fn, r):
-        if isinstance(r, Promise):
-            r.nest_fwd("self", grad_fn.metadata["topo_ind"])
-            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
-            return r
-
         return grad_fn(r)
 
     @staticmethod
@@ -634,8 +627,11 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             def fwd_factory(node):
+                upstream_shape = node._saved_self_sym_sizes
+                saved_dim = handle_neg_index(node._saved_dim, len(upstream_shape))
+                saved_index = handle_neg_index(node._saved_index, upstream_shape[saved_dim])
                 def fwd_select(x):
-                    return torch.select(x, node._saved_dim, node._saved_index)
+                    return torch.select(x, saved_dim, saved_index)
                 return fwd_select
 
             r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
@@ -644,20 +640,21 @@ class LRPPropFunctions:
 
         return grad_fn(r)
 
-    @classmethod
+    @staticmethod
     @output_relevances
     @add_node_to_promise_path
+    def TransposeBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            r.nest_fwd("self", grad_fn.metadata["topo_ind"])
+            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
+            return r
+        return grad_fn(r)
+
+    @classmethod
     def TBackwardProp(cls, grad_fn, r):
         # Not sure why TBackward is different from TransposeBackward, but it seems like this is only
         # in Linear layer matmuls on W for xW^T before Mm and Addmm operations.
-        # assert len(r.shape) == 2, "Assumption was that matrix would be 2d Linear weights." # For now assume that it is only 2d matmuls for Linear layers.
-        return cls.SimpleShapeBackwardProp(grad_fn, r)
-
-    @classmethod
-    @output_relevances
-    @add_node_to_promise_path
-    def TransposeBackwardProp(cls, grad_fn, r):
-        return cls.SimpleShapeBackwardProp(grad_fn, r)
+        return cls.TransposeBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -681,9 +678,8 @@ class LRPPropFunctions:
     def ExpandBackwardProp(grad_fn, r):
 
         def fwd_factory(node):
-            expected_fwd_shape = node._input_metadata[0].shape
+            downstream_shape = node._input_metadata[0].shape
             upstream_shape = node._saved_self_sym_sizes
-            downstream_shape = expected_fwd_shape
             assert len(upstream_shape) == len(downstream_shape), "Expand should not increase number of dimensions."
             expand_input = [ dim2 if dim1 != dim2 else -1 for dim1, dim2 in zip(upstream_shape, downstream_shape) ]
 
@@ -723,9 +719,10 @@ class LRPPropFunctions:
     def UnsqueezeBackwardProp(cls, grad_fn, r):
 
         def fwd_factory(node):
-            dim = node._saved_dim
+            fwd_shape = node._input_metadata[0].shape
+            saved_dim = handle_neg_index(node._saved_dim, len(fwd_shape))
             def fwd_unsqueeze(x):
-                return x.unsqueeze(dim=dim)
+                return x.unsqueeze(dim=saved_dim)
             return fwd_unsqueeze
 
         if isinstance(r, Promise):
@@ -741,10 +738,30 @@ class LRPPropFunctions:
     def SqueezeBackwardProp(cls, grad_fn, r):
 
         def fwd_factory(node):
-            dim = node._saved_dim
+            fwd_shape = node._input_metadata[0].shape
+            saved_dim = handle_neg_index(node._saved_dim, len(fwd_shape))
             def fwd_squeeze(x):
-                return x.squeeze(dim=dim)
+                return x.squeeze(dim=saved_dim)
             return fwd_squeeze
+
+        if isinstance(r, Promise):
+            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            r.nest_bwd("self", grad_fn.metadata["topo_ind"])
+            return r
+
+        return grad_fn(r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def AsStridedBackwardProp(cls, grad_fn, r):
+
+        def fwd_factory(node):
+            size = node._saved_size
+            stride = node._saved_stride
+            def fwd_as_strided(x):
+                return x.as_strided(size=size, stride=stride)
+            return fwd_as_strided
 
         if isinstance(r, Promise):
             r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
@@ -770,6 +787,12 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def ToCopyBackwardProp(grad_fn, r):
         return r
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def CopySlicesBackwardProp(grad_fn, r):
+        return r
 
     @staticmethod
     @output_relevances
@@ -786,7 +809,7 @@ class LRPPropFunctions:
                     return fwd_mul
                 r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
             else:
-                r.setarg(LRPPropFunctions.detach_if_grad(arg1) * LRPPropFunctions.detach_if_grad(arg2), grad_fn, lambda fcn: LRPPropFunctions.detach_if_grad(fcn._saved_self) * LRPPropFunctions.detach_if_grad(fcn._saved_other))
+                r.setarg(LRPPropFunctions.detach_if_no_grad(arg1) * LRPPropFunctions.detach_if_no_grad(arg2), grad_fn, lambda fcn: LRPPropFunctions.detach_if_no_grad(fcn._saved_self) * LRPPropFunctions.detach_if_no_grad(fcn._saved_other))
                 if r.complete:
                     r = r.rin
                 else:
@@ -796,7 +819,7 @@ class LRPPropFunctions:
             # Tensor-scalar product, disregard scalar
             return r, 0.0
         
-        arg1, arg2 = LRPPropFunctions.detach_if_grad(arg1), LRPPropFunctions.detach_if_grad(arg2)
+        arg1, arg2 = LRPPropFunctions.detach_if_no_grad(arg1), LRPPropFunctions.detach_if_no_grad(arg2)
 
         denom = arg1.abs() + arg2.abs() + epsilon
 
@@ -823,7 +846,7 @@ class LRPPropFunctions:
                     return fwd_div
                 r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
             else:
-                r.setarg(LRPPropFunctions.detach_if_grad(arg1) / LRPPropFunctions.detach_if_grad(arg2), grad_fn, lambda fcn: LRPPropFunctions.detach_if_grad(fcn._saved_self) / LRPPropFunctions.detach_if_grad(fcn._saved_other))
+                r.setarg(LRPPropFunctions.detach_if_no_grad(arg1) / LRPPropFunctions.detach_if_no_grad(arg2), grad_fn, lambda fcn: LRPPropFunctions.detach_if_no_grad(fcn._saved_self) / LRPPropFunctions.detach_if_no_grad(fcn._saved_other))
                 if r.complete:
                     r = r.rin
                 else:
@@ -833,7 +856,7 @@ class LRPPropFunctions:
             # Tensor-scalar product, disregard scalar
             return r, 0.0
         
-        arg1, arg2 = LRPPropFunctions.detach_if_grad(arg1), LRPPropFunctions.detach_if_grad(arg2)
+        arg1, arg2 = LRPPropFunctions.detach_if_no_grad(arg1), LRPPropFunctions.detach_if_no_grad(arg2)
 
         denom = arg1.abs() + (1 / arg2).abs() + epsilon
         r1 = (arg1.abs() / denom) * r
@@ -848,8 +871,8 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def MmBackwardProp(grad_fn, r):
-        x = LRPPropFunctions.detach_if_grad(grad_fn._saved_self) # s d
-        weights = LRPPropFunctions.detach_if_grad(grad_fn._saved_mat2) # d o
+        x = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_self) # s d
+        weights = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_mat2) # d o
 
         #### TODO: (Aug 21, 2025) There is an overlooked case of when one of x, weights is None because one of them does not have requires_grad=True
         # However, this is most likely mitigated if the model is in training mode / using requires_grad as a whole.
@@ -859,13 +882,14 @@ class LRPPropFunctions:
         z = x @ weights # s o
 
         if isinstance(r, Promise):
-            r.setarg(z, grad_fn, lambda fcn: LRPPropFunctions.detach_if_grad(fcn._saved_self) @ LRPPropFunctions.detach_if_grad(fcn._saved_mat2))
+            r.setarg(z, grad_fn, lambda fcn: LRPPropFunctions.detach_if_no_grad(fcn._saved_self) @ LRPPropFunctions.detach_if_no_grad(fcn._saved_mat2))
             if r.complete:
                 r = r.rin
             else:
                 # If this is the first branch of the promise
                 return r # We will check if the promise is complete in the graph traversal
         
+
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:
@@ -885,25 +909,18 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def BmmBackwardProp(grad_fn, r):
+        # assert r.shape == z.shape, f"r shape {r.shape} must match z shape {z.shape}"
 
-        if "pre_promise" in grad_fn.metadata and len((pre_promise := grad_fn.metadata["pre_promise"]).fwd_list) == 0:
-            assert pre_promise.ready, f"Traversed Node after already placing a Pre-Promise, but the Promise is not ready, at {grad_fn}, topo-ind {grad_fn.metadata['topo_ind']}"
-            z = pre_promise.arg
-        else:
-            mat1 = LRPPropFunctions.detach_if_grad(grad_fn._saved_self) # b s d
-            mat2 = LRPPropFunctions.detach_if_grad(grad_fn._saved_mat2) # b d o
-
-            z = torch.bmm(mat1, mat2) # b s o
-
-            # assert r.shape == z.shape, f"r shape {r.shape} must match z shape {z.shape}"
-
-            if isinstance(r, Promise):
-                r.setarg(z, grad_fn, lambda fcn: LRPPropFunctions.detach_if_grad(fcn._saved_self) @ LRPPropFunctions.detach_if_grad(fcn._saved_mat2))
-                if r.complete:
-                    r = r.rin
-                else:
-                    # If this is the first branch of the promise
-                    return r # We will check if the promise is complete in the graph traversal
+        mat1 = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_self) # b s d
+        mat2 = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_mat2) # b d o
+        z = torch.bmm(mat1, mat2) # b s o
+        if isinstance(r, Promise):
+            r.setarg(z, grad_fn, lambda fcn: LRPPropFunctions.detach_if_no_grad(fcn._saved_self) @ LRPPropFunctions.detach_if_no_grad(fcn._saved_mat2))
+            if r.complete:
+                r = r.rin
+            else:
+                # If this is the first branch of the promise
+                return r # We will check if the promise is complete in the graph traversal
 
         rin_mat1, rin_mat2 = epsilon_lrp_matmul(mat1, mat2, z, r, bilinear=grad_fn.metadata["use_bilinear"])
 
@@ -927,7 +944,7 @@ class LRPPropFunctions:
             else:
                 raise ValueError(f"Expected {grad_fn} at topo-ind {grad_fn.metadata['topo_ind']} to be either 1, 2, or 3 dim, but {num_dims} was found.")
 
-            return conv_f(LRPPropFunctions.detach_if_grad(node._saved_input), LRPPropFunctions.detach_if_grad(node._saved_weight), None, node._saved_stride, node._saved_padding, node._saved_dilation, node._saved_groups), conv_f
+            return conv_f(LRPPropFunctions.detach_if_no_grad(node._saved_input), LRPPropFunctions.detach_if_no_grad(node._saved_weight), None, node._saved_stride, node._saved_padding, node._saved_dilation, node._saved_groups), conv_f
 
         # if "pre_promise" in grad_fn.metadata and len((pre_promise := grad_fn.metadata["pre_promise"]).fwd_list) == 0:
         #     assert pre_promise.ready, f"Traversed Node after already placing a Pre-Promise, but the Promise is not ready, at {grad_fn}, topo-ind {grad_fn.metadata['topo_ind']}"
@@ -951,8 +968,8 @@ class LRPPropFunctions:
         else:
             conv_T = F.conv_transpose3d
 
-        x = LRPPropFunctions.detach_if_grad(grad_fn._saved_input)
-        weights = LRPPropFunctions.detach_if_grad(grad_fn._saved_weight)
+        x = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_input)
+        weights = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_weight)
 
         filter_val = grad_fn.metadata["relevance_filter"]
 
@@ -975,7 +992,13 @@ class LRPPropFunctions:
         r_input = x * c
         r_input = r_input
 
-        grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        if num_dims == 1:
+            grad_w = torch.nn.grad.conv1d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        elif num_dims == 2:
+            grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        else:
+            grad_w = torch.nn.grad.conv3d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
+        
         r_weight = weights * grad_w  # elementwise, scales by weight itself
         r_weight = r_weight
 
@@ -1056,13 +1079,13 @@ class LRPPropFunctions:
         is_cpu = "is_cpu" in grad_fn.metadata
         is_causal = grad_fn._saved_is_causal
 
-        attn_mask : torch.Tensor = None if (mask := getattr(grad_fn, "_saved_attn_mask", None)) is None else LRPPropFunctions.detach_if_grad(mask)
-        attn_bias : torch.Tensor = None if (bias := getattr(grad_fn, "_saved_attn_bias", None)) is None else LRPPropFunctions.detach_if_grad(bias)
-        query : torch.Tensor = LRPPropFunctions.detach_if_grad(grad_fn._saved_query)
-        key : torch.Tensor = LRPPropFunctions.detach_if_grad(grad_fn._saved_key)
-        value : torch.Tensor = LRPPropFunctions.detach_if_grad(grad_fn._saved_value)
-        logsumexp : torch.Tensor = LRPPropFunctions.detach_if_grad(grad_fn._saved_logsumexp) if is_cpu else LRPPropFunctions.detach_if_grad(grad_fn._saved_log_sumexp) # Annoying difference between CPU and GPU implementations
-        output : torch.Tensor = LRPPropFunctions.detach_if_grad(grad_fn._saved_output)
+        attn_mask : torch.Tensor = None if (mask := getattr(grad_fn, "_saved_attn_mask", None)) is None else LRPPropFunctions.detach_if_no_grad(mask)
+        attn_bias : torch.Tensor = None if (bias := getattr(grad_fn, "_saved_attn_bias", None)) is None else LRPPropFunctions.detach_if_no_grad(bias)
+        query : torch.Tensor = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_query)
+        key : torch.Tensor = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_key)
+        value : torch.Tensor = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_value)
+        logsumexp : torch.Tensor = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_logsumexp) if is_cpu else LRPPropFunctions.detach_if_no_grad(grad_fn._saved_log_sumexp) # Annoying difference between CPU and GPU implementations
+        output : torch.Tensor = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_output)
         scale : float = grad_fn._saved_scale if grad_fn._saved_scale is not None else 1 / math.sqrt(query.size(-1))
 
         if hasattr(grad_fn, "_saved_enable_gqa"):
@@ -1088,8 +1111,8 @@ class LRPPropFunctions:
                 repeat_interleave_grad_fn_v = value.grad_fn
             key.requires_grad_(False)
             value.requires_grad_(False)
-            key = LRPPropFunctions.detach_if_grad(key)
-            value = LRPPropFunctions.detach_if_grad(value)
+            key = LRPPropFunctions.detach_if_no_grad(key)
+            value = LRPPropFunctions.detach_if_no_grad(value)
             
 
         L, S = query.size(-2), key.size(-2)
@@ -1155,8 +1178,6 @@ class LRPPropFunctions:
             return r_q, r_k, r_v, 0.0
     
     @classmethod
-    @output_relevances
-    @add_node_to_promise_path
     def ScaledDotProductFlashAttentionForCpuBackwardProp(cls, grad_fn, r):
         grad_fn.metadata["is_cpu"] = True
         return cls.ScaledDotProductEfficientAttentionBackwardProp(grad_fn, r)
@@ -1167,11 +1188,11 @@ class LRPPropFunctions:
     def NativeLayerNormBackwardProp(grad_fn, r):
 
         def layerNorm(fcn):
-            x = LRPPropFunctions.detach_if_grad(fcn._saved_input)
-            mean = LRPPropFunctions.detach_if_grad(fcn._saved_result1)
-            gamma = LRPPropFunctions.detach_if_grad(fcn._saved_weight)
-            beta = LRPPropFunctions.detach_if_grad(fcn._saved_bias)
-            rec_stddev = LRPPropFunctions.detach_if_grad(fcn._saved_result2)
+            x = LRPPropFunctions.detach_if_no_grad(fcn._saved_input)
+            mean = LRPPropFunctions.detach_if_no_grad(fcn._saved_result1)
+            gamma = LRPPropFunctions.detach_if_no_grad(fcn._saved_weight)
+            beta = LRPPropFunctions.detach_if_no_grad(fcn._saved_bias)
+            rec_stddev = LRPPropFunctions.detach_if_no_grad(fcn._saved_result2)
             normalized = (x - mean) * rec_stddev
             return normalized * gamma + beta
 
@@ -1194,9 +1215,9 @@ class LRPPropFunctions:
     def NativeBatchNormBackwardProp(grad_fn, r):
 
         def batchNorm(fcn):
-            x = LRPPropFunctions.detach_if_grad(fcn._saved_input)
-            mean = LRPPropFunctions.detach_if_grad(fcn._saved_result1)
-            rec_stddev = LRPPropFunctions.detach_if_grad(fcn._saved_result2)
+            x = LRPPropFunctions.detach_if_no_grad(fcn._saved_input)
+            mean = LRPPropFunctions.detach_if_no_grad(fcn._saved_result1)
+            rec_stddev = LRPPropFunctions.detach_if_no_grad(fcn._saved_result2)
             normalized = (x - mean) * rec_stddev
             return normalized
 
@@ -1216,7 +1237,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def GeluBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(F.gelu(LRPPropFunctions.detach_if_grad(grad_fn._saved_self)), grad_fn, lambda fcn: torch.nn.GELU(LRPPropFunctions.detach_if_grad(fcn._saved_self)))
+            r.setarg(F.gelu(LRPPropFunctions.detach_if_no_grad(grad_fn._saved_self)), grad_fn, lambda fcn: torch.nn.GELU(LRPPropFunctions.detach_if_no_grad(fcn._saved_self)))
             if r.complete:
                 r = r.rin
         return r
@@ -1239,7 +1260,7 @@ class LRPPropFunctions:
     @skip_redundant_promise
     def SoftmaxBackwardProp(grad_fn, r):
         if "use_attn_lrp" not in grad_fn.metadata:
-            result = grad_fn._saved_result.detach()
+            result = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_result)
             if isinstance(r, Promise):
                 r.setarg(result, grad_fn, "_saved_result")
                 if r.complete:
@@ -1273,8 +1294,6 @@ class LRPPropFunctions:
         return promise
     
     @classmethod
-    @output_relevances
-    @add_node_to_promise_path
     def SafeSoftmaxBackwardProp(cls, grad_fn, r):
         return cls.SoftmaxBackwardProp(grad_fn, r)
     
@@ -1295,7 +1314,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def SqrtBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(LRPPropFunctions.detach_if_grad(grad_fn._saved_result), grad_fn, "_saved_result")
+            r.setarg(LRPPropFunctions.detach_if_no_grad(grad_fn._saved_result), grad_fn, "_saved_result")
             if r.complete:
                 r = r.rin
         return r
@@ -1305,7 +1324,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def RsqrtBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(LRPPropFunctions.detach_if_grad(grad_fn._saved_result), grad_fn, "_saved_result")
+            r.setarg(LRPPropFunctions.detach_if_no_grad(grad_fn._saved_result), grad_fn, "_saved_result")
             if r.complete:
                 r = r.rin
         return r
@@ -1319,7 +1338,7 @@ class LRPPropFunctions:
 
         if isinstance(r, Promise):
             if hasattr(grad_fn, "_saved_result"):
-                r.setarg(LRPPropFunctions.detach_if_grad(grad_fn._saved_result), grad_fn, "_saved_result")
+                r.setarg(LRPPropFunctions.detach_if_no_grad(grad_fn._saved_result), grad_fn, "_saved_result")
                 if r.complete:
                     return r.rin
                 return r
@@ -1372,9 +1391,12 @@ class LRPPropFunctions:
 
         return IndexFirstAxis.backward(grad_fn, r), 0.0
     
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
     def NativeDropoutBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(LRPPropFunctions.detach_if_grad(grad_fn._saved_result1), grad_fn, "_saved_result1")
+            r.setarg(LRPPropFunctions.detach_if_no_grad(grad_fn._saved_result1), grad_fn, "_saved_result1")
             if r.complete:
                 return r.rin
         return r
@@ -1384,16 +1406,16 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     def AccumulateGradProp(grad_fn, r):
         if isinstance(r, Promise):
-            r.setarg(LRPPropFunctions.detach_if_grad(grad_fn.variable), grad_fn, "variable")
+            r.setarg(LRPPropFunctions.detach_if_no_grad(grad_fn.variable), grad_fn, "variable")
         return 0.0
 
     @staticmethod
     @output_relevances
     @add_node_to_promise_path
     def LRPCheckpointBackwardProp(grad_fn, r):
-        saved_input = LRPPropFunctions.detach_if_grad(grad_fn.saved_tensors[0])
+        saved_input = LRPPropFunctions.detach_if_no_grad(grad_fn.saved_tensors[0])
         if isinstance(r, Promise):
-            r.setarg(saved_input, grad_fn, lambda fcn: LRPPropFunctions.detach_if_grad(fcn.saved_tensors[0]))
+            r.setarg(saved_input, grad_fn, lambda fcn: LRPPropFunctions.detach_if_no_grad(fcn.saved_tensors[0]))
             if r.complete:
                 r = r.rin
                 LRPCheckpoint.save_val(grad_fn, r)

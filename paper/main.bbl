@@ -1,4 +1,4 @@
-\begin{thebibliography}{34}
+\begin{thebibliography}{44}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -36,19 +36,20 @@ Christopher~J. Anders, David Neumann, Wojciech Samek, Klaus{-}Robert
 \newblock \emph{CoRR}, abs/2106.13200, 2021.
 \newblock URL \url{https://arxiv.org/abs/2106.13200}.
 
+\bibitem[Babu et~al.(2021)Babu, Wang, Tjandra, Lakhotia, Xu, Goyal, Singh, von
+  Platen, Saraf, Pino, Baevski, Conneau, and Auli]{babu2021xlsr}
+Arun Babu, Changhan Wang, Andros Tjandra, Kushal Lakhotia, Qiantong Xu, Naman
+  Goyal, Kritika Singh, Patrick von Platen, Yatharth Saraf, Juan Pino, Alexei
+  Baevski, Alexis Conneau, and Michael Auli.
+\newblock Xls-r: Self-supervised cross-lingual speech representation learning
+  at scale, 2021.
+\newblock URL \url{https://arxiv.org/abs/2111.09296}.
+
 \bibitem[Bach et~al.(2015)Bach, Binder, Montavon, et~al.]{bach2015pixel}
 Sebastian Bach, Alexander Binder, Gr{\"e}goire Montavon, et~al.
 \newblock Pixel-wise explanations for non-linear classifier decisions by
   layer-wise relevance propagation.
 \newblock \emph{PLoS ONE}, 10\penalty0 (7):\penalty0 e0130140, 2015.
-
-\bibitem[Bassi et~al.(2024)Bassi, Decherchi, and Cavalli]{bassi2024fasterisnet}
-Pedro R. A.~S. Bassi, Sergio Decherchi, and Andrea Cavalli.
-\newblock Faster isnet for background bias mitigation on deep neural networks.
-\newblock \emph{IEEE Access}, 12:\penalty0 155151–155167, 2024.
-\newblock ISSN 2169-3536.
-\newblock \doi{10.1109/access.2024.3461773}.
-\newblock URL \url{http://dx.doi.org/10.1109/ACCESS.2024.3461773}.
 
 \bibitem[Böhle et~al.(2019)Böhle, Eitel, Weygandt, and
   Ritter]{bohle2019alzheimers}
@@ -98,6 +99,22 @@ Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn,
   scale, 2021.
 \newblock URL \url{https://arxiv.org/abs/2010.11929}.
 
+\bibitem[Dubey \& et~al.(2024)Dubey and et~al.]{dubey2024llama3}
+Abhimanyu Dubey and et~al.
+\newblock The llama 3 herd of models, 2024.
+\newblock URL \url{https://arxiv.org/abs/2407.21783}.
+
+\bibitem[Gu \& Dao(2024)Gu and Dao]{gu2024mamba}
+Albert Gu and Tri Dao.
+\newblock Mamba: Linear-time sequence modeling with selective state spaces,
+  2024.
+\newblock URL \url{https://arxiv.org/abs/2312.00752}.
+
+\bibitem[He et~al.(2015)He, Zhang, Ren, and Sun]{he2015resnet}
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+\newblock Deep residual learning for image recognition, 2015.
+\newblock URL \url{https://arxiv.org/abs/1512.03385}.
+
 \bibitem[Howard(2019)]{howard2019imagenette}
 Jeremy Howard.
 \newblock Imagenette: A smaller subset of 10 easily classified classes from
@@ -134,6 +151,14 @@ Sebastian~Husch Lee.
 \newblock flan-t5-large for extractive qa, 2023.
 \newblock URL \url{https://huggingface.co/sjrhuschlee/flan-t5-large-squad2}.
 \newblock Accessed: 2025-12-06.
+
+\bibitem[Liu et~al.(2022)Liu, Eisenschlos, Piccinno, Krichene, Pang, Lee,
+  Joshi, Chen, Collier, and Altun]{liu2022deplot}
+Fangyu Liu, Julian~Martin Eisenschlos, Francesco Piccinno, Syrine Krichene,
+  Chenxi Pang, Kenton Lee, Mandar Joshi, Wenhu Chen, Nigel Collier, and Yasemin
+  Altun.
+\newblock Deplot: One-shot visual language reasoning by plot-to-table
+  translation, 2022.
 
 \bibitem[Liu et~al.(2019)Liu, Ott, Goyal, Du, Joshi, Chen, Levy, Lewis,
   Zettlemoyer, and Stoyanov]{liu2019roberta}
@@ -176,6 +201,20 @@ Seitaro Otsuki, Tsumugi Iida, Félix Doublet, Tsubasa Hirakawa, Takayoshi
 \newblock Layer-wise relevance propagation with conservation property for
   resnet, 2024.
 \newblock URL \url{https://arxiv.org/abs/2407.09115}.
+
+\bibitem[Radford et~al.(2019)Radford, Wu, Child, Luan, Amodei, and
+  Sutskever]{radford2019gpt2}
+Alec Radford, Jeff Wu, Rewon Child, David Luan, Dario Amodei, and Ilya
+  Sutskever.
+\newblock Language models are unsupervised multitask learners.
+\newblock \emph{OpenAI}, 2019.
+
+\bibitem[Radford et~al.(2022)Radford, Kim, Xu, Brockman, McLeavey, and
+  Sutskever]{radford2022whisper}
+Alec Radford, Jong~Wook Kim, Tao Xu, Greg Brockman, Christine McLeavey, and
+  Ilya Sutskever.
+\newblock Robust speech recognition via large-scale weak supervision, 2022.
+\newblock URL \url{https://arxiv.org/abs/2212.04356}.
 
 \bibitem[Rajpurkar et~al.(2018)Rajpurkar, Jia, and Liang]{rajpurkar2018squadv2}
 Pranav Rajpurkar, Robin Jia, and Percy Liang.
@@ -249,6 +288,32 @@ Mukund Sundararajan, Ankur Taly, and Qiqi Yan.
 \newblock Axiomatic attribution for deep networks.
 \newblock \emph{International Conference on Machine Learning}, pp.\
   3319--3328, 2017.
+
+\bibitem[Tan \& Le(2021)Tan and Le]{tan2021efficientnetv2}
+Mingxing Tan and Quoc~V. Le.
+\newblock Efficientnetv2: Smaller models and faster training, 2021.
+\newblock URL \url{https://arxiv.org/abs/2104.00298}.
+
+\bibitem[Team(2025{\natexlab{a}})]{gemmateam2025gemma3}
+Gemma Team.
+\newblock Gemma 3 technical report, 2025{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2503.19786}.
+
+\bibitem[Team(2025{\natexlab{b}})]{yang2025qwen3}
+Qwen Team.
+\newblock Qwen3 technical report, 2025{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2505.09388}.
+
+\bibitem[Tschannen et~al.(2025)Tschannen, Gritsenko, Wang, Naeem,
+  Alabdulmohsin, Parthasarathy, Evans, Beyer, Xia, Mustafa, Hénaff, Harmsen,
+  Steiner, and Zhai]{tschannen2025siglip2}
+Michael Tschannen, Alexey Gritsenko, Xiao Wang, Muhammad~Ferjad Naeem, Ibrahim
+  Alabdulmohsin, Nikhil Parthasarathy, Talfan Evans, Lucas Beyer, Ye~Xia, Basil
+  Mustafa, Olivier Hénaff, Jeremiah Harmsen, Andreas Steiner, and Xiaohua
+  Zhai.
+\newblock Siglip 2: Multilingual vision-language encoders with improved
+  semantic understanding, localization, and dense features, 2025.
+\newblock URL \url{https://arxiv.org/abs/2502.14786}.
 
 \bibitem[Vaswani et~al.(2017)Vaswani, Shazeer, Parmar,
   et~al.]{vaswani2017attention}

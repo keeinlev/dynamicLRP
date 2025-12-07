@@ -5,7 +5,6 @@ from .util import (
     decompose_addmmbackward,
     decompose_convbackward,
     decompose_addcmulbackward,
-    LRPCheckpoint,
 )
 
 DECOMPOSABLE_FUNCTIONS = (
@@ -35,7 +34,7 @@ def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor],
     elif isinstance(output_tuple_or_tensor, tuple):
         roots = [ output.grad_fn for output in output_tuple_or_tensor ]
     visited = set()
-    names = set()
+    names = {}
     topo_stack = []
     updated_roots = [ root for root in roots ]
     param_nodes = []
@@ -119,7 +118,9 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack,
 
     # Add processed node's name to the names set
     if (fcn_name := type(fcn).__name__) not in names:
-        names.add(fcn_name)
+        names[fcn_name] = 1
+    else:
+        names[fcn_name] += 1
     # Assign adjacencies
     # NOTE: Out-adjacencies will account for None, but in-adjacencies will not.
     # This is because we use out_adj for verifying number of expected fwd inputs 

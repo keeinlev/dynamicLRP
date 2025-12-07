@@ -287,6 +287,9 @@ def train():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
 
+    model_file_path = "../attribution_guided_training/output/DNABERT2_AGT_EMP_H3/checkpoint-600/model.safetensors"
+    loaded_state_dict = load_file(model_file_path, device="cuda")
+    model.load_state_dict(loaded_state_dict)
     # define trainer
     trainer = transformers.Trainer(model=model,
                                    tokenizer=tokenizer,
@@ -296,20 +299,19 @@ def train():
                                    train_dataset=train_dataset,
                                    eval_dataset=val_dataset,
                                    data_collator=data_collator)
-    
     # model.bert.encoder.layer[0].attention.self.register_forward_hook(checkpoint_hook)
-    # trainer.train_lrp_engine = LRPEngine()
+    # trainer.train_lrp_engine = LRPEngine(with_grad=True)
     # trainer.eval_lrp_engine = LRPEngine()
 
-    trainer.train()
+    # trainer.train()
 
-    if training_args.save_model:
-        trainer.save_state()
-        safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+    # if training_args.save_model:
+    #     trainer.save_state()
+    #     safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 
     # get the evaluation results from trainer
     if training_args.eval_and_save_results:
-        results_path = os.path.join("output/dnabert2/results", training_args.run_name)
+        results_path = os.path.join("output/dnabert2/results", training_args.run_name, "dh")
 
         # Run eval with each head disabled one at a time and save results
         if DISABLED_HEAD_EVAL:

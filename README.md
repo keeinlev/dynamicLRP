@@ -1,7 +1,7 @@
 # Dynamic Layerwise Relevance Propagation
 ## By Kevin Lee and Dr. Pablo M. Arias
 ## June - December 2025
-## [Paper (submission pending)](https://arxiv.org/submit/7057400/view)
+## [Paper (arXiv submission pending)](https://github.com/keeinlev/dynamicLRP/blob/master/paper.pdf)
 
 ![Operation-level LRP](documentation/op-level-lrp-motivation.png)
 

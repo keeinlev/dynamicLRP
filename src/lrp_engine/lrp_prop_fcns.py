@@ -963,26 +963,34 @@ class LRPPropFunctions:
         num_dims = len(grad_fn._saved_stride)
         if num_dims == 1:
             conv_T = F.conv_transpose1d
+            grad_w = torch.nn.grad.conv1d_weight(x, weights.shape, s, stride, padding, dilation, groups)
         elif num_dims == 2:
+            grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, stride, padding, dilation, groups)
             conv_T = F.conv_transpose2d
         else:
+            grad_w = torch.nn.grad.conv3d_weight(x, weights.shape, s, stride, padding, dilation, groups)
             conv_T = F.conv_transpose3d
 
         x = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_input)
         weights = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_weight)
+        stride = grad_fn._saved_stride
+        padding = grad_fn._saved_padding
+        dilation = grad_fn._saved_dilation
+        groups = grad_fn._saved_groups
 
         filter_val = grad_fn.metadata["relevance_filter"]
 
         if grad_fn.metadata["use_gamma"]:
             gamma = grad_fn.metadata["gamma"]
-            return gamma_lrp_general(conv_f, conv_T, {"stride": grad_fn._saved_stride, "padding": grad_fn._saved_padding, "dilation": grad_fn._saved_dilation, "groups": grad_fn._saved_groups}, x, weights, z, r, gamma, filter_val)
+            return gamma_lrp_general(conv_f, conv_T, grad_w, {"stride": stride, "padding": padding, "dilation": dilation, "groups": groups}, x, weights, z, r, gamma, filter_val)
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
         
         sign = ((z == 0.).to(z) + z.sign())
         s = r / (z + sign * epsilon)
-        c = conv_T(s, weights, None, grad_fn._saved_stride, grad_fn._saved_padding, 0, grad_fn._saved_groups, grad_fn._saved_dilation)
+        output_padding = [ x.shape[i] - ((z.shape[i] - 1) * stride[i] - 2 * padding[i] + dilation[i]*(weights.shape[i] - 1) + 1) for i in range(-num_dims, 0) ]
+        c = conv_T(s, weights, None, stride, padding, output_padding, groups, dilation)
 
         if c.shape != x.shape:
             # Assume c is larger due to padding, center-crop down to input H, W
@@ -992,13 +1000,6 @@ class LRPPropFunctions:
         r_input = x * c
         r_input = r_input
 
-        if num_dims == 1:
-            grad_w = torch.nn.grad.conv1d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
-        elif num_dims == 2:
-            grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
-        else:
-            grad_w = torch.nn.grad.conv3d_weight(x, weights.shape, s, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)
-        
         r_weight = weights * grad_w  # elementwise, scales by weight itself
         r_weight = r_weight
 
@@ -1216,8 +1217,8 @@ class LRPPropFunctions:
 
         def batchNorm(fcn):
             x = LRPPropFunctions.detach_if_no_grad(fcn._saved_input)
-            mean = LRPPropFunctions.detach_if_no_grad(fcn._saved_result1)
-            rec_stddev = LRPPropFunctions.detach_if_no_grad(fcn._saved_result2)
+            mean = LRPPropFunctions.detach_if_no_grad(fcn._saved_result1).unsqueeze(-1).unsqueeze(-1)
+            rec_stddev = LRPPropFunctions.detach_if_no_grad(fcn._saved_result2).unsqueeze(-1).unsqueeze(-1)
             normalized = (x - mean) * rec_stddev
             return normalized
 

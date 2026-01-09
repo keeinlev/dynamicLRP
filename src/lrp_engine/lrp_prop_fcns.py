@@ -426,7 +426,7 @@ class LRPPropFunctions:
             bucket = grad_fn.metadata["bucket"]
             del grad_fn.metadata["bucket"]
 
-            split_size = getattr(grad_fn, "_saved_split_size", None)
+            split_size = getattr(grad_fn, "_saved_split_size", getattr(grad_fn, "_saved_split_sizes", None)) # Can be an int or a tuple for non-uniform splits
             p = SplitBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim, split_size)
 
             for i, parent in parents:
@@ -446,6 +446,10 @@ class LRPPropFunctions:
             return p
         else:
             return grad_fn(*r)
+    
+    @classmethod
+    def SplitWithSizesBackwardProp(cls, grad_fn, r):
+        return cls.SplitBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -1043,19 +1047,19 @@ class LRPPropFunctions:
             else:
                 return r
 
-        # ChatGPT'd this, TODO: come back and understand the math
+        # ChatGPT'd this, but I understand what it's doing
         x = grad_fn._saved_self
         N, C, H_in, W_in = x.shape
-        H_out, W_out = tuple(list(grad_fn._input_metadata[0].shape)[-2:])
+        H_out, W_out = tuple(grad_fn._input_metadata[0].shape[-2:])
 
         rin = torch.zeros_like(x)
 
         for oh in range(H_out):
-            h_start = int(torch.floor(torch.tensor(oh * H_in / H_out)))
-            h_end   = int(torch.ceil(torch.tensor((oh + 1) * H_in / H_out)))
+            h_start = int(math.floor(oh * H_in / H_out))
+            h_end   = int(math.ceil((oh + 1) * H_in / H_out))
             for ow in range(W_out):
-                w_start = int(torch.floor(torch.tensor(ow * W_in / W_out)))
-                w_end   = int(torch.ceil(torch.tensor((ow + 1) * W_in / W_out)))
+                w_start = int(math.floor(ow * W_in / W_out))
+                w_end   = int(math.ceil((ow + 1) * W_in / W_out))
 
                 region_size = (h_end - h_start) * (w_end - w_start)
 

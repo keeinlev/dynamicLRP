@@ -159,9 +159,10 @@ def visualize_abpc(baseline, morf_preds, lerf_preds, patch_size, occlusion_iters
 
 def default_model_eval_fcn(model, examples : list[torch.Tensor], labels : list[torch.Tensor]):
     preds = [0, 0]
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     for i in tqdm(range(len(examples))):
-        img_tensor = examples[i]
+        img_tensor = examples[i].to(device)
         true_label = labels[i]
         output = model(img_tensor)
 
@@ -234,7 +235,7 @@ def run_morf_lerf_occlusion_patches(model, heatmaps, patch_size, dims, occlusion
     print(f"Running {occlusion_iters} occlusion iterations with {patch_size}x{patch_size} patches")
 
     # Load fresh images for MoRF occlusion
-    morf_imgs_list, labels_list = image_gen_fcn(num_samples=num_samples)
+    morf_imgs_list, labels_list = image_gen_fcn(num_samples)
     morf_preds = []
 
     if baseline is None:
@@ -279,7 +280,7 @@ def run_morf_lerf_occlusion_patches(model, heatmaps, patch_size, dims, occlusion
         patch_mask_morf = [ patches.flatten().topk((i + 2) * occlusion_step).indices.cpu() for patches in heatmap_pos_patches ]
 
     # Do everything again for LeRF
-    lerf_imgs_list, _ = image_gen_fcn(num_samples=num_samples)
+    lerf_imgs_list, _ = image_gen_fcn(num_samples)
     lerf_preds = []
     for i in range(occlusion_iters):
         # Do occlusion
@@ -363,7 +364,7 @@ def run_morf_lerf_occlusion_pixels(model, heatmaps, dims, occlusion_step, num_sa
     print(f"Running {occlusion_iters} occlusion iterations with {occlusion_step} pixels each iteration.")
 
     # Load fresh images for MoRF occlusion
-    morf_imgs_list, labels_list = image_gen_fcn(num_samples=num_samples)
+    morf_imgs_list, labels_list = image_gen_fcn(num_samples)
     morf_preds = []
 
     if baseline is None:
@@ -406,7 +407,7 @@ def run_morf_lerf_occlusion_pixels(model, heatmaps, dims, occlusion_step, num_sa
         pixel_mask_morf = [ pixels.flatten().topk((i + 2) * occlusion_step).indices.cpu() for pixels in heatmaps ]
 
     # Do everything again for LeRF
-    lerf_imgs_list, _ = image_gen_fcn(num_samples=num_samples)
+    lerf_imgs_list, _ = image_gen_fcn(num_samples)
     lerf_preds = []
     for i in range(occlusion_iters):
         # Do occlusion

@@ -898,7 +898,7 @@ class LRPPropFunctions:
 
         if grad_fn.metadata["use_gamma"]:
             gamma = grad_fn.metadata["gamma"]
-            return gamma_lrp_general(torch.matmul, None, {}, x, weights, z, r, gamma, filter_val)[:2]
+            return gamma_lrp_general(torch.matmul, None, None, {}, x, weights, z, r, gamma, filter_val)[:2]
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
@@ -967,12 +967,12 @@ class LRPPropFunctions:
         num_dims = len(grad_fn._saved_stride)
         if num_dims == 1:
             conv_T = F.conv_transpose1d
-            grad_w = torch.nn.grad.conv1d_weight(x, weights.shape, s, stride, padding, dilation, groups)
+            grad_W_fcn = torch.nn.grad.conv1d_weight
         elif num_dims == 2:
-            grad_w = torch.nn.grad.conv2d_weight(x, weights.shape, s, stride, padding, dilation, groups)
+            grad_W_fcn = torch.nn.grad.conv2d_weight
             conv_T = F.conv_transpose2d
         else:
-            grad_w = torch.nn.grad.conv3d_weight(x, weights.shape, s, stride, padding, dilation, groups)
+            grad_W_fcn = torch.nn.grad.conv3d_weight
             conv_T = F.conv_transpose3d
 
         x = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_input)
@@ -986,7 +986,7 @@ class LRPPropFunctions:
 
         if grad_fn.metadata["use_gamma"]:
             gamma = grad_fn.metadata["gamma"]
-            return gamma_lrp_general(conv_f, conv_T, grad_w, {"stride": stride, "padding": padding, "dilation": dilation, "groups": groups}, x, weights, z, r, gamma, filter_val)
+            return gamma_lrp_general(conv_f, conv_T, grad_W_fcn, {"stride": stride, "padding": padding, "dilation": dilation, "groups": groups}, x, weights, z, r, gamma, filter_val)
 
         if grad_fn.metadata["use_z_plus"]:
             weights = weights.clamp(min=0.0)
@@ -1004,6 +1004,7 @@ class LRPPropFunctions:
         r_input = x * c
         r_input = r_input
 
+        grad_w = grad_W_fcn(x, weights.shape, s, stride, padding, dilation, groups)
         r_weight = weights * grad_w  # elementwise, scales by weight itself
         r_weight = r_weight
 
@@ -1236,6 +1237,9 @@ class LRPPropFunctions:
 
         return r, 0.0, 0.0
 
+    @classmethod
+    def CudnnBatchNormBackwardProp(cls, grad_fn, r):
+        return cls.NativeBatchNormBackwardProp(grad_fn, r)
     
     @staticmethod
     @output_relevances

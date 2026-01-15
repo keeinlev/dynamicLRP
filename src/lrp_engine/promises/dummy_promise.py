@@ -34,7 +34,7 @@ class DummyPromise(Promise):
     def _setarg(self, value):
         self.promise["args"][0] = value
 
-def compound_promises(promises: list[Promise], traversal_ind, bucket, single_promise_override=False, parent_only_connection=False) -> DummyPromise:
+def compound_promises(promises: list[Promise], traversal_ind, bucket, input_idx, single_promise_override=False, parent_only_connection=False) -> DummyPromise:
     """Returns a new DummyPromise instance where all input promises are the new
     instance's parents (and it is each of their child).
     The promise dict of the returned instance is only missing arg1 and rin1,
@@ -48,9 +48,11 @@ def compound_promises(promises: list[Promise], traversal_ind, bucket, single_pro
 
     if len(promises) == 1 and not single_promise_override:
         return promises[0]
+    
+    shape = bucket.ind_to_node[traversal_ind]._input_metadata[input_idx].shape
 
     p = {
-        "rout": torch.zeros_like(promises[0].rout),
+        "rout": torch.zeros(shape, device=promises[0].rout.device, dtype=promises[0].rout.dtype),
         "args": [None],
         "rins": [None],
         "ready": False,

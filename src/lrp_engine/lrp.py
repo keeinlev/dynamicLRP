@@ -1,3 +1,4 @@
+import ipdb
 import torch
 import time
 from enum import Enum
@@ -274,25 +275,27 @@ class LRPEngine:
         RUN_MODE = RunMode.NORMAL
         curnode = None
 
+        # Predicates for run mode determination
+        promise_fulfillment_predicate = lambda f: "promise" in f.metadata and f.metadata["promise"]["complete"]
+        pre_promise_retrieval_predicate = lambda f: (nodes_pending[f] == 0 and "pre_promise" in f.metadata and
+                                                     all(parent.complete for parent in f.metadata["pre_promise"].parents))
+
         while (stack or promise_traversal_stack or promise_queue) and (num_checkpoints_reached < len(checkpoints) or num_params_reached < len(param_nodes)):
 
             ####### RUN MODE DETERMINATION
             
             # Decide where we should take curnode from
-            if promise_queue and any(fcn.metadata["promise"]["complete"] for fcn in promise_queue if "promise" in fcn.metadata):
+            if promise_queue and any(promise_fulfillment_predicate(fcn) for fcn in promise_queue):
                 # Search for the first complete promise in the queue.
-                curnode = next(( fcn for fcn in promise_queue if fcn.metadata["promise"]["complete"] ))
+                curnode = next(( fcn for fcn in promise_queue if promise_fulfillment_predicate(fcn) ))
                 idx = promise_queue.index(curnode)
                 promise_queue = promise_queue[:idx] + promise_queue[idx + 1:]
                 RUN_MODE = RunMode.PROMISE_FULFILLMENT
 
-            elif promise_queue and any(nodes_pending[fcn] == 0 and "pre_promise" in fcn.metadata and
-                                    all(parent.complete for parent in fcn.metadata["pre_promise"].parents)
-                                    for fcn in promise_queue):
+            elif promise_queue and any(pre_promise_retrieval_predicate(fcn) for fcn in promise_queue):
                 # Promises that come from the pre_promise flow, they should be ready but they were created
                 # in promise traversal mode, so their in-relevances are not yet calculated.
-                curnode = next(( fcn for fcn in promise_queue if nodes_pending[fcn] == 0 and 
-                                all(parent.complete for parent in fcn.metadata["pre_promise"].parents) ))
+                curnode = next(( fcn for fcn in promise_queue if pre_promise_retrieval_predicate(fcn)))
                 idx = promise_queue.index(curnode)
                 promise_queue = promise_queue[:idx] + promise_queue[idx + 1:]
 
@@ -366,6 +369,8 @@ class LRPEngine:
                     # Aggregate all inputs into one Tensor or Promise
                     if tensor_inputs:
                         curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
+                    else:
+                        curnode_in_rel = 0
 
                     ####### PRE-PROMISE RETRIEVAL
                     # Consider that we traverse the same Node at most twice at this stage. Once possibly for PTM, and the second
@@ -414,14 +419,14 @@ class LRPEngine:
 
                         # If PTM, consider that there is only one Promise input across all indices, and this will create the Pre-Promise.
                         # In promise traversal mode this will be True
-                        agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, RUN_MODE.is_traversal, RUN_MODE.is_traversal)
+                        agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, idx, RUN_MODE.is_traversal, RUN_MODE.is_traversal,)
                         if tensor_inputs and not RUN_MODE.is_traversal:
                             if len(pending_promise_inputs) == 1:
                                 # In this case, compound_promises did not return a new DummyPromise, since there was only one Promise to compound
                                 # However, we now know there are also Tensor relevance inputs from other in-edges, which we cannot account for
                                 # in the input-agnostic run if we merge them into the Promise chain at this point. It needs to be at the start of
                                 # a Promise.
-                                agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, single_promise_override=True)
+                                agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, idx, single_promise_override=True)
                             # We don't add the tensor relevances to new Pre-Promises since we will do that anyway on the revisit of the Node
                             agg_promises.set_rout(curnode_in_rel)
                         curnode_in_rel = agg_promises
@@ -514,11 +519,11 @@ class LRPEngine:
                     Promise.clear_args_and_rout_raw(curnode.metadata["promise"])
                 del curnode.metadata["promise"], curnode.metadata["promise_idx"]
 
-            if not RUN_MODE.is_traversal and not DEBUG:
-                # We can free up some memory because we will no longer need to access these inputs
-                # Chained promises will maintain their relationships via their class instance members.
-                if curnode in input_tracker and nodes_pending[curnode] == 0 and curnode not in promise_queue:
-                    del input_tracker[curnode]
+            # if not RUN_MODE.is_traversal and not DEBUG:
+            #     # We can free up some memory because we will no longer need to access these inputs
+            #     # Chained promises will maintain their relationships via their class instance members.
+            #     if curnode in input_tracker and nodes_pending[curnode] == 0 and curnode not in promise_queue:
+            #         del input_tracker[curnode]
 
             ####### END PROPAGATION FCN AND PROMISE QUEUE HANDLING
 

@@ -166,40 +166,53 @@ architectures using consumer-grade hardware.
 \end{itemize}
 
 \section{Background}
-\subsection{Classic LRP via Taylor Approximation}
+\subsection{Classic LRP via Taylor Approximation and LRP variants}
+\label{methods:taylor}
 
-Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
+Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. To design a faithful attribution method, the challenge lies in identifying a meaningful distribution rule $R_{i\leftarrow j}$ (the relevance assigned to input $i$ by output neuron $j$).
 
-For a function $f_j(x)$, the first-order Taylor expansion around a root point $x_0$ is:
-\begin{equation}
-f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})
-\end{equation}
-The conservation rule requires that the sum of input relevances equals the output relevance:
-\begin{equation}
-\sum_i R_{i \leftarrow j}^{l - 1} = R_j^l
-\end{equation}
-Assuming $R_{i \leftarrow j}^{l - 1}$ is proportional to the Taylor term for input $i$:
-\begin{equation}
-R_{i \leftarrow j}^{l - 1} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j^l
-\end{equation}
-For a linear layer $z_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
-\begin{equation}
-R_{i \leftarrow j}^{l - 1} = \frac{x_i w_{ji}}{z_j + \epsilon} R_j^l
-\end{equation}
-where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$.
-This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle,
-linking the mathematical definition of LRP to its practical implementation.
+In this paper, we take advantage of the Deep Taylor Decomposition framework~\cite{montavon2017explaining, achtibat2024attnlrp} to locally linearize and decompose neural network operations into independent contributions. The framework does this by computing a first-order Taylor expansion of a function $f_j(x)$ at a reference point $x_0$:
+\begin{align}
+      f_j(x) &= f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})  + \mathcal{O}(|x -x_0|^2) \nonumber \\
+      &= \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} x_i + \tilde{b}_j
+     \label{eq:taylor}
+\end{align} 
+where $\tilde{b}_j$ collects the constant terms and approximation error.
+Assuming the relevance $R_j^l$ is proportional to the function activation $f_j(x)$, we can multiply each term in the expansion by a constant ratio $\frac{R_j^l}{f_j(x)}$ to obtain a recursion for relevance:
 
-\subsection{LRP Variants}
-\subsubsection{$\gamma$-LRP}
-To denoise relevance attributions, the $\gamma$-LRP rule was introduced by Montavon et al. \cite{montavon2019lrp}. It adds a
-hyperparameter $\gamma$ that acts as a multiplicative booster for positive neuron contributions:
+\begin{equation*}
+     R_j^l = \sum_i \underbrace{\frac{\partial f_j}{\partial x_i}\Big|_{x_0} x_i \frac{R_j^l}{f_j(x)}}_{R_{i\leftarrow j}} + \underbrace{\tilde{b}_j \frac{R_j^l}{f_j(x)}}_{R_{b\leftarrow j}}
+\end{equation*}
+
+\textbf{The $\epsilon$-LRP Rule}
+Assuming the bias contribution is negligible or handled separately (see \cite{achtibat2024attnlrp} for a detailed discussion on bias absorption), the input relevance can be computed by summing over all output neurons and introducing a stabilizing factor $\epsilon$ to properly handle vanishing denominators. For a linear layer $z_j = \sum_i x_i w_{ji} + b_j$ with $x_0 = 0$:
+\begin{equation}
+    R_{i \leftarrow j}^{l - 1} = \frac{x_i w_{ji}}{z_j + \epsilon} R_j^l
+    \label{eq:assignment}
+\end{equation}
+This recovers the standard $\epsilon$-LRP rule. In matrix form, efficiently implementable on GPUs:
+\begin{equation}
+    R^{l-1} = x \odot (W^\top \cdot (R^l \oslash (z + \epsilon)))
+\end{equation}
+where $\odot$ denotes the Hadamard product and $\oslash$ element-wise division.
+
+\textbf{The $\gamma$-LRP Rule}
+Attributions can become noisy when using the $\epsilon$-LRP rule, particularly in scenarios where the denominator $z_j + \epsilon$ becomes dominated by the stabilizing factor $\epsilon$, leading to overly smoothed or less discriminative relevance scores. To address this, the $\gamma$-LRP rule was introduced by Montavon et al. \cite{montavon2019lrp}. 
+It adds a hyperparameter $\gamma$ that acts as a multiplicative booster for positive neuron contributions:
 
 \begin{equation}
   R_{i \leftarrow j}^{l - 1} = \frac{x_i \cdot (w_{ji} + \gamma w_{ji}^+)}{\sum_i x_i \cdot (w_{ji} + \gamma w_{ji}^+)} R_j^l
 \end{equation}
 
-\subsubsection{Attn-LRP}
+\subsubsection{Attribution in Transformer Architectures}
+The transformer architecture \cite{vaswani2017attention} heavily realies on the non-linear attention mechanism:
+\begin{align}
+   & A = \text{softmax}\left(\frac{Q \cdot K^\top}{\sqrt{d_k}}\right) \\
+   & O = A \cdot V \label{eq:attention}\\
+   & \text{softmax}_j(x) = \frac{e^{x_j}}{\sum_k e^{x_k}} 
+\end{align}
+where ($\cdot$) denotes matrix multiplication, $K, Q, V$ are the key, query and value matrices, $d_k$ is the embedding dimension, and $O$ is the final output.
+
 Recent work by Achtibat et al. \cite{achtibat2024attnlrp} derived novel propagation rules using Deep Taylor Decomposition
 for both the softmax and bilinear matrix multiplication in the attention mechanism:
 

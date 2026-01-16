@@ -92,7 +92,7 @@ offering a principled approach to attribution by redistributing prediction score
 Although existing LRP implementations support classic architectures, they require a customised implementation for each new network architecture, which limits
 their applicability to rapidly evolving model designs and preventing their widespread adoption in the interpretability research 
 community. To address this limitation, we introduce DynamicLRP, a model-agnostic LRP framework that operates at the primitive level and decomposes 
-LRP attribution rules to individual tensor operations within the network's computation graph. This is achieved through our our novel mechanism for 
+LRP attribution rules to individual tensor operations within the network's computation graph. This is achieved through our novel mechanism for 
 deferred activation resolution, named the Promise System, which maintains LRP's theoretical guarantees while achieving
 true generality across model architectures. Our approach operates alongside standard backpropagation machinery without interference,
 making it readily deployable in existing libraries. We demonstrate that DynamicLRP produces attributions matching or exceeding specialized
@@ -127,12 +127,12 @@ architectures. All code is available at \url{https://github.com/keeinlev/dynamic
 
 \section{Introduction}
 While significant progress has been made in explaining medium-scale models and established architectures, the decision-making
-processes of large-scale transformer systems \cite{vaswani2017attention} remain challenging to interpret comprehensively.
+processes of large-scale architectures e.g. transformer-based foundation models \cite{radford2019language, dosovitskiy2020image, touvron2023llama} remain challenging to interpret comprehensively.
 As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding
 \emph{why} they make specific predictions has become a critical scientific and societal imperative.
 
-Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer
-compelling results through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity,
+Rule-based decomposition methods, such as Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, have demonstrated
+their effectiveness through systematic redistribution of the prediction, also known as relevance score. Unlike gradient-based methods, which reflect local sensitivity,
 LRP decomposes the actual prediction by backpropagating relevance scores while preserving conservation properties. This
 approach enables customizable propagation rules tailored to specific architectural components \cite{montavon2017explaining}.
 This approach has proven remarkably effective for convolutional networks and demonstrated theoretical
@@ -142,16 +142,16 @@ rapidly evolving architectures, where concepts like multi-head attention and res
 specifications \cite{achtibat2024attnlrp, otsuki2024lrpresidualconnections}.
 
 This has led LRP to remain systematically underrepresented in contemporary explainability research, as it is one of the
-few mentioned methods which is not model-agnostic. Machiraju et al.'s \cite{machiraju2024prospector} comprehensive
+few mentioned methods which is not model-agnostic. Notably, Machiraju et al.'s \cite{machiraju2024prospector} comprehensive
 attribution study, which evaluated gradients, attention maps, SHAP, and LIME across transformer models, entirely omits
 LRP—despite its proven effectiveness and computational advantages.
 
 We address this gap by proposing DynamicLRP, an LRP framework that extends rule-based attribution to arbitrary neural
 architectures with minimal overhead. We define LRP rules for individual tensor operations, analogous to generalized
 gradient computation found in auto-differentiation libraries (like PyTorch), which can be applied to any network topology.
-Through our novel \textbf{"Promise System"} for handling missing activations in the backward pass, our approach repurposes
-the computation graph used in auto-differentiation, and maintains LRP's theoretical guarantees while achieving computational
-efficiency within the asymptotic bounds of standard backpropagation.
+Our novel \textbf{"Promise System"} addresses the challenge of missing activations during the backward pass by leveraging 
+the computation graph used in auto-differentiation. This system preserves the theoretical guarantees of LRP while ensuring 
+computational efficiency, adhering to the asymptotic complexity of standard backpropagation.
 
 We aim to show through experiments across multiple modalities that our proposed LRP solution remains mathematically sound and produces
 faithful and interpretable attributions consistent with existing methods. We also demonstrate that the Promise-based LRP maintains a
@@ -160,15 +160,9 @@ architectures using consumer-grade hardware.
 
 \textbf{We make three primary contributions}:
 \begin{itemize}
-  \item \textbf{Model-agnostic, operation-level LRP framework} (Sec~\ref{sec:op-level-lrp}): We decompose LRP from module-level
-  to operation-level, defining propagation rules for fundamental tensor operations rather than composite neural network
-  modules to enable model agnosticity. Complete with rules for 47 fundamental tensor operations already implemented (See Appendix~\ref{appendix:covered-operations}).
-  \item \textbf{Promise System} (Sec~\ref{sec:promise-system}): We introduce a novel mechanism for deferred relevance propagation
-  and backward pass activation retrieval through the computation graph so that LRP can function without graph modification.
-  The technique generalizes to arbitrary non-gradient computations on computation graphs used by auto-differentiation.
-  We provide proven complexity bounds on memory and computation.
-  \item \textbf{Faithfulness validation} (Sec~\ref{sec:experiments}): We demonstrate faithfulness matching or exceeding specialized
-  implementations across vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) while maintaining practical efficiency.
+  \item \textbf{Model-agnostic, operation-level LRP framework} (Sec~\ref{sec:op-level-lrp}): We redefine LRP from a module-centric approach to an operation-level paradigm, implementing propagation rules for 47 primitives (See Appendix~\ref{appendix:covered-operations}). This shift ensures model-agnostic applicability, enabling seamless integration across diverse architectures without requiring architecture-specific modifications.
+  \item \textbf{Promise System} (Sec~\ref{sec:promise-system}): We propose a novel mechanism for deferred relevance propagation and backward pass activation retrieval, leveraging the computation graph to enable LRP without modifying the graph structure. This system generalizes to arbitrary non-gradient computations within auto-differentiation frameworks. Furthemore we have established and validated complexity bounds for both memory and computational efficiency.
+  \item \textbf{Faithfulness validation} (Sec~\ref{sec:experiments}): We demonstrate empirically that DynamicLRP matches or surpasses specialized implementations in vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) tasks, while maintaining practical efficiency in terms of memory and runtime.
 \end{itemize}
 
 \section{Background}

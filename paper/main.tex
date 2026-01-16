@@ -165,7 +165,45 @@ architectures using consumer-grade hardware.
   \item \textbf{Faithfulness validation} (Sec~\ref{sec:experiments}): We demonstrate empirically that DynamicLRP matches or surpasses specialized implementations in vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) tasks, while maintaining practical efficiency in terms of memory and runtime.
 \end{itemize}
 
-\section{Background}
+\section{Related Work}
+\subsection{Explainability Methods}
+Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
+differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
+chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
+but suffer from gradient saturation, gradient shattering, and linearity assumptions that fail to capture complex nonlinear interactions
+\cite{ancona2018towards, samek2021xaireview}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
+\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
+yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
+Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
+localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
+This positions LRP as a strong explainability method when used in the correct domains, as it does not suffer from these
+pitfalls due to its tight rooting in the model architecture and efficient computation requirements of a single backward
+pass \cite{samek2021xaireview}.
+
+\subsection{Modern LRP Implementations}
+LRP has evolved significantly since its inception, with modern implementations striving to achieve greater flexibility and efficiency.
+Among these, Zennit \cite{anders2021zennit}  stands out as a comprehensive explainability library for PyTorch, 
+focusing on LRP and other rule-based methods \cite{anders2021zennit}. Zennit remains one of the most flexible, 
+readily available, and up-to-date libraries for LRP, providing a strong foundation for our work.
+ Its implementation of LRP, when compared to other libraries such as \texttt{Captum} \cite{kokhlikyan2020captum} and \texttt{iNNvestigate} \cite{alber2018innvestigate}, demonstrates a clear emphasis on modularity and extensibility.
+Anders et al. base their framework on the PyTorch \texttt{Module} structure, making great use of \texttt{Module Hooks} to transform the
+\texttt{Autograd} backward pass to propagate relevance instead of gradients. They also introduce multiple user-facing APIs
+(Module rules, Composites, and Canonizers) to enable the mapping of foundational LRP rules to new modules and architectural
+patterns. However, adapting these to unseen patterns is a task in and of itself.
+
+\texttt{AttnLRP}, a recent advancement which derived new propagation rules suitable for attention modules, provides an implementation
+named LxT (LRP eXplains Transformers) built on top of Zennit which highlights the limitations of this model-to-model
+configuration-based design \cite{achtibat2024attnlrp}. The list of architectures currently supported by LxT is limited to
+Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. Each model requires a custom copied implementation of
+itself which patches and hooks the Attention, Linear, Convolution, Normalization, and Activation modules to new functions
+which invoke the LRP propagation rules for those modules.
+
+While implementation of new rules is claimed to be trivial in Zennit, there is undoubtedly reasonable conceptual overhead
+to understanding how to correctly merge, split, and modify modules to fit within the framework, and additional management
+overhead with the requirement for new configurations and codebase semantics for adding support for other architectures.
+
+
+\section{Preliminaries}
 \subsection{Classic LRP via Taylor Approximation and LRP variants}
 \label{methods:taylor}
 
@@ -256,41 +294,6 @@ The LRP conservation principle is thus adhered to on an operation-wise basis, in
 \end{equation}
 where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
 
-\section{Related Work}
-\subsection{Explainability Methods}
-Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
-differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
-chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
-but suffer from gradient saturation, gradient shattering, and linearity assumptions that fail to capture complex nonlinear interactions
-\cite{ancona2018towards, samek2021xaireview}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
-\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
-yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
-Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
-localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
-This positions LRP as a strong explainability method when used in the correct domains, as it does not suffer from these
-pitfalls due to its tight rooting in the model architecture and efficient computation requirements of a single backward
-pass \cite{samek2021xaireview}.
-
-\subsection{LRP Implementations}
-We examine and compare against Zennit, an explainability library built for PyTorch and focused on LRP and other rule-based
-methods \cite{anders2021zennit}. As of currently, Zennit is the most flexible, readily available, and up-to-date
-implementation of LRP, when compared to other libraries such as Captum \cite{kokhlikyan2020captum} and iNNvestigate
-\cite{alber2018innvestigate}, which both make LRP customization difficult \cite{anders2021zennit}. Anders et al. base
-their framework on the PyTorch \texttt{Module} structure, making great use of \texttt{Module Hooks} to transform the
-\texttt{Autograd} backward pass to propagate relevance instead of gradients. They also introduce multiple user-facing APIs
-(Module rules, Composites, and Canonizers) to enable the mapping of foundational LRP rules to new modules and architectural
-patterns. However, adapting these to unseen patterns is a task in and of itself.
-
-AttnLRP, a recent advancement which derived new propagation rules suitable for attention modules, provides an implementation
-named LxT (LRP eXplains Transformers) built on top of Zennit which highlights the limitations of this model-to-model
-configuration-based design \cite{achtibat2024attnlrp}. The list of architectures currently supported by LxT is limited to
-Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. Each model requires a custom copied implementation of
-itself which patches and hooks the Attention, Linear, Convolution, Normalization, and Activation modules to new functions
-which invoke the LRP propagation rules for those modules.
-
-While implementation of new rules is claimed to be trivial in Zennit, there is undoubtedly reasonable conceptual overhead
-to understanding how to correctly merge, split, and modify modules to fit within the framework, and additional management
-overhead with the requirement for new configurations and codebase semantics for adding support for other architectures.
 
 \section{Methods}
 \subsection{Operation-Level Relevance Propagation}

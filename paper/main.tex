@@ -254,18 +254,14 @@ where ($\cdot$) denotes matrix multiplication, $K, Q, V$ are the key, query and 
 Recent work by Achtibat et al. \cite{achtibat2024attnlrp} derived novel propagation rules using Deep Taylor Decomposition
 for both the softmax and bilinear matrix multiplication in the attention mechanism:
 
-\textbf{Bilinear Attention Matrix Multiplication}
-
-The relevance distribution for cell $A_{ji}$ in the matrix multiplication $O = A \cdot V$ is defined as:
+\textbf{Bilinear Attention Matrix Multiplication} The relevance distribution for cell $A_{ji}$ in the matrix multiplication $O = A \cdot V$ is defined as:
 \begin{equation}
   R_{ji}^{l - 1} = \sum_p A_{ji}V_{ip} \frac{R_{jp}^l}{2 O_{jp} + \epsilon}
 \end{equation}
 and $R_{ip}^{l - 1}$ can be computed by summing over $j$ instead of $p$. This characterizes the distribution across the
 product of the attention logits and values matrices.
 
-\textbf{Softmax}
-
-The relevance at the input layer of the softmax is defined as:
+\textbf{Softmax} The relevance at the input layer of the softmax is defined as:
 \begin{equation}
   R^{l - 1} = \sum_i x_i (R_i^l - s_i \sum_j R_j^l)
 \end{equation}
@@ -393,7 +389,14 @@ function chain to reconstruct the activation at the Origin Node, which is then s
 all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred relevance can be “fast-forwarded” down
 each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
 dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
-We provide a full example of this mechanism in Appendix~\ref{appendix:basic-promise-example}.
+We provide a full example of this mechanism in Appendix~\ref{appendix:basic-promise-example}. 
+The following proposition formalizes the correctness of this mechanism.
+
+\textbf{Proposition 1:} For any node $v$ in a computation graph, there exists at least one node descendent to $v$
+which stores a forward activation.\textit{i.e.,} its Arg Node.
+
+The proof is provided in Appendix~\ref{appendix:proposition-1-proof}.
+
 
 \subsubsection{Promise Nesting and Trees}
 Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
@@ -508,6 +511,8 @@ where for every $u$, $argnode$ is its nearest descendent operation that stores a
 % The maximum promise depth is:
 % $$D = \max_{v_p \in V_P} d(v_p)$$
 \end{definition}
+
+
 
 \vspace{0.3cm}
 \begin{theorem}[Promise-Based LRP Complexity]
@@ -818,24 +823,23 @@ Below is the list of currently supported operations for DynamicLRP.
   \caption{Computation Graph Construction}
   \label{alg:graph-construction}
   \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$
-    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
+    \State \textbf{Input:} Model output $hidden\_states$
     \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
     \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
     \State $root \gets hidden\_states.grad\_fn$
-    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-    \Return $in\_adj$, $out\_adj$, $topo\_stack$
+    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$} \Comment{Start traversal}
+    \State \Return $in\_adj$, $out\_adj$, $topo\_stack$ \Comment{In-adjacency list, Out-adjacency list, Topologically sorted nodes}
     \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \If{$fcn = \text{None}$ or $fcn \in visited$}
+      \If{$fcn = \text{None}$ or $fcn$ in $visited$} \Comment{Skip processed}
         \State \Return
       \EndIf
-      \State $visited \gets visited \cup \{fcn\}$
-      \For{each $child \in fcn.next\_functions$}
-        \State $out\_adj[fcn].append(child)$
+      \State $visited \gets visited \cup \{fcn\}$ \Comment{Mark visited}
+      \For{each $child$ in $fcn.next\_functions$}
+        \State $out\_adj[fcn].append(child)$ \Comment{Record dependencies}
         \State $in\_adj[child].append(fcn)$
-        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$} \Comment{Recurse}
       \EndFor
-      \State $topo\_stack.push(fcn)$
+      \State $topo\_stack.push(fcn)$ \Comment{Add to sort}
     \EndFunction
   \end{algorithmic}
 \end{algorithm}
@@ -844,30 +848,29 @@ Below is the list of currently supported operations for DynamicLRP.
   \caption{Operation-Level Relevance Propagation With Promises}
   \label{alg:promise-propagation}
   \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
-    \Ensure Input relevance $R_{in}$
-    \State Initialize as in Algorithm 2
-
-    \While{$stack$}
-      \State $curnode \gets stack.pop()$
+    \State \textbf{Input:} Model output $hidden\_states$, Relevance interpretation target $target\_node$
+    \State Initialize topologically sorted nodes, $stack$ auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$ according to traversal order from Algorithm \ref{alg:graph-construction}
+    \Repeat
+      \State $curnode \gets stack.pop()$ \Comment{Process next node}
       \State $curnode\_in\_rel = node\_inputs[curnode]$
-      \If{$curnode == target\_node$}
+      \If{$curnode = target\_node$} \Comment{Target reached}
         \Return $R_{in} := curnode\_in\_rel$
       \ElsIf{$curnode$ requires Promise}
         \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
-        \State $curnode\_outputs \gets curnode.promise.branches$
+        \State $curnode\_outputs \gets curnode.promise.branches$ \Comment{Defer computation}
       \Else
         \State $prop\_fcn \gets fcn\_map[type(curnode)]$
-        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$ \Comment{Apply LRP rule}
       \EndIf
-      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$
-        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
-        \If{$nodes\_pending[child] == 0$}
-          \State $stack.push(child)$
+      \For{each $child, output$ in $zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$ \Comment{Accumulate inputs}
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$ \Comment{Update dependencies}
+        \If{$nodes\_pending[child] = 0$}
+          \State $stack.push(child)$ \Comment{Enqueue ready child}
         \EndIf
       \EndFor
-    \EndWhile
+    \Until{$stack$ is empty} \Comment{All nodes processed}
+    \State \Return Input relevance $R_{in}$
   \end{algorithmic}
 \end{algorithm}
 
@@ -878,18 +881,18 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \caption{Non-Arg Node Propagation Function Promise Handling}
   \label{alg:non-argnode-propagation}
   \begin{algorithmic}[1]
-    \Require Autograd Node $node$, Propagation input $R_{out}$
-    \Ensure Propagation output list $R_{in}$
+    \State \textbf{Input:} Autograd Node $node$, Propagation input $R_{out}$
+    \State \textbf{Output:} Propagation output list $R_{in}$
 
-    \If{$R_{out}$ is a Promise Branch}
+    \If{$R_{out}$ is a Promise Branch} \Comment{Record chain if exploring}
       \State Define $fwd$ as a closure of $node$'s forward pass.
       \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
       \State $R_{out}.record(fwd, bwd)$
-      \Return $R_{out}$
+      \State \Return $R_{out}$
     \EndIf
 
-    \State \textit{// Propagate $R_{out}$...}
-    \Return $R_{in}$
+    \State \textit{// Propagate $R_{out}$...} \Comment{Standard LRP}
+    \State \Return $R_{in}$
   \end{algorithmic}
 \end{algorithm}
 
@@ -897,24 +900,24 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \caption{Arg Node Propagation Function Promise Handling}
   \label{alg:argnode-propagation}
   \begin{algorithmic}[1]
-    \Require Autograd Node $node$, Propagation input $R_{out}$
-    \Ensure Propagation output list $R_{in}$
+    \State \textbf{Input:} Autograd Node $node$, Propagation input $R_{out}$
+    \State \textbf{Output:} Propagation output list $R_{in}$
 
-    \If{$R_{out}$ is a Promise Branch}
+    \If{$R_{out}$ is a Promise Branch} \Comment{Retrieve forward activation}
       \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
       \State $activation = retrieve\_fwd\_output(node)$
       \State $R_{out}.set\_arg(activation)$
       \State $R_{out}.trigger\_promise\_completion()$
-      \If{$R_{out}.promise\_is\_complete$}
+      \If{$R_{out}.promise\_is\_complete$} \Comment{Resume propagation?}
         $R_{out} = R_{out}.propagated\_relevance$
       \Else
         \State \textit{// Signal for queueing this Node until the Promise is complete}
-        \Return
+        \State \Return
       \EndIf
     \EndIf
 
     \State \textit{// Propagate $R_{out}$...}
-    \Return $R_{in}$
+    \State \Return $R_{in}$
   \end{algorithmic}
 \end{algorithm}
 

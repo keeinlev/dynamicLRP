@@ -86,21 +86,21 @@
 \maketitle
 
 \begin{abstract}
-Layer-wise Relevance Propagation (LRP) provides principled attribution for neural networks through conservation properties and foundations
-in Deep Taylor Decomposition. However, existing implementations operate at the module level, requiring architecture-specific propagation
-rules and model modifications. These limit the generality of target model and sustainability of implementations as architectures evolve.
-We introduce DynamicLRP, a model-agnostic LRP framework operating at the tensor operation level. By decomposing attribution to individual
-operations within computation graphs and introducing a novel mechanism for deferred activation resolution, named the Promise System, our
-approach achieves true architecture agnosticity while maintaining LRP's theoretical guarantees. This design operates independently of
-backpropagation machinery, requiring no model modification, enabling side-by-side execution with gradient backpropagation. Being based on
-computation graphs, this method is theoretically extensible to other deep learning libraries that support auto-differentiation.
-We demonstrate faithfulness matching or exceeding specialized implementations (1.77 vs 1.69 ABPC on VGG, equivalent performance on ViT,
-93.70\% and 95.06\% top-1 attribution accuracy for explaining RoBERTa-large and Flan-T5-large answers on SQuADv2, respectively) while
-maintaining practical efficiency on models with 100M-1B parameters.
-We achieved 99.92\% node coverage across 31,465 computation graph nodes from 15 diverse architectures, including state-space models (Mamba),
-audio transformers (Whisper), and multimodal systems (DePlot) without any model-specific code with rules for 47 fundamental operations implemented.
-Our operation-level decomposition and Promise System establish a sustainable, extensible foundation for LRP across evolving architectures.
-All code is available at \url{https://github.com/keeinlev/dynamicLRP}.
+Understanding why neural networks make specific predictions is essential for building trust in artificial intelligence systems, particularly in high-stakes domains. 
+Among the many interpretability algorithms, Layer-wise Relevance Propagation (LRP) stands out as one of the foundational methods in neural network interpretability, 
+offering a principled approach to attribution by redistributing prediction scores back to input features while preserving conservation properties. 
+Although existing LRP implementations support classic architectures, they require a customised implementation for each new network architecture, which limits
+their applicability to rapidly evolving model designs and preventing their widespread adoption in the interpretability research 
+community. To address this limitation, we introduce DynamicLRP, a model-agnostic LRP framework that operates at the primitive level and decomposes 
+LRP attribution rules to individual tensor operations within the network's computation graph. This is achieved through our our novel mechanism for 
+deferred activation resolution, named the Promise System, which maintains LRP's theoretical guarantees while achieving
+true generality across model architectures. Our approach operates alongside standard backpropagation machinery without interference,
+making it readily deployable in existing libraries. We demonstrate that DynamicLRP produces attributions matching or exceeding specialized
+implementations across vision and language tasks while maintaining practical efficiency on models with 100 million to 1 billion parameters. 
+Remarkably, our implementation achieved 99.92\% operation coverage across 31,465 computation nodes from 15 diverse architectures—including
+transformer models, convolutional networks, state-space models, and multimodal systems, without requiring any architecture-specific modifications. 
+This represents the first truly model-agnostic LRP solution, enabling high-quality neural network interpretation across the full spectrum of modern AI
+architectures. All code is available at \url{https://github.com/keeinlev/dynamicLRP}.
 \end{abstract}
 
 \begin{figure}

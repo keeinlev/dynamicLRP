@@ -127,7 +127,7 @@ architectures. All code is available at \url{https://github.com/keeinlev/dynamic
 
 \section{Introduction}
 While significant progress has been made in explaining medium-scale models and established architectures, the decision-making
-processes of large-scale architectures e.g. transformer-based foundation models \cite{radford2019language, dosovitskiy2020image, touvron2023llama} remain challenging to interpret comprehensively.
+processes of large-scale architectures e.g. transformer-based foundation models \cite{gemmateam2025gemma3, vdosovitskiy2021vit, dubey2024llama3} remain challenging to interpret comprehensively.
 As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding
 \emph{why} they make specific predictions has become a critical scientific and societal imperative.
 
@@ -182,25 +182,25 @@ pass \cite{samek2021xaireview}.
 
 \subsection{Modern LRP Implementations}
 LRP has evolved significantly since its inception, with modern implementations striving to achieve greater flexibility and efficiency.
-Among these, Zennit \cite{anders2021zennit}  stands out as a comprehensive explainability library for PyTorch, 
-focusing on LRP and other rule-based methods \cite{anders2021zennit}. Zennit remains one of the most flexible, 
-readily available, and up-to-date libraries for LRP, providing a strong foundation for our work.
- Its implementation of LRP, when compared to other libraries such as \texttt{Captum} \cite{kokhlikyan2020captum} and \texttt{iNNvestigate} \cite{alber2018innvestigate}, demonstrates a clear emphasis on modularity and extensibility.
-Anders et al. base their framework on the PyTorch \texttt{Module} structure, making great use of \texttt{Module Hooks} to transform the
-\texttt{Autograd} backward pass to propagate relevance instead of gradients. They also introduce multiple user-facing APIs
-(Module rules, Composites, and Canonizers) to enable the mapping of foundational LRP rules to new modules and architectural
-patterns. However, adapting these to unseen patterns is a task in and of itself.
+Several libraries, including \texttt{iNNvestigate} \cite{alber2018innvestigate}, \texttt{Captum} \cite{kokhlikyan2020captum}, and Zennit 
+\cite{anders2021zennit}, provide implementations of LRP alongside other interpretability methods.
+Among these, Zennit stands out for its comprehensive support for rule-based methods in PyTorch, offering a modular framework that leverages
+the automatic  differentiation machinery to backpropagate relevances intead of gradients. Another recent advancement in the field that 
+is close to our work is \texttt{AttnLRP} \cite{achtibat2024attnlrp}, which derived new propagation rules suitable for attention modules 
+and provides an implementation named LxT (LRP eXplains Transformers) built on top of Zennit. Note that at the time of writing, the list of 
+architectures currently supported by LxT is limited to Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. While LxT 
+demonstrates the potential of extending LRP to modern architectures, it also illustrates the challenges of adapting module-centric designs 
+and  highlights the importance of a more flexible, architecture-agnostic approach.
 
-\texttt{AttnLRP}, a recent advancement which derived new propagation rules suitable for attention modules, provides an implementation
-named LxT (LRP eXplains Transformers) built on top of Zennit which highlights the limitations of this model-to-model
-configuration-based design \cite{achtibat2024attnlrp}. The list of architectures currently supported by LxT is limited to
-Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. Each model requires a custom copied implementation of
-itself which patches and hooks the Attention, Linear, Convolution, Normalization, and Activation modules to new functions
-which invoke the LRP propagation rules for those modules.
 
-While implementation of new rules is claimed to be trivial in Zennit, there is undoubtedly reasonable conceptual overhead
-to understanding how to correctly merge, split, and modify modules to fit within the framework, and additional management
-overhead with the requirement for new configurations and codebase semantics for adding support for other architectures.
+While the implementation of new rules is claimed to be trivial in Zennit, there is nonetheless significant conceptual overhead in understanding 
+how to correctly merge, split, and modify modules to fit within the framework, as well as additional management overhead
+due to the need for new configurations and codebase semantics when supporting other architectures. In particular, each model
+ requires a custom, duplicated implementation to integrate the appropriate LRP propagation rules throughout the network. 
+ We build upon the foundation established by LxT and Zennit, acknowledging their flexibility while addressing the limitations of its 
+ module-centric approach. Specifically, adapting Zennit to previously unseen architectural patterns often requires the manual definition
+ of new module mappings, a task that our operation-level approach seeks to automate.
+
 
 
 \section{Preliminaries}
@@ -273,17 +273,26 @@ where $s_i$ is the softmax output and $x_i$ is the softmax input.
 
 Our work builds on these insights to address the limitations of existing methods, providing a scalable and efficient solution for interpreting transformer models.
 
-\subsection{Computation Graphs and Automatic Differentiation}
+\subsection{Computation Graphs in Deep Learning Frameworks}
 
-Deep learning frameworks represent neural networks as computation graphs, formally defined as a directed acyclic graph (DAG) $G = ({V}, {E})$. Here, nodes $v \in {V}$ represent primitives (e.g., matrix multiplication, convolution, summation), and edges $(u, v) \in {E}$ indicate that the output of operation $u$ is an input to operation $v$.
+Most deep learning frameworks rely on computation graphs to represent the sequence of operations performed on tensors and trace the gradients of the loss back to the network parameters.
+Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing some operation $f_v$ (e.g., matrix multiplication, ReLU, addition), and $E$ is the set of directed edges representing data flow between operations.
 
-Automatic differentiation (AD) engines operate on this graph to compute gradients. For each operation node $v$, the engine retains a local backward function that computes the Vector-Jacobian Product (VJP). During backpropagation, the engine traverses the graph in reverse topological order, passing gradient signals from the network output back to the inputs and parameters.
+In auto-differentiation libraries, each node $v \in V$ in the graph holds a function $\tilde{f}_v$ that computes the local gradient backpropagation of that operation using the Chain Rule, mapping the gradients of forward outputs to gradients of forward inputs.
+The edges $e \in E$ are thus directed from the model's output layer to input layer, each vertex pointing to its forward dependencies.
+These functions must be well-defined for all tensor operations for the computation graph to be leveraged in backpropagation.
 
-DynamicLRP exploits this architecture by introducing a parallel mechanism for relevance propagation. We map each operation node $v$ in the computation graph to a specialized relevance rule $\mathcal{R}_v$. Just as AD propagates gradients, our framework propagates relevance scores $R$ in the reverse direction of the forward pass. This operation-centric approach naturally decomposes complex layers into their constituent primitives. Consequently, the conservation property of LRP is strictly enforced at the primitive level:
+For example, a matrix multiplication node $v_{mm}$ from a linear layer will have $\tilde{f}_{mm}(\frac{\partial L}{\partial z}) = \begin{pmatrix} \frac{\partial L}{\partial z} W^T & x^T \frac{\partial L}{\partial z} \end{pmatrix}$, where $L$ is the loss, $W$ is the weight matrix, $x$ is the layer input, and $z = Wx$.
+The in-edge pointing to $v$ would come from a node $v_{add}$, which represents the next operation in the forward pass, the bias addition $f_{add}(z, b) = z + b$. 
+The two out-edges leaving $v$ point to a terminal node representing $W$, indicating it is a parameter, and the node representing the operation which produced $x$ in the forward pass.
+
+Our proposed attribution algorithm extends this concept by associating each node in the graph with a custom propagation rule for relevance. This modular approach allows for operation-specific attributions, enabling the algorithm to handle complex architectures like transformers as standard functionality.
+By leveraging the DAG structure constructed by a reliable learning framework, the algorithm ensures that relevance is propagated efficiently and faithfully.
+The LRP conservation principle is thus adhered to on an operation-wise basis, instead of layer-wise.
 \begin{equation}
-\sum_{i \in \text{inputs}(v)} R_i = \sum_{j \in \text{outputs}(v)} R_j
+\sum_{i \in \text{inputs}} R_i = \sum_{j \in \text{outputs}} R_j,
 \end{equation}
-This ensures that the total relevance is preserved across the entire graph, regardless of the network's architectural complexity.
+where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
 
 
 \section{Methods}

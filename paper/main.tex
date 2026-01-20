@@ -821,26 +821,27 @@ Below is the list of currently supported operations for DynamicLRP.
 
 \section{Algorithms}
 \begin{algorithm}[H]
-  \caption{Computation Graph Construction}
+  \caption{Computation Graph Pre-Processing}
   \label{alg:graph-construction}
   \begin{algorithmic}[1]
-    \State \textbf{Input:} Model output $hidden\_states$
-    \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
-    \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
-    \State $root \gets hidden\_states.grad\_fn$
-    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$} \Comment{Start traversal}
-    \State \Return $in\_adj$, $out\_adj$, $topo\_stack$ \Comment{In-adjacency list, Out-adjacency list, Topologically sorted nodes}
-    \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \If{$fcn = \text{None}$ or $fcn$ in $visited$} \Comment{Skip processed}
+    \Require Model output \texttt{hidden\_states}
+    \Ensure In-adjacency list \texttt{in\_adj}, Out-adjacency list \texttt{out\_adj}, Topologically sorted nodes \texttt{topo\_stack}
+    \State Initialize $\texttt{in\_adj} \gets \emptyset$, $\texttt{out\_adj} \gets \emptyset$
+    \State Initialize $\texttt{visited} \gets \emptyset$, $\texttt{topo\_stack} \gets \emptyset$
+    \State $\texttt{root} \gets \texttt{hidden\_states.grad\_fn}$
+    \State \Call{DFS}{\texttt{root, in\_adj, out\_adj, visited, topo\_stack}} \Comment{Start traversal}
+    \Return $\texttt{in\_adj, out\_adj, topo\_stack}$ \Comment{In-adjacency list, Out-adjacency list, Topologically sorted nodes}
+    \Function{DFS}{\texttt{node, in\_adj, out\_adj, visited, topo\_stack}}
+      \If{$\texttt{node} = \text{None}$ or $\texttt{node} \in \texttt{visited}$} \Comment{Skip processed}
         \State \Return
       \EndIf
-      \State $visited \gets visited \cup \{fcn\}$ \Comment{Mark visited}
-      \For{each $child$ in $fcn.next\_functions$}
-        \State $out\_adj[fcn].append(child)$ \Comment{Record dependencies}
-        \State $in\_adj[child].append(fcn)$
-        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$} \Comment{Recurse}
+      \State $\texttt{visited} \gets \texttt{visited} \cup \{\texttt{node}\}$ \Comment{Mark visited}
+      \For{each $\texttt{child} \in \texttt{node.next\_functions}$}
+        \State \texttt{out\_adj[node].append(child)} \Comment{Record dependencies}
+        \State \texttt{in\_adj[child].append(node)}
+        \State \Call{DFS}{\texttt{child, in\_adj, out\_adj, visited, topo\_stack}} \Comment{Recurse}
       \EndFor
-      \State $topo\_stack.push(fcn)$ \Comment{Add to sort}
+      \State \texttt{topo\_stack.push(node)} \Comment{Add to sort}
     \EndFunction
   \end{algorithmic}
 \end{algorithm}
@@ -849,29 +850,29 @@ Below is the list of currently supported operations for DynamicLRP.
   \caption{Operation-Level Relevance Propagation With Promises}
   \label{alg:promise-propagation}
   \begin{algorithmic}[1]
-    \State \textbf{Input:} Model output $hidden\_states$, Relevance interpretation target $target\_node$
-    \State Initialize topologically sorted nodes, $stack$ auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$ according to traversal order from Algorithm \ref{alg:graph-construction}
+    \Require Model output \texttt{hidden\_states}, Relevance attribution target \texttt{target\_node}, Incoming relevance $R_{out}$
+    \Ensure Propagated relevance $R_{in}$
+    \State Initialize $\texttt{stack} \gets [\texttt{hidden\_states.grad\_fn}]$
+    \State Initialize $\texttt{nodes\_pending} \gets \{ \texttt{node} : \text{in-degree of } \texttt{node} \text{ for all nodes in graph}\}$
+
     \Repeat
-      \State $curnode \gets stack.pop()$ \Comment{Process next node}
-      \State $curnode\_in\_rel = node\_inputs[curnode]$
-      \If{$curnode = target\_node$} \Comment{Target reached}
-        \Return $R_{in} := curnode\_in\_rel$
-      \ElsIf{$curnode$ requires Promise}
-        \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
-        \State $curnode\_outputs \gets curnode.promise.branches$ \Comment{Defer computation}
+      \State $\texttt{curnode} \gets \texttt{stack.pop()}$ \Comment{Process next node}
+      \State $\texttt{curnode\_in\_rel} \gets \text{Relevance accumulated at } \texttt{curnode}$
+      \If{\texttt{curnode} is \texttt{target\_node}} \Comment{Target reached \Return $R_{in} := \texttt{curnode\_in\_rel}$}
+      \ElsIf{\texttt{curnode} requires Promise}
+        \State Create new Promise $P$ using \texttt{type(curnode)}
+        \State Assign each child of \texttt{curnode} its respective branch of $P$ \Comment{Defer computation}
       \Else
-        \State $prop\_fcn \gets fcn\_map[type(curnode)]$
-        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$ \Comment{Apply LRP rule}
+        \State Execute propagation function for \texttt{curnode} \Comment{Applies LRP rule}
+        \State Assign each child of \texttt{curnode} its respective split of the relevance
       \EndIf
-      \For{each $child, output$ in $zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$ \Comment{Accumulate inputs}
-        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$ \Comment{Update dependencies}
-        \If{$nodes\_pending[child] = 0$}
-          \State $stack.push(child)$ \Comment{Enqueue ready child}
-        \EndIf
+      \For{each \texttt{child} of \texttt{curnode}}
+        \State Decrement \texttt{nodes\_pending[child]} by 1 \Comment{Update dependencies}
+        \State Push \texttt{child} to \texttt{stack} if \texttt{nodes\_pending[child]} is 0 \Comment{Enqueue ready children}
       \EndFor
-    \Until{$stack$ is empty} \Comment{All nodes processed}
-    \State \Return Input relevance $R_{in}$
+    \Until{\texttt{stack} is empty} \Comment{All nodes processed}
+
+  \State \Return Input relevance $R_in$
   \end{algorithmic}
 \end{algorithm}
 
@@ -882,14 +883,14 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \caption{Non-Arg Node Propagation Function Promise Handling}
   \label{alg:non-argnode-propagation}
   \begin{algorithmic}[1]
-    \State \textbf{Input:} Autograd Node $node$, Propagation input $R_{out}$
-    \State \textbf{Output:} Propagation output list $R_{in}$
+    \Require Autograd Node \texttt{node}, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
 
     \If{$R_{out}$ is a Promise Branch} \Comment{Record chain if exploring}
-      \State Define $fwd$ as a closure of $node$'s forward pass.
-      \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
-      \State $R_{out}.record(fwd, bwd)$
-      \State \Return $R_{out}$
+      \State Define \texttt{fwd} as a closure of \texttt{node}'s forward pass.
+      \State Define \texttt{bwd} as a closure of \texttt{node}'s relevance distribution logic.
+      \State $R_{out}\texttt{.record(fwd, bwd)}$
+      \Return $R_{out}$
     \EndIf
 
     \State \textit{// Propagate $R_{out}$...} \Comment{Standard LRP}
@@ -901,16 +902,16 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \caption{Arg Node Propagation Function Promise Handling}
   \label{alg:argnode-propagation}
   \begin{algorithmic}[1]
-    \State \textbf{Input:} Autograd Node $node$, Propagation input $R_{out}$
-    \State \textbf{Output:} Propagation output list $R_{in}$
+    \Require Autograd Node \texttt{node}, Propagation input $R_{out}$
+    \Ensure Propagation output list $R_{in}$
 
     \If{$R_{out}$ is a Promise Branch} \Comment{Retrieve forward activation}
-      \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
-      \State $activation = retrieve\_fwd\_output(node)$
-      \State $R_{out}.set\_arg(activation)$
-      \State $R_{out}.trigger\_promise\_completion()$
-      \If{$R_{out}.promise\_is\_complete$} \Comment{Resume propagation?}
-        $R_{out} = R_{out}.propagated\_relevance$
+      \State Define \texttt{retrieve\_fwd\_output} as a function that extracts \texttt{node}'s forward pass output given its saved tensors.
+      \State \texttt{activation = retrieve\_fwd\_output(node)}
+      \State $R_{out}\texttt{.set\_arg(activation)}$
+      \State $R_{out}\texttt{.trigger\_promise\_completion()}$
+      \If{$R_{out}\texttt{.promise\_is\_complete}$} \Comment{Resume propagation}
+        $R_{out} = R_{out}\texttt{.propagated\_relevance}$
       \Else
         \State \textit{// Signal for queueing this Node until the Promise is complete}
         \State \Return

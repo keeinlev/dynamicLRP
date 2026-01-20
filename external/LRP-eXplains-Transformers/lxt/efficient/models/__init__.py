@@ -2,7 +2,7 @@
 # import lxt.efficient.models.qwen2 as qwen2
 # import lxt.efficient.models.qwen3 as qwen3
 # import lxt.efficient.models.gemma3 as gemma3
-# import lxt.efficient.models.bert as bert
+import lxt.efficient.models.bert as bert
 # import lxt.efficient.models.gpt2 as gpt2
 import lxt.efficient.models.vit_torch as vit_torch
 from transformers import ViTForImageClassification
@@ -11,7 +11,7 @@ DEFAULT_MAP = {
     # qwen2.modeling_qwen2: qwen2.attnLRP,
     # qwen3.modeling_qwen3: qwen3.attnLRP,
     # gemma3.modeling_gemma3: gemma3.attnLRP,
-    # bert.modeling_bert: bert.attnLRP,
+    bert.modeling_bert: bert.attnLRP,
     # gpt2.modeling_gpt2: gpt2.attnLRP,
     vit_torch.vision_transformer: vit_torch.cp_LRP,
     ViTForImageClassification: vit_torch.cp_LRP,

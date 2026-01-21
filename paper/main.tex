@@ -59,7 +59,7 @@
   \usepackage{fancyhdr}
   \pagestyle{fancy}
   \fancyhead[L]{A Model-Agnostic Solution To Layer-Wise Relevance Propagation}
-  \fancyhead[R]{Lee, K. and Arias, P. M. (2025)}
+  \fancyhead[R]{Lee \textit{et. al.,} (2025)}
 
   \usepackage{authblk}% alternative author layout that supports symbols to indicate affiliations
   \renewcommand*{\Affilfont}{\normalsize}
@@ -70,12 +70,13 @@
 \title{Always Keep Your Promises: DynamicLRP, A Model-Agnostic Solution To Layer-Wise Relevance Propagation}
 
 \author[1]{Kevin Lee}
-\author[1, \textdagger]{Pablo Millan Arias}
+\author[2, \textdagger]{Duncan Smith-Halverson}
+\author[2, \textdagger]{Pablo Millan Arias}
 \affil[1]{University of Waterloo}
+\affil[2]{Scotiabank AI Resea—rch}
 \affil[$\text{\textdagger}$]{Senior Author}
 \affil[ ]{%
-\texttt{k327lee@uwaterloo.ca}\quad
-\texttt{pmillana@uwaterloo.ca}
+%\texttt{k327lee@uwaterloo.ca}
 }
 
 \date{}% Suppress date
@@ -97,7 +98,7 @@ deferred activation resolution, named the Promise System, which maintains LRP's 
 true generality across model architectures. Our approach operates alongside standard backpropagation machinery without interference,
 making it readily deployable in existing libraries. We demonstrate that DynamicLRP produces attributions matching or exceeding specialized
 implementations across vision and language tasks while maintaining practical efficiency on models with 100 million to 1 billion parameters. 
-Remarkably, our implementation achieved 99.92\% operation coverage across 31,465 computation nodes from 15 diverse architectures—including
+Remarkably, our implementation achieved 99.92\% operation coverage across 31,465 computation nodes from 15 diverse architectures, including
 transformer models, convolutional networks, state-space models, and multimodal systems, without requiring any architecture-specific modifications. 
 This represents the first truly model-agnostic LRP solution, enabling high-quality neural network interpretation across the full spectrum of modern AI
 architectures. All code is available at \url{https://github.com/keeinlev/dynamicLRP}.
@@ -578,7 +579,7 @@ We make use of all answerable examples in the SQuADv2 validation set, and skip e
 the start index is after the end index). We run LRP-$\gamma$ with $\gamma_{linear} = 0.001$ for both models, and only enable AttnLRP rules
 for the Flan-T5 attributions. See Table~\ref{squadv2-table}
 
-\subsection{Measuring Visual Attribution Faithfulness With Area Between Perturbation Curves}
+\subsection{Measuring Faithfulness of Visual Attribution}
 We measure faithfulness using the Area Between Perturbation Curves (ABPC) \cite{schulz2020abpc, blucher2024pixelflipping}.
 We first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
 Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most relevant features from each input sample. We also do this inversely,

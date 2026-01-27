@@ -16,7 +16,7 @@ lrp = LRPEngine(dtype=torch.bfloat16, use_gamma=True)
 model_name = "meta-llama/Llama-3.2-1B"
 
 
-run_name = "gamma_1000_100"
+run_name = "gamma_attn_1000_100"
 
 
 def run_causal_lm_morf_lerf(model, tokenizer, dataset,

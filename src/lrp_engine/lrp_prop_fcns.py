@@ -1112,9 +1112,7 @@ class LRPPropFunctions:
             key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
             value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
             repeat_interleave_grad_fn_k = key.grad_fn
-            repeat_interleave_grad_fn_v = key.grad_fn
-            if value.size(-3) != key.size(-3):
-                repeat_interleave_grad_fn_v = value.grad_fn
+            repeat_interleave_grad_fn_v = value.grad_fn
             key.requires_grad_(False)
             value.requires_grad_(False)
             key = LRPPropFunctions.detach_if_no_grad(key)

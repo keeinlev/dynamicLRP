@@ -12,10 +12,10 @@ module_path = os.path.join(os.getcwd(), '../../../external/LRP-eXplains-Transfor
 sys.path.append(module_path)
 from lxt.efficient import monkey_patch
 
-run_name = ""
+run_name = "sample"
 
 
-def run_llama_morf_lerf_attnlrp(model, tokenizer, dataset, occlusion_type="random", occlusion_iters=100, num_samples=1000):
+def run_llama_morf_lerf_attnlrp(model, tokenizer, dataset, occlusion_type="random", occlusion_iters=100, num_samples=11):
     all_logits = []
     all_confidences = []
     for example in (tqdm(dataset["test"].take(num_samples))):

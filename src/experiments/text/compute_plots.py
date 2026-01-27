@@ -5,9 +5,9 @@ from matplotlib import pyplot as plt
 
 os.chdir("C:\\Users\\Kevin\\Desktop\\Programming\\research\\lrp\\src\\experiments\\text")
 
-attnlrp_version = "_1000_100_random"
-dynamiclrp_version = "_gamma_1000_100_random"
-task = "wiki"
+attnlrp_version = "_sample_random"
+dynamiclrp_version = "_gamma_attn_sample1_random"
+task = "imdb"
 
 with open(f"results/attnlrp_llama_{task}_results{attnlrp_version}.json", "r") as f:
     attnlrp_results = json.load(f)

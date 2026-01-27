@@ -72,3 +72,55 @@ def sample_positions_for_eval(input_ids, num_positions=5):
     # Sample uniformly across the sequence
     indices = np.linspace(10, seq_len - 2, num_positions, dtype=int)
     return indices.tolist()
+
+
+def run_ig(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
+    # Integrated Gradients on Embeddings
+    # We wrap the model to handle dtype and output selection
+    def forward_wrapper(inputs_embeds):
+        # inputs_embeds might be float32 from Captum, model might be bfloat16
+        if inputs_embeds.dtype != model.dtype:
+            inputs_embeds = inputs_embeds.to(model.dtype)
+        
+        outputs = model(inputs_embeds=inputs_embeds.to(device), attention_mask=attention_mask)
+        logits = outputs.logits
+        
+        # Select the target logit
+        if logits.dim() == 2: # Classification [batch, num_labels]
+            return logits[:, target]
+        else: # NWP [batch, seq, vocab]
+            # Captum expands batch dim, so we use : for batch
+            return logits[:, target_idx, target]
+
+    inputs_embeds = embedding_layer(input_ids.to(device)).detach()
+    # Run in float32 for Captum stability
+    inputs_embeds_float = inputs_embeds.float()
+    inputs_embeds_float.requires_grad = True
+    
+    ig = IntegratedGradients(forward_wrapper)
+    attributions = ig.attribute(inputs_embeds_float, n_steps=50)
+    return attributions.sum(dim=-1).detach().cpu()
+
+def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
+    # GradientSHAP on Embeddings
+    def forward_wrapper(inputs_embeds):
+        if inputs_embeds.dtype != model.dtype:
+            inputs_embeds = inputs_embeds.to(model.dtype)
+        
+        outputs = model(inputs_embeds=inputs_embeds.to(device), attention_mask=attention_mask)
+        logits = outputs.logits
+        
+        if logits.dim() == 2:
+            return logits[:, target]
+        else:
+            return logits[:, target_idx, target]
+
+    inputs_embeds = embedding_layer(input_ids.to(device)).detach()
+    inputs_embeds_float = inputs_embeds.float()
+    inputs_embeds_float.requires_grad = True
+    
+    baseline = torch.zeros_like(inputs_embeds_float)
+    
+    gs = GradientShap(forward_wrapper)
+    attributions = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=50)
+    return attributions.sum(dim=-1).detach().cpu()

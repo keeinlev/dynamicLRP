@@ -14,9 +14,9 @@ from lrp_engine import LRPEngine
 lrp = LRPEngine(dtype=torch.bfloat16, use_gamma=True)
 
 
-run_name = "gamma_eager"
+run_name = "gamma_attn_sample"
 
-def run_llama_morf_lerf_dynamiclrp(model, tokenizer, dataset, occlusion_type="random", occlusion_iters=100, num_samples=1000):
+def run_llama_morf_lerf_dynamiclrp(model, tokenizer, dataset, occlusion_type="random", occlusion_iters=100, num_samples=11):
     all_logits = []
     all_confidences = []
     for example in (tqdm(dataset["test"].take(num_samples))):
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # Load Model and tokenizers
     tokenizer = AutoTokenizer.from_pretrained("yash3056/Llama-3.2-1B-imdb")
     model = AutoModelForSequenceClassification.from_pretrained("yash3056/Llama-3.2-1B-imdb", torch_dtype=torch.bfloat16, num_labels=2) #n is the number of labels in the code
-    model.model.config._attn_implementation = "eager"
+    model.model.config._attn_implementation = "sdpa"
     model.to(device)
 
     logits, confs = run_llama_morf_lerf_dynamiclrp(model, tokenizer, dataset)

@@ -5,28 +5,28 @@ from matplotlib import pyplot as plt
 
 os.chdir("C:\\Users\\Kevin\\Desktop\\Programming\\research\\lrp\\src\\experiments\\text")
 
-attnlrp_version = ""
-dynamiclrp_version = "_attn_gamma"
-task = "wiki"
+attnlrp_version = "_1000_100_random"
+dynamiclrp_version = "_gamma_1000_100_random"
+task = "imdb"
 
 with open(f"results/attnlrp_llama_{task}_results{attnlrp_version}.json", "r") as f:
     attnlrp_results = json.load(f)
 
-attnlrp_logits = attnlrp_results["diffs"]
+attnlrp_logits = attnlrp_results["confs"]
 attnlrp_diffs = [ [ lerf - morf for (lerf, morf) in x ] for x in attnlrp_logits ]
 
 with open(f"results/dynamiclrp_llama_{task}_results{dynamiclrp_version}.json", "r") as f:
     dynamiclrp_results = json.load(f)
 
-dynamiclrp_logits = dynamiclrp_results["diffs"]
+dynamiclrp_logits = dynamiclrp_results["confs"]
 dynamiclrp_diffs = [ [ lerf - morf for (lerf, morf) in x ] for x in dynamiclrp_logits ]
 
 
 attnlrp_sums = [ sum(c) for c in attnlrp_diffs ]
 dynamiclrp_sums = [ sum(c) for c in dynamiclrp_diffs ]
 
-num_samples = 60
-num_occlusion_iters = 80
+num_samples = len(attnlrp_sums)
+num_occlusion_iters = len(attnlrp_diffs[0])
 
 plt.plot(range(num_samples), attnlrp_sums)
 fig = plt.gcf()

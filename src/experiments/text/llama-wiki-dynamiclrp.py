@@ -1,5 +1,4 @@
 import json
-import numpy as np
 import os
 import sys
 import torch
@@ -7,7 +6,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 from datasets import load_dataset
 from datasets.utils.info_utils import VerificationMode
-from util import run_occlusion_text
+from util import run_occlusion_text, sample_positions_for_eval
 
 module_path = os.path.join(os.getcwd(), '../..') # Path to src
 sys.path.append(module_path)
@@ -17,28 +16,15 @@ lrp = LRPEngine(dtype=torch.bfloat16, use_gamma=True)
 model_name = "meta-llama/Llama-3.2-1B"
 
 
-run_name = "gamma_500_5_100"
+run_name = "gamma_1000_100"
 
 
-def sample_positions_for_eval(input_ids, num_positions=5):
-    """Sample positions to evaluate, avoiding very early positions"""
-    seq_len = input_ids.shape[-1]
-    
-    # Avoid first few tokens (not enough context) and last token (no prediction)
-    valid_range = range(10, seq_len - 1)
-    
-    if len(valid_range) <= num_positions:
-        return list(valid_range)
-    
-    # Sample uniformly across the sequence
-    indices = np.linspace(10, seq_len - 2, num_positions, dtype=int)
-    return indices.tolist()
-
-
-def run_causal_lm_morf_lerf(model, tokenizer, dataset, 
-                             num_samples=500,
-                             positions_per_sample=5,
+def run_causal_lm_morf_lerf(model, tokenizer, dataset,
+                             occlusion_type="random",
+                             num_samples=1000,
+                            #  positions_per_sample=2,
                              occlusion_iters=100):
+    all_logits = []
     all_confidences = []
     
     for example in tqdm(dataset.shuffle(seed=42).take(num_samples)):
@@ -47,35 +33,42 @@ def run_causal_lm_morf_lerf(model, tokenizer, dataset,
                              max_length=512, truncation=True)["input_ids"]
         
         # Sample positions to evaluate
-        eval_positions = sample_positions_for_eval(input_ids, positions_per_sample)
+        # eval_positions = sample_positions_for_eval(input_ids, positions_per_sample)
 
-        for pos in eval_positions:
+        # for pos in eval_positions:
             # Get context (everything before pos)
-            context_ids = input_ids[:, :pos+1]
-            true_next_token = input_ids[0, pos+1].item()
-            
-            # Get prediction
-            output = model(context_ids.to(device))
-            # predicted_token = output.logits[0, -1].argmax().item()
-            
-            # Skip if wrong prediction
-            # if predicted_token != true_next_token:
-            #     continue
+            # context_ids = input_ids[:, :pos+1]
+            # true_next_token = input_ids[0, pos+1].item()
 
-            # Compute LRP relevances for this position
-            relevance = lrp.run(output.logits[0, -1])[1][0]
-            
-            # Run MoRF/LeRF occlusion
-            confidences = run_occlusion_text(
+        # Just do last token prediction
+        pos = input_ids.shape[-1] - 1
+        context_ids = input_ids[:, :pos]
+        true_next_token = input_ids[0, pos].item()
+
+        # Get prediction
+        output = model(context_ids.to(device))
+        # predicted_token = output.logits[0, -1].argmax().item()
+        
+        # Skip if wrong prediction
+        # if predicted_token != true_next_token:
+        #     continue
+
+        # Compute LRP relevances for this position
+        relevance = lrp.run(output.logits[0, -1])[1][0]
+        
+        # Run MoRF/LeRF occlusion
+        with torch.no_grad():
+            logits, confidences = run_occlusion_text(
                 model, tokenizer, device, context_ids, true_next_token,
-                relevance, occlusion_iters, mode="causal"
+                relevance, occlusion_iters, mode="causal", occlusion_type=occlusion_type
             )
-            
-            all_confidences.append(confidences)
+        
+        all_logits.append(logits)
+        all_confidences.append(confidences)
 
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
     
-    return all_confidences
+    return all_logits, all_confidences
 
 
 
@@ -91,9 +84,14 @@ if __name__ == "__main__":
     model.model.config._attn_implementation = "sdpa"
     model.to(device)
 
-    diffs = run_causal_lm_morf_lerf(model, tokenizer, dataset["train"])
+    logits1, confs1 = run_causal_lm_morf_lerf(model, tokenizer, dataset["train"])
 
     os.makedirs("results", exist_ok=True)
-    with open(f"results/dynamiclrp_llama_wiki_results_{run_name}.json", "w") as f:
-        json.dump({'diffs': diffs}, f)
+    with open(f"results/dynamiclrp_llama_wiki_results_{run_name}_random.json", "w") as f:
+        json.dump({'logits': logits1, 'confs': confs1}, f)
+
+    logits2, confs2 = run_causal_lm_morf_lerf(model, tokenizer, dataset["train"], occlusion_type="zero")
+
+    with open(f"results/dynamiclrp_llama_wiki_results_{run_name}_zero.json", "w") as f:
+        json.dump({'logits': logits2, 'confs': confs2}, f)
 

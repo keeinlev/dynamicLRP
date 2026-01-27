@@ -7,7 +7,7 @@ os.chdir("C:\\Users\\Kevin\\Desktop\\Programming\\research\\lrp\\src\\experiment
 
 attnlrp_version = "_1000_100_random"
 dynamiclrp_version = "_gamma_1000_100_random"
-task = "imdb"
+task = "wiki"
 
 with open(f"results/attnlrp_llama_{task}_results{attnlrp_version}.json", "r") as f:
     attnlrp_results = json.load(f)

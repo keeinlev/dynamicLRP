@@ -33,7 +33,7 @@ def run_ig(model, input_ids, attention_mask, target, embedding_layer, target_idx
     inputs_embeds_float.requires_grad = True
     
     ig = IntegratedGradients(forward_wrapper)
-    attributions = ig.attribute(inputs_embeds_float, n_steps=50)
+    attributions = ig.attribute(inputs_embeds_float, n_steps=50, internal_batch_size=10)
     return attributions.sum(dim=-1).detach().cpu()
 
 def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
@@ -57,7 +57,24 @@ def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, targ
     baseline = torch.zeros_like(inputs_embeds_float)
     
     gs = GradientShap(forward_wrapper)
-    attributions = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=50)
+    
+    n_samples = 50
+    batch_size = 5
+    total_attr = None
+    remaining = n_samples
+    
+    while remaining > 0:
+        current_batch = min(remaining, batch_size)
+        attr_batch = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=current_batch, stdevs=0.0)
+        
+        if total_attr is None:
+            total_attr = attr_batch * current_batch
+        else:
+            total_attr += attr_batch * current_batch
+            
+        remaining -= current_batch
+        
+    attributions = total_attr / n_samples
     return attributions.sum(dim=-1).detach().cpu()
 
 def run_llama_morf_lerf(model, tokenizer, dataset, method, occlusion_type="random", occlusion_iters=100, num_samples=1000):
@@ -78,7 +95,7 @@ def run_llama_morf_lerf(model, tokenizer, dataset, method, occlusion_type="rando
             relevance = run_gradshap(model, input_ids["input_ids"], input_ids["attention_mask"], label, model.model.embed_tokens)
 
         with torch.no_grad():
-            logits, confidences = run_occlusion_text(model, tokenizer, device, input_ids, label, relevance, occlusion_iters, "class", occlusion_type)
+            logits, confidences = run_occlusion_text(model, tokenizer, device, input_ids["input_ids"], label, relevance, occlusion_iters, "class", occlusion_type)
 
         all_logits.append(logits)
         all_confidences.append(confidences)
@@ -97,15 +114,15 @@ if __name__ == "__main__":
     model.model.config._attn_implementation = "sdpa"
     model.to(device)
 
-    logits, confs = run_llama_morf_lerf(model, tokenizer, dataset, "ig")
+    logits, confs = run_llama_morf_lerf(model, tokenizer, dataset, "gradshap")
 
-    with open(f"results/captum_ig_llama_imdb_results_random.json", "w") as f:
-        json.dump({'logits': logits, 'confs': confs}, f)
+    # with open(f"results/captum_ig_llama_imdb_results_random.json", "w") as f:
+    #     json.dump({'logits': logits, 'confs': confs}, f)
 
-    logits2, confs2 = run_llama_morf_lerf(model, tokenizer, dataset, "ig", occlusion_type="zero")
+    # logits2, confs2 = run_llama_morf_lerf(model, tokenizer, dataset, "ig", occlusion_type="zero")
 
-    with open(f"results/captum_ig_llama_imdb_results_zero.json", "w") as f:
-        json.dump({'logits': logits2, 'confs': confs2}, f)
+    # with open(f"results/captum_ig_llama_imdb_results_zero.json", "w") as f:
+    #     json.dump({'logits': logits2, 'confs': confs2}, f)
 
     logits3, confs3 = run_llama_morf_lerf(model, tokenizer, dataset, "gradshap")
 

@@ -2,7 +2,7 @@ import json
 import torch
 from tqdm import tqdm
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets.utils.info_utils import VerificationMode
 from captum.attr import IntegratedGradients, GradientShap#, LayerIntegratedGradients, LayerGradientShap
 from sklearn.metrics import auc
@@ -95,8 +95,8 @@ if __name__ == "__main__":
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Load Model and tokenizers
-    tokenizer = AutoTokenizer.from_pretrained("yash3056/Llama-3.2-1B-imdb")
-    model = AutoModelForSequenceClassification.from_pretrained("yash3056/Llama-3.2-1B-imdb", torch_dtype=torch.bfloat16, num_labels=2) #n is the number of labels in the code
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
     model.model.config._attn_implementation = "sdpa"
     model.to(device)
 

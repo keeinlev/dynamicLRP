@@ -13,10 +13,10 @@ for method in "${METHODS[@]}"; do
 done
 
 # Run RoBERTa experiments
-for method in "${METHODS[@]}"; do
-    echo "Running RoBERTa with $method..."
-    python roberta_squad_captum.py --method "$method" > "roberta_${method}.log" 2>&1
-    echo "Finished RoBERTa $method"
-done
+# for method in "${METHODS[@]}"; do
+#    echo "Running RoBERTa with $method..."
+#    python roberta_squad_captum.py --method "$method" > "roberta_${method}.log" 2>&1
+#    echo "Finished RoBERTa $method"
+# done
 
 echo "All experiments completed."

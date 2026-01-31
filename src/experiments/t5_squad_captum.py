@@ -21,35 +21,40 @@ def get_model_and_tokenizer():
 
 # --- Captum Wrapper Functions to handle Memory ---
 
-def forward_func(inputs_embeds, model, attention_mask, start_ind, end_ind):
+def forward_func(inputs_embeds, model, attention_mask, decoder_input_ids, start_ind, end_ind):
     # wrapper to compute sum of logit(start) and logit(end)
     # inputs_embeds: [batch, seq, dim]
     
     # Ensure dtype match (Captum might cast to float32)
     if inputs_embeds.dtype != model.dtype:
         inputs_embeds = inputs_embeds.to(model.dtype)
-        
-    outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+    
+    batch_size = inputs_embeds.shape[0]
+            
+    outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask, decoder_input_ids=decoder_input_ids)
     
     # We want to explain the prediction: Logit(Start) + Logit(End)
     # We sum them up to get a scalar per batch item
     batch_size = inputs_embeds.shape[0]
     
-    # Gather the specific logits
     # outputs.start_logits: [batch, seq_len]
     start_logits = outputs.start_logits[torch.arange(batch_size), start_ind]
     end_logits = outputs.end_logits[torch.arange(batch_size), end_ind]
     
     return start_logits + end_logits
 
-def run_captum_attribution(method, model, inputs_embeds, attention_mask, start_ind, end_ind):
+def run_captum_attribution(method, model, inputs_embeds, attention_mask, input_ids, start_ind, end_ind):
     # Prepare inputs for Captum
     inputs_embeds_float = inputs_embeds.detach().float()
     inputs_embeds_float.requires_grad = True
     
+    # Generate decoder_input_ids for T5
+    # T5 uses shift_right to create decoder inputs from input_ids
+    decoder_input_ids = model._shift_right(input_ids)
+    
     # wrapper with fixed args for this specific call
     def wrapper(inputs):
-        return forward_func(inputs, model, attention_mask, start_ind, end_ind)
+        return forward_func(inputs, model, attention_mask, decoder_input_ids, start_ind, end_ind)
 
     # Calculate baseline (all zeros)
     baseline = torch.zeros_like(inputs_embeds_float)
@@ -205,7 +210,7 @@ def run_t5_squad_benchmark(model, tokenizer, embedding_layer, dataset, run_name,
         
         # Computes attribution for the predicted start+end logits
         # Returns [1, seq_len] tensor
-        relevance = run_captum_attribution(method, model, inputs_embeds, attention_mask, start, end)
+        relevance = run_captum_attribution(method, model, inputs_embeds, attention_mask, input_ids, start, end)
         param_vals_2 = relevance # Naming to match original script logic mapping
 
         lrp_max = param_vals_2.masked_fill(~mask.cpu(), -float("inf")).flatten().argmax()

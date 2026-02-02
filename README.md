@@ -1,5 +1,4 @@
 # Dynamic Layerwise Relevance Propagation
-## By Kevin Lee and Dr. Pablo M. Arias
 ## June - December 2025
 ## [Pre-print](https://arxiv.org/abs/2512.07010)
 

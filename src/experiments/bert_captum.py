@@ -114,7 +114,7 @@ def run_bert_squad_benchmark(model, tokenizer, embedding_layer, dataset, run_nam
 
         # --- CAPTUM ATTRIBUTION ---
         inputs_embeds = embedding_layer(input_ids)
-        relevance = run_captum_attribution(method, model, inputs_embeds, attention_mask, start, end).masked_fill(~mask, -float("inf"))
+        relevance = run_captum_attribution(method, model, inputs_embeds, attention_mask, start, end).masked_fill(~mask.cpu(), -float("inf"))
 
         lrp_max = relevance.flatten().argmax()
         lrp_top_token = tokenizer.decode([input_ids[0][lrp_max]], skip_special_tokens=True).strip().replace(chr(9601), "")
@@ -176,7 +176,12 @@ def run_bert_squad_benchmark(model, tokenizer, embedding_layer, dataset, run_nam
         span_label_union = None
         lrp_label_exact_match = None
         if model_exact_match:
-            pos_inds = torch.where((2 * relevance.flatten() / relevance[2].flatten().max() - 1).cpu() > 0)[0]
+            # Check for non-zero max to avoid division by zero
+            max_val = relevance.flatten().max()
+            if max_val == 0: max_val = 1e-9
+            
+            # Using relevance itself since it's already [1, seq]
+            pos_inds = torch.where((2 * relevance.flatten() / max_val - 1).cpu() > 0)[0]
             strict_label_intersect = 0
             span_label_intersect = 0
             strict_label_union = 2
@@ -324,8 +329,14 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=None, help="Number of samples to run from dataset (for debugging)")
     args = parser.parse_args()
 
+    if torch.cuda.is_available():
+        device = "cuda:0"
+    else:
+        device = "cpu"
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForQuestionAnswering.from_pretrained(model_name).to(device=device, dtype=torch.bfloat16)
+    print(model)
     embedding_layer = model.bert.embeddings.word_embeddings
     dataset = load_dataset("squad_v2")
     

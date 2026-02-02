@@ -29,17 +29,25 @@ def forward_func(inputs_embeds, model, attention_mask, decoder_input_ids, start_
     if inputs_embeds.dtype != model.dtype:
         inputs_embeds = inputs_embeds.to(model.dtype)
     
-    batch_size = inputs_embeds.shape[0]
+    current_batch_size = inputs_embeds.shape[0]
+    
+    # Expand auxiliary inputs if Captum has batched the main input (IG, GradShap)
+    if attention_mask.shape[0] != current_batch_size:
+        # Assuming shape [1, seq] -> [batch, seq]
+        attention_mask = attention_mask.repeat(current_batch_size, 1)
+        
+    if decoder_input_ids.shape[0] != current_batch_size:
+        # Assuming shape [1, seq] -> [batch, seq]
+        decoder_input_ids = decoder_input_ids.repeat(current_batch_size, 1)
             
     outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask, decoder_input_ids=decoder_input_ids)
     
     # We want to explain the prediction: Logit(Start) + Logit(End)
     # We sum them up to get a scalar per batch item
-    batch_size = inputs_embeds.shape[0]
     
     # outputs.start_logits: [batch, seq_len]
-    start_logits = outputs.start_logits[torch.arange(batch_size), start_ind]
-    end_logits = outputs.end_logits[torch.arange(batch_size), end_ind]
+    start_logits = outputs.start_logits[torch.arange(current_batch_size), start_ind]
+    end_logits = outputs.end_logits[torch.arange(current_batch_size), end_ind]
     
     return start_logits + end_logits
 

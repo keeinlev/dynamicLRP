@@ -4,7 +4,7 @@ from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets.utils.info_utils import VerificationMode
-from captum.attr import IntegratedGradients, GradientShap#, LayerIntegratedGradients, LayerGradientShap
+from captum.attr import IntegratedGradients, GradientShap, InputXGradient, KernelShap#, LayerIntegratedGradients, LayerGradientShap
 from sklearn.metrics import auc
 from util import run_occlusion_text
 
@@ -34,7 +34,7 @@ def run_ig(model, input_ids, attention_mask, target, embedding_layer, target_idx
     inputs_embeds_float.requires_grad = True
     
     ig = IntegratedGradients(forward_wrapper)
-    attributions = ig.attribute(inputs_embeds_float, n_steps=50)
+    attributions = ig.attribute(inputs_embeds_float, n_steps=50, internal_batch_size=10)
     return attributions.sum(dim=-1).detach().cpu()
 
 def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
@@ -58,7 +58,75 @@ def run_gradshap(model, input_ids, attention_mask, target, embedding_layer, targ
     baseline = torch.zeros_like(inputs_embeds_float)
     
     gs = GradientShap(forward_wrapper)
-    attributions = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=50)
+    
+    n_samples = 50
+    batch_size = 5
+    total_attr = None
+    remaining = n_samples
+    
+    while remaining > 0:
+        current_batch = min(remaining, batch_size)
+        attr_batch = gs.attribute(inputs_embeds_float, baselines=baseline, n_samples=current_batch, stdevs=0.0)
+        
+        if total_attr is None:
+            total_attr = attr_batch * current_batch
+        else:
+            total_attr += attr_batch * current_batch
+            
+        remaining -= current_batch
+        torch.cuda.empty_cache()
+    
+    attributions = total_attr / n_samples
+    return attributions.sum(dim=-1).detach().cpu()
+
+def run_input_x_gradient(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
+    # Input X Gradient on Embeddings
+    def forward_wrapper(inputs_embeds):
+        if inputs_embeds.dtype != model.dtype:
+            inputs_embeds = inputs_embeds.to(model.dtype)
+        
+        outputs = model(inputs_embeds=inputs_embeds.to(device), attention_mask=attention_mask)
+        logits = outputs.logits
+        
+        if logits.dim() == 2:
+            return logits[:, target]
+        else:
+            return logits[:, target_idx, target]
+
+    inputs_embeds = embedding_layer(input_ids.to(device)).detach()
+    inputs_embeds_float = inputs_embeds.float()
+    inputs_embeds_float.requires_grad = True
+    
+    ixg = InputXGradient(forward_wrapper)
+    attributions = ixg.attribute(inputs_embeds_float)
+    return attributions.sum(dim=-1).detach().cpu()
+
+def run_kernelshap(model, input_ids, attention_mask, target, embedding_layer, target_idx=-1):
+    # KernelSHAP on Tokens (via Embeddings feature mask)
+    def forward_wrapper(inputs_embeds):
+        if inputs_embeds.dtype != model.dtype:
+            inputs_embeds = inputs_embeds.to(model.dtype)
+        
+        outputs = model(inputs_embeds=inputs_embeds.to(device), attention_mask=attention_mask)
+        logits = outputs.logits
+        
+        if logits.dim() == 2:
+            return logits[:, target]
+        else:
+            return logits[:, target_idx, target]
+
+    inputs_embeds = embedding_layer(input_ids.to(device)).detach()
+    inputs_embeds_float = inputs_embeds.float()
+    
+    baseline = torch.zeros_like(inputs_embeds_float)
+    
+    ks = KernelShap(forward_wrapper)
+    
+    # Define feature mask: each token is a feature
+    seq_len = inputs_embeds.shape[1]
+    feature_mask = torch.arange(seq_len, device=device).unsqueeze(0).unsqueeze(-1).expand_as(inputs_embeds_float)
+    
+    attributions = ks.attribute(inputs_embeds_float, baselines=baseline, feature_mask=feature_mask, n_samples=100)
     return attributions.sum(dim=-1).detach().cpu()
 
 def run_llama_morf_lerf(model, tokenizer, dataset, method, occlusion_type="random", occlusion_iters=100, num_samples=1000):
@@ -76,9 +144,13 @@ def run_llama_morf_lerf(model, tokenizer, dataset, method, occlusion_type="rando
             relevance = run_ig(model, context_ids, attn_mask, true_next_token, model.model.embed_tokens)
         elif method == "gradshap":
             relevance = run_gradshap(model, context_ids, attn_mask, true_next_token, model.model.embed_tokens)
+        elif method == "input_x_gradient":
+            relevance = run_input_x_gradient(model, context_ids, attn_mask, true_next_token, model.model.embed_tokens)
+        elif method == "kernelshap":
+            relevance = run_kernelshap(model, context_ids, attn_mask, true_next_token, model.model.embed_tokens)
 
         with torch.no_grad():
-            logits, confidences = run_occlusion_text(model, tokenizer, device, input_ids, true_next_token, relevance, occlusion_iters, "causal", occlusion_type)
+            logits, confidences = run_occlusion_text(model, tokenizer, device, context_ids, true_next_token, relevance, occlusion_iters, "causal", occlusion_type)
 
         all_logits.append(logits)
         all_confidences.append(confidences)
@@ -87,7 +159,13 @@ def run_llama_morf_lerf(model, tokenizer, dataset, method, occlusion_type="rando
     return all_logits, all_confidences
 
 
+import argparse
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--method", type=str, choices=["ig", "gradshap", "input_x_gradient", "kernelshap"], required=True, help="Attribution method to use")
+    args = parser.parse_args()
+
     # Only take a manageable subset of the dataset
     data_files = [ f"20231101.en/train-0000{i}-of-00041.parquet" for i in range(7) ]
     dataset = load_dataset("wikimedia/wikipedia", "20231101.en", data_files=data_files, verification_mode=VerificationMode.NO_CHECKS) # Need to bypass the checks for split size
@@ -99,23 +177,20 @@ if __name__ == "__main__":
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
     model.model.config._attn_implementation = "sdpa"
     model.to(device)
+    
+    # Ensure results directory exists
+    import os
+    os.makedirs("results", exist_ok=True)
 
-    logits, confs = run_llama_morf_lerf(model, tokenizer, dataset["train"], "ig")
+    print(f"Running {args.method} with random occlusion...")
+    logits, confs = run_llama_morf_lerf(model, tokenizer, dataset["train"], args.method, occlusion_type="random")
 
-    with open(f"results/captum_ig_llama_wiki_results_random.json", "w") as f:
+    with open(f"results/captum_{args.method}_llama_wiki_results_random.json", "w") as f:
         json.dump({'logits': logits, 'confs': confs}, f)
 
-    logits2, confs2 = run_llama_morf_lerf(model, tokenizer, dataset["train"], "ig", occlusion_type="zero")
+    print(f"Running {args.method} with zero occlusion...")
+    logits2, confs2 = run_llama_morf_lerf(model, tokenizer, dataset["train"], args.method, occlusion_type="zero")
 
-    with open(f"results/captum_ig_llama_wiki_results_zero.json", "w") as f:
+    with open(f"results/captum_{args.method}_llama_wiki_results_zero.json", "w") as f:
         json.dump({'logits': logits2, 'confs': confs2}, f)
 
-    logits3, confs3 = run_llama_morf_lerf(model, tokenizer, dataset["train"], "gradshap")
-
-    with open(f"results/captum_gradshap_llama_wiki_results_random.json", "w") as f:
-        json.dump({'logits': logits3, 'confs': confs3}, f)
-
-    logits4, confs4 = run_llama_morf_lerf(model, tokenizer, dataset["train"], "gradshap", occlusion_type="zero")
-
-    with open(f"results/captum_gradshap_llama_wiki_results_zero.json", "w") as f:
-        json.dump({'logits': logits4, 'confs': confs4}, f)

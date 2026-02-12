@@ -1,4 +1,4 @@
-import ipdb
+# import ipdb
 import torch
 import time
 from enum import Enum
@@ -77,7 +77,7 @@ class LRPEngine:
         self.mm_gamma = mm_gamma
         self.use_z_plus : bool = use_z_plus
         self.use_attn_lrp : bool = use_attn_lrp
-        self.use_bilinear_mm : bool = use_attn_lrp or use_bilinear_mm
+        self.use_bilinear_mm : bool = use_bilinear_mm
         self.relevance_filter : float = relevance_filter
         self.promise_bucket = PromiseBucket()
         self.conv_counter = 0
@@ -815,7 +815,7 @@ class LRPEngine:
                         input_frontier[child][idx] = 0.0
                     input_frontier[child][idx] += res[i]
             
-            if "relevance" not in node.metadata and node_ind in param_node_inds:
+            if ("relevance" not in node.metadata or node.metadata["relevance"] is None) and node_ind in param_node_inds:
                 node.metadata["relevance"] = input_frontier[node_ind][0]
 
             # Move the frontier forward
@@ -834,7 +834,9 @@ class LRPEngine:
 
         param_node_vals = [ ind_to_node[node_ind].metadata["relevance"] for node_ind in param_node_inds ]
 
+        # Clears the tensor field which holds onto the computation graph to avoid memory leaks
         for node in checkpoints + [ ind_to_node[node_ind] for node_ind in param_node_inds ]:
             node.metadata["relevance"] = None
+            del node.metadata["relevance"]
 
         return checkpoint_vals, param_node_vals

@@ -59,7 +59,7 @@
   \usepackage{fancyhdr}
   \pagestyle{fancy}
   \fancyhead[L]{A Model-Agnostic Solution To Layer-Wise Relevance Propagation}
-  \fancyhead[R]{Lee, K. and Arias, P. M. (2025)}
+  \fancyhead[R]{Lee \textit{et. al.,} (2025)}
 
   \usepackage{authblk}% alternative author layout that supports symbols to indicate affiliations
   \renewcommand*{\Affilfont}{\normalsize}
@@ -70,12 +70,13 @@
 \title{Always Keep Your Promises: DynamicLRP, A Model-Agnostic Solution To Layer-Wise Relevance Propagation}
 
 \author[1]{Kevin Lee}
-\author[1, \textdagger]{Pablo Millan Arias}
+\author[2, \textdagger]{Duncan Smith-Halverson}
+\author[2, \textdagger]{Pablo Millan Arias}
 \affil[1]{University of Waterloo}
+\affil[2]{Scotiabank AI Resea—rch}
 \affil[$\text{\textdagger}$]{Senior Author}
 \affil[ ]{%
-\texttt{k327lee@uwaterloo.ca}\quad
-\texttt{pmillana@uwaterloo.ca}
+%\texttt{k327lee@uwaterloo.ca}
 }
 
 \date{}% Suppress date
@@ -86,21 +87,21 @@
 \maketitle
 
 \begin{abstract}
-Layer-wise Relevance Propagation (LRP) provides principled attribution for neural networks through conservation properties and foundations
-in Deep Taylor Decomposition. However, existing implementations operate at the module level, requiring architecture-specific propagation
-rules and model modifications. These limit the generality of target model and sustainability of implementations as architectures evolve.
-We introduce DynamicLRP, a model-agnostic LRP framework operating at the tensor operation level. By decomposing attribution to individual
-operations within computation graphs and introducing a novel mechanism for deferred activation resolution, named the Promise System, our
-approach achieves true architecture agnosticity while maintaining LRP's theoretical guarantees. This design operates independently of
-backpropagation machinery, requiring no model modification, enabling side-by-side execution with gradient backpropagation. Being based on
-computation graphs, this method is theoretically extensible to other deep learning libraries that support auto-differentiation.
-We demonstrate faithfulness matching or exceeding specialized implementations (1.77 vs 1.69 ABPC on VGG, equivalent performance on ViT,
-93.70\% and 95.06\% top-1 attribution accuracy for explaining RoBERTa-large and Flan-T5-large answers on SQuADv2, respectively) while
-maintaining practical efficiency on models with 100M-1B parameters.
-We achieved 99.92\% node coverage across 31,465 computation graph nodes from 15 diverse architectures, including state-space models (Mamba),
-audio transformers (Whisper), and multimodal systems (DePlot) without any model-specific code with rules for 47 fundamental operations implemented.
-Our operation-level decomposition and Promise System establish a sustainable, extensible foundation for LRP across evolving architectures.
-All code is available at \url{https://github.com/keeinlev/dynamicLRP}.
+Understanding why neural networks make specific predictions is essential for building trust in artificial intelligence systems, particularly in high-stakes domains. 
+Among the many interpretability algorithms, Layer-wise Relevance Propagation (LRP) stands out as one of the foundational methods in neural network interpretability, 
+offering a principled approach to attribution by redistributing prediction scores back to input features while preserving conservation properties. 
+Although existing LRP implementations support classic architectures, they require a customised implementation for each new network architecture, which limits
+their applicability to rapidly evolving model designs and preventing their widespread adoption in the interpretability research 
+community. To address this limitation, we introduce DynamicLRP, a model-agnostic LRP framework that operates at the primitive level and decomposes 
+LRP attribution rules to individual tensor operations within the network's computation graph. This is achieved through our novel mechanism for 
+deferred activation resolution, named the Promise System, which maintains LRP's theoretical guarantees while achieving
+true generality across model architectures. Our approach operates alongside standard backpropagation machinery without interference,
+making it readily deployable in existing libraries. We demonstrate that DynamicLRP produces attributions matching or exceeding specialized
+implementations across vision and language tasks while maintaining practical efficiency on models with 100 million to 1 billion parameters. 
+Remarkably, our implementation achieved 99.92\% operation coverage across 31,465 computation nodes from 15 diverse architectures, including
+transformer models, convolutional networks, state-space models, and multimodal systems, without requiring any architecture-specific modifications. 
+This represents the first truly model-agnostic LRP solution, enabling high-quality neural network interpretation across the full spectrum of modern AI
+architectures. All code is available at \url{https://github.com/keeinlev/dynamicLRP}.
 \end{abstract}
 
 \begin{figure}
@@ -127,12 +128,12 @@ All code is available at \url{https://github.com/keeinlev/dynamicLRP}.
 
 \section{Introduction}
 While significant progress has been made in explaining medium-scale models and established architectures, the decision-making
-processes of large-scale transformer systems \cite{vaswani2017attention} remain challenging to interpret comprehensively.
+processes of large-scale architectures e.g. transformer-based foundation models \cite{gemmateam2025gemma3, vdosovitskiy2021vit, dubey2024llama3} remain challenging to interpret comprehensively.
 As these models increasingly influence high-stakes applications from healthcare to autonomous systems, understanding
 \emph{why} they make specific predictions has become a critical scientific and societal imperative.
 
-Rule-based decomposition methods, pioneered by Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, offer
-compelling results through systematic relevance redistribution. Unlike gradients, which reflect local sensitivity,
+Rule-based decomposition methods, such as Layer-wise Relevance Propagation (LRP) \cite{bach2015pixel}, have demonstrated
+their effectiveness through systematic redistribution of the prediction, also known as relevance score. Unlike gradient-based methods, which reflect local sensitivity,
 LRP decomposes the actual prediction by backpropagating relevance scores while preserving conservation properties. This
 approach enables customizable propagation rules tailored to specific architectural components \cite{montavon2017explaining}.
 This approach has proven remarkably effective for convolutional networks and demonstrated theoretical
@@ -142,16 +143,16 @@ rapidly evolving architectures, where concepts like multi-head attention and res
 specifications \cite{achtibat2024attnlrp, otsuki2024lrpresidualconnections}.
 
 This has led LRP to remain systematically underrepresented in contemporary explainability research, as it is one of the
-few mentioned methods which is not model-agnostic. Machiraju et al.'s \cite{machiraju2024prospector} comprehensive
+few mentioned methods which is not model-agnostic. Notably, Machiraju et al.'s \cite{machiraju2024prospector} comprehensive
 attribution study, which evaluated gradients, attention maps, SHAP, and LIME across transformer models, entirely omits
 LRP—despite its proven effectiveness and computational advantages.
 
 We address this gap by proposing DynamicLRP, an LRP framework that extends rule-based attribution to arbitrary neural
 architectures with minimal overhead. We define LRP rules for individual tensor operations, analogous to generalized
 gradient computation found in auto-differentiation libraries (like PyTorch), which can be applied to any network topology.
-Through our novel \textbf{"Promise System"} for handling missing activations in the backward pass, our approach repurposes
-the computation graph used in auto-differentiation, and maintains LRP's theoretical guarantees while achieving computational
-efficiency within the asymptotic bounds of standard backpropagation.
+Our novel \textbf{"Promise System"} addresses the challenge of missing activations during the backward pass by leveraging 
+the computation graph used in auto-differentiation. This system preserves the theoretical guarantees of LRP while ensuring 
+computational efficiency, adhering to the asymptotic complexity of standard backpropagation.
 
 We aim to show through experiments across multiple modalities that our proposed LRP solution remains mathematically sound and produces
 faithful and interpretable attributions consistent with existing methods. We also demonstrate that the Promise-based LRP maintains a
@@ -160,67 +161,108 @@ architectures using consumer-grade hardware.
 
 \textbf{We make three primary contributions}:
 \begin{itemize}
-  \item \textbf{Model-agnostic, operation-level LRP framework} (Sec~\ref{sec:op-level-lrp}): We decompose LRP from module-level
-  to operation-level, defining propagation rules for fundamental tensor operations rather than composite neural network
-  modules to enable model agnosticity. Complete with rules for 47 fundamental tensor operations already implemented (See Appendix~\ref{appendix:covered-operations}).
-  \item \textbf{Promise System} (Sec~\ref{sec:promise-system}): We introduce a novel mechanism for deferred relevance propagation
-  and backward pass activation retrieval through the computation graph so that LRP can function without graph modification.
-  The technique generalizes to arbitrary non-gradient computations on computation graphs used by auto-differentiation.
-  We provide proven complexity bounds on memory and computation.
-  \item \textbf{Faithfulness validation} (Sec~\ref{sec:experiments}): We demonstrate faithfulness matching or exceeding specialized
-  implementations across vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) while maintaining practical efficiency.
+  \item \textbf{Model-agnostic, operation-level LRP framework} (Sec~\ref{sec:op-level-lrp}): We redefine LRP from a module-centric approach to an operation-level paradigm, implementing propagation rules for 47 primitives (See Appendix~\ref{appendix:covered-operations}). This shift ensures model-agnostic applicability, enabling seamless integration across diverse architectures without requiring architecture-specific modifications.
+  \item \textbf{Promise System} (Sec~\ref{sec:promise-system}): We propose a novel mechanism for deferred relevance propagation and backward pass activation retrieval, leveraging the computation graph to enable LRP without modifying the graph structure. This system generalizes to arbitrary non-gradient computations within auto-differentiation frameworks. Furthemore we have established and validated complexity bounds for both memory and computational efficiency.
+  \item \textbf{Faithfulness validation} (Sec~\ref{sec:experiments}): We demonstrate empirically that DynamicLRP matches or surpasses specialized implementations in vision (ViT-b-16, VGG16) and text (RoBERTa, T5-Flan) tasks, while maintaining practical efficiency in terms of memory and runtime.
 \end{itemize}
 
-\section{Background}
-\subsection{Classic LRP via Taylor Approximation}
+\section{Related Work}
+\subsection{Explainability Methods}
+Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
+differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
+chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
+but suffer from gradient saturation, gradient shattering, and linearity assumptions that fail to capture complex nonlinear interactions
+\cite{ancona2018towards, samek2021xaireview}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
+\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
+yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
+Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
+localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
+This positions LRP as a strong explainability method when used in the correct domains, as it does not suffer from these
+pitfalls due to its tight rooting in the model architecture and efficient computation requirements of a single backward
+pass \cite{samek2021xaireview}.
 
-Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. The key assumption is that the relevance at output neuron $j$ is proportional to the function value at $j$: $R_j \propto f_j(x)$. To propagate relevance to the inputs, we use the Taylor expansion and the conservation rule.
+\subsection{Modern LRP Implementations}
+LRP has evolved significantly since its inception, with modern implementations striving to achieve greater flexibility and efficiency.
+Several libraries, including \texttt{iNNvestigate} \cite{alber2018innvestigate}, \texttt{Captum} \cite{kokhlikyan2020captum}, and Zennit 
+\cite{anders2021zennit}, provide implementations of LRP alongside other interpretability methods.
+Among these, Zennit stands out for its comprehensive support for rule-based methods in PyTorch, offering a modular framework that leverages
+the automatic  differentiation machinery to backpropagate relevances intead of gradients. Another recent advancement in the field that 
+is close to our work is \texttt{AttnLRP} \cite{achtibat2024attnlrp}, which derived new propagation rules suitable for attention modules 
+and provides an implementation named LxT (LRP eXplains Transformers) built on top of Zennit. Note that at the time of writing, the list of 
+architectures currently supported by LxT is limited to Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. While LxT 
+demonstrates the potential of extending LRP to modern architectures, it also illustrates the challenges of adapting module-centric designs 
+and  highlights the importance of a more flexible, architecture-agnostic approach.
 
-For a function $f_j(x)$, the first-order Taylor expansion around a root point $x_0$ is:
-\begin{equation}
-f_j(x) \approx f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})
-\end{equation}
-The conservation rule requires that the sum of input relevances equals the output relevance:
-\begin{equation}
-\sum_i R_{i \leftarrow j}^{l - 1} = R_j^l
-\end{equation}
-Assuming $R_{i \leftarrow j}^{l - 1}$ is proportional to the Taylor term for input $i$:
-\begin{equation}
-R_{i \leftarrow j}^{l - 1} = \frac{\frac{\partial f_j}{\partial x_i} (x_i - x_{0,i})}{f_j(x) - f_j(x_0) + \epsilon} R_j^l
-\end{equation}
-For a linear layer $z_j = \sum_i x_i w_{ji} + b_j$, and choosing $x_0 = 0$, this simplifies to:
-\begin{equation}
-R_{i \leftarrow j}^{l - 1} = \frac{x_i w_{ji}}{z_j + \epsilon} R_j^l
-\end{equation}
-where $\epsilon$ is a small stabilizer to avoid division by zero. The total relevance assigned to input $i$ is then $R_i = \sum_j R_{i \leftarrow j}$.
-This derivation shows how the epsilon rule arises from the proportionality assumption, Taylor expansion, and conservation principle,
-linking the mathematical definition of LRP to its practical implementation.
 
-\subsection{LRP Variants}
-\subsubsection{$\gamma$-LRP}
-To denoise relevance attributions, the $\gamma$-LRP rule was introduced by Montavon et al. \cite{montavon2019lrp}. It adds a
-hyperparameter $\gamma$ that acts as a multiplicative booster for positive neuron contributions:
+While the implementation of new rules is claimed to be trivial in Zennit, there is nonetheless significant conceptual overhead in understanding 
+how to correctly merge, split, and modify modules to fit within the framework, as well as additional management overhead
+due to the need for new configurations and codebase semantics when supporting other architectures. In particular, each model
+ requires a custom, duplicated implementation to integrate the appropriate LRP propagation rules throughout the network. 
+ We build upon the foundation established by LxT and Zennit, acknowledging their flexibility while addressing the limitations of its 
+ module-centric approach. Specifically, adapting Zennit to previously unseen architectural patterns often requires the manual definition
+ of new module mappings, a task that our operation-level approach seeks to automate.
+
+
+
+\section{Preliminaries}
+\subsection{Classic LRP via Taylor Approximation and LRP variants}
+\label{methods:taylor}
+
+Classic LRP redistributes the prediction score (relevance) backwards through the layers of a neural network. To design a faithful attribution method, the challenge lies in identifying a meaningful distribution rule $R_{i\leftarrow j}$ (the relevance assigned to input $i$ by output neuron $j$).
+
+In this paper, we take advantage of the Deep Taylor Decomposition framework~\cite{montavon2017explaining, achtibat2024attnlrp} to locally linearize and decompose neural network operations into independent contributions. The framework does this by computing a first-order Taylor expansion of a function $f_j(x)$ at a reference point $x_0$:
+\begin{align}
+      f_j(x) &= f_j(x_0) + \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} (x_i - x_{0,i})  + \mathcal{O}(|x -x_0|^2) \nonumber \\
+      &= \sum_i \frac{\partial f_j}{\partial x_i}\Big|_{x_0} x_i + \tilde{b}_j
+     \label{eq:taylor}
+\end{align} 
+where $\tilde{b}_j$ collects the constant terms and approximation error.
+Assuming the relevance $R_j^l$ is proportional to the function activation $f_j(x)$, we can multiply each term in the expansion by a constant ratio $\frac{R_j^l}{f_j(x)}$ to obtain a recursion for relevance:
+
+\begin{equation*}
+     R_j^l = \sum_i \underbrace{\frac{\partial f_j}{\partial x_i}\Big|_{x_0} x_i \frac{R_j^l}{f_j(x)}}_{R_{i\leftarrow j}} + \underbrace{\tilde{b}_j \frac{R_j^l}{f_j(x)}}_{R_{b\leftarrow j}}
+\end{equation*}
+
+\textbf{The $\epsilon$-LRP Rule}
+Assuming the bias contribution is negligible or handled separately (see \cite{achtibat2024attnlrp} for a detailed discussion on bias absorption), the input relevance can be computed by summing over all output neurons and introducing a stabilizing factor $\epsilon$ to properly handle vanishing denominators. For a linear layer $z_j = \sum_i x_i w_{ji} + b_j$ with $x_0 = 0$:
+\begin{equation}
+    R_{i \leftarrow j}^{l - 1} = \frac{x_i w_{ji}}{z_j + \epsilon} R_j^l
+    \label{eq:assignment}
+\end{equation}
+This recovers the standard $\epsilon$-LRP rule. In matrix form, efficiently implementable on GPUs:
+\begin{equation}
+    R^{l-1} = x \odot (W^\top \cdot (R^l \oslash (z + \epsilon)))
+\end{equation}
+where $\odot$ denotes the Hadamard product and $\oslash$ element-wise division.
+
+\textbf{The $\gamma$-LRP Rule}
+Attributions can become noisy when using the $\epsilon$-LRP rule, particularly in scenarios where the denominator $z_j + \epsilon$ becomes dominated by the stabilizing factor $\epsilon$, leading to overly smoothed or less discriminative relevance scores. To address this, the $\gamma$-LRP rule was introduced by Montavon et al. \cite{montavon2019lrp}. 
+It adds a hyperparameter $\gamma$ that acts as a multiplicative booster for positive neuron contributions:
 
 \begin{equation}
   R_{i \leftarrow j}^{l - 1} = \frac{x_i \cdot (w_{ji} + \gamma w_{ji}^+)}{\sum_i x_i \cdot (w_{ji} + \gamma w_{ji}^+)} R_j^l
 \end{equation}
 
-\subsubsection{Attn-LRP}
+\subsubsection{Attribution in Transformer Architectures}
+The transformer architecture \cite{vaswani2017attention} heavily realies on the non-linear attention mechanism:
+\begin{align}
+   & A = \text{softmax}\left(\frac{Q \cdot K^\top}{\sqrt{d_k}}\right) \\
+   & O = A \cdot V \label{eq:attention}\\
+   & \text{softmax}_j(x) = \frac{e^{x_j}}{\sum_k e^{x_k}} 
+\end{align}
+where ($\cdot$) denotes matrix multiplication, $K, Q, V$ are the key, query and value matrices, $d_k$ is the embedding dimension, and $O$ is the final output.
+
 Recent work by Achtibat et al. \cite{achtibat2024attnlrp} derived novel propagation rules using Deep Taylor Decomposition
 for both the softmax and bilinear matrix multiplication in the attention mechanism:
 
-\textbf{Bilinear Attention Matrix Multiplication}
-
-The relevance distribution for cell $A_{ji}$ in the matrix multiplication $O = A \cdot V$ is defined as:
+\textbf{Bilinear Attention Matrix Multiplication} The relevance distribution for cell $A_{ji}$ in the matrix multiplication $O = A \cdot V$ is defined as:
 \begin{equation}
   R_{ji}^{l - 1} = \sum_p A_{ji}V_{ip} \frac{R_{jp}^l}{2 O_{jp} + \epsilon}
 \end{equation}
 and $R_{ip}^{l - 1}$ can be computed by summing over $j$ instead of $p$. This characterizes the distribution across the
 product of the attention logits and values matrices.
 
-\textbf{Softmax}
-
-The relevance at the input layer of the softmax is defined as:
+\textbf{Softmax} The relevance at the input layer of the softmax is defined as:
 \begin{equation}
   R^{l - 1} = \sum_i x_i (R_i^l - s_i \sum_j R_j^l)
 \end{equation}
@@ -230,7 +272,7 @@ Our work builds on these insights to address the limitations of existing methods
 
 \subsection{Computation Graphs in Deep Learning Frameworks}
 
-Deep learning frameworks rely on computation graphs to represent the sequence of operations performed on tensors and trace the gradients of the loss back to the network parameters.
+Most deep learning frameworks rely on computation graphs to represent the sequence of operations performed on tensors and trace the gradients of the loss back to the network parameters.
 Formally, a computation graph is a directed acyclic graph (DAG) $G = (V, E)$, where $V$ is the set of nodes representing some operation $f_v$ (e.g., matrix multiplication, ReLU, addition), and $E$ is the set of directed edges representing data flow between operations.
 
 In auto-differentiation libraries, each node $v \in V$ in the graph holds a function $\tilde{f}_v$ that computes the local gradient backpropagation of that operation using the Chain Rule, mapping the gradients of forward outputs to gradients of forward inputs.
@@ -249,41 +291,6 @@ The LRP conservation principle is thus adhered to on an operation-wise basis, in
 \end{equation}
 where $R_i$ and $R_j$ are the relevance scores at the input and output nodes, respectively.
 
-\section{Related Work}
-\subsection{Explainability Methods}
-Explainable AI (XAI) algorithms fundamentally seek to decompose model predictions into input feature contributions, yet
-differ dramatically in their mathematical foundations and computational approaches. Gradient-based methods leverage the
-chain rule to compute $\frac{\partial f}{\partial x}$ as attribution signals \cite{simonyan2014deep, sundararajan2017axiomatic, smilkov2017smoothgrad},
-but suffer from gradient saturation, gradient shattering, and linearity assumptions that fail to capture complex nonlinear interactions
-\cite{ancona2018towards, samek2021xaireview}. Perturbation-based approaches like SHAP \cite{lundberg2017unified} and LIME
-\cite{ribeiro2016should} directly measure prediction sensitivity through game-theoretic frameworks or local surrogates,
-yet incur exponential computational costs, making them intractable for high-dimensional data \cite{covert2020understanding}.
-Class Activation Mapping methods \cite{zhou2016learning, selvaraju2017grad} leverage architectural constraints for spatial
-localization but provide coarse-grained explanations lacking principled mathematical foundations for complex architectures.
-This positions LRP as a strong explainability method when used in the correct domains, as it does not suffer from these
-pitfalls due to its tight rooting in the model architecture and efficient computation requirements of a single backward
-pass \cite{samek2021xaireview}.
-
-\subsection{LRP Implementations}
-We examine and compare against Zennit, an explainability library built for PyTorch and focused on LRP and other rule-based
-methods \cite{anders2021zennit}. As of currently, Zennit is the most flexible, readily available, and up-to-date
-implementation of LRP, when compared to other libraries such as Captum \cite{kokhlikyan2020captum} and iNNvestigate
-\cite{alber2018innvestigate}, which both make LRP customization difficult \cite{anders2021zennit}. Anders et al. base
-their framework on the PyTorch \texttt{Module} structure, making great use of \texttt{Module Hooks} to transform the
-\texttt{Autograd} backward pass to propagate relevance instead of gradients. They also introduce multiple user-facing APIs
-(Module rules, Composites, and Canonizers) to enable the mapping of foundational LRP rules to new modules and architectural
-patterns. However, adapting these to unseen patterns is a task in and of itself.
-
-AttnLRP, a recent advancement which derived new propagation rules suitable for attention modules, provides an implementation
-named LxT (LRP eXplains Transformers) built on top of Zennit which highlights the limitations of this model-to-model
-configuration-based design \cite{achtibat2024attnlrp}. The list of architectures currently supported by LxT is limited to
-Llama 2/3, Gemma 3, Qwen 2/3, BERT, GPT-2, and Vision Transformers. Each model requires a custom copied implementation of
-itself which patches and hooks the Attention, Linear, Convolution, Normalization, and Activation modules to new functions
-which invoke the LRP propagation rules for those modules.
-
-While implementation of new rules is claimed to be trivial in Zennit, there is undoubtedly reasonable conceptual overhead
-to understanding how to correctly merge, split, and modify modules to fit within the framework, and additional management
-overhead with the requirement for new configurations and codebase semantics for adding support for other architectures.
 
 \section{Methods}
 \subsection{Operation-Level Relevance Propagation}
@@ -383,7 +390,14 @@ function chain to reconstruct the activation at the Origin Node, which is then s
 all Arg Nodes of a Promise have been resolved, the Origin Node’s deferred relevance can be “fast-forwarded” down
 each Branch via its backward chain in the same manner. This mechanism effectively defers propagation until all
 dependencies are satisfied, ensuring continuity without backtracking or retraversal of the computation graph.
-We provide a full example of this mechanism in Appendix~\ref{appendix:basic-promise-example}.
+We provide a full example of this mechanism in Appendix~\ref{appendix:basic-promise-example}. 
+The following proposition formalizes the correctness of this mechanism.
+
+\textbf{Proposition 1:} For any node $v$ in a computation graph, there exists at least one node descendent to $v$
+which stores a forward activation.\textit{i.e.,} its Arg Node.
+
+The proof is provided in Appendix~\ref{appendix:proposition-1-proof}.
+
 
 \subsubsection{Promise Nesting and Trees}
 Now that we have introduced Promises as placeholder relevance inputs, we must also consider how any given Node will handle a Promise Branch input.
@@ -499,6 +513,8 @@ where for every $u$, $argnode$ is its nearest descendent operation that stores a
 % $$D = \max_{v_p \in V_P} d(v_p)$$
 \end{definition}
 
+
+
 \vspace{0.3cm}
 \begin{theorem}[Promise-Based LRP Complexity]
 Let $G = (V, E)$ be the computation graph of a neural network with $n = |V|$ operations, $m = |E|$ edges, promise-generating set $V_P$, and maximum promise depth $D$.
@@ -563,7 +579,7 @@ We make use of all answerable examples in the SQuADv2 validation set, and skip e
 the start index is after the end index). We run LRP-$\gamma$ with $\gamma_{linear} = 0.001$ for both models, and only enable AttnLRP rules
 for the Flan-T5 attributions. See Table~\ref{squadv2-table}
 
-\subsection{Measuring Visual Attribution Faithfulness With Area Between Perturbation Curves}
+\subsection{Measuring Faithfulness of Visual Attribution}
 We measure faithfulness using the Area Between Perturbation Curves (ABPC) \cite{schulz2020abpc, blucher2024pixelflipping}.
 We first compute the relevance attributions for each input feature on each example. Then for $n$ iterations, we compute the
 Most-Relevant First (MoRF) curve at x = i by masking/occluding the top-i most relevant features from each input sample. We also do this inversely,
@@ -808,24 +824,23 @@ Below is the list of currently supported operations for DynamicLRP.
   \caption{Computation Graph Construction}
   \label{alg:graph-construction}
   \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$
-    \Ensure In-adjacency list $in\_adj$, Out-adjacency list $out\_adj$, Topologically sorted nodes $topo\_stack$
+    \State \textbf{Input:} Model output $hidden\_states$
     \State Initialize $in\_adj \gets \emptyset$, $out\_adj \gets \emptyset$
     \State Initialize $visited \gets \emptyset$, $topo\_stack \gets \emptyset$
     \State $root \gets hidden\_states.grad\_fn$
-    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-    \Return $in\_adj$, $out\_adj$, $topo\_stack$
+    \State \Call{DFS}{$root$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$} \Comment{Start traversal}
+    \State \Return $in\_adj$, $out\_adj$, $topo\_stack$ \Comment{In-adjacency list, Out-adjacency list, Topologically sorted nodes}
     \Function{DFS}{$fcn$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
-      \If{$fcn = \text{None}$ or $fcn \in visited$}
+      \If{$fcn = \text{None}$ or $fcn$ in $visited$} \Comment{Skip processed}
         \State \Return
       \EndIf
-      \State $visited \gets visited \cup \{fcn\}$
-      \For{each $child \in fcn.next\_functions$}
-        \State $out\_adj[fcn].append(child)$
+      \State $visited \gets visited \cup \{fcn\}$ \Comment{Mark visited}
+      \For{each $child$ in $fcn.next\_functions$}
+        \State $out\_adj[fcn].append(child)$ \Comment{Record dependencies}
         \State $in\_adj[child].append(fcn)$
-        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$}
+        \State \Call{DFS}{$child$, $in\_adj$, $out\_adj$, $visited$, $topo\_stack$} \Comment{Recurse}
       \EndFor
-      \State $topo\_stack.push(fcn)$
+      \State $topo\_stack.push(fcn)$ \Comment{Add to sort}
     \EndFunction
   \end{algorithmic}
 \end{algorithm}
@@ -834,30 +849,29 @@ Below is the list of currently supported operations for DynamicLRP.
   \caption{Operation-Level Relevance Propagation With Promises}
   \label{alg:promise-propagation}
   \begin{algorithmic}[1]
-    \Require Model output $hidden\_states$, Relevance interpretation target $target\_node$, Auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$
-    \Ensure Input relevance $R_{in}$
-    \State Initialize as in Algorithm 2
-
-    \While{$stack$}
-      \State $curnode \gets stack.pop()$
+    \State \textbf{Input:} Model output $hidden\_states$, Relevance interpretation target $target\_node$
+    \State Initialize topologically sorted nodes, $stack$ auxiliary graph $in\_adj$, $out\_adj$, Output relevance $R_{out}$ according to traversal order from Algorithm \ref{alg:graph-construction}
+    \Repeat
+      \State $curnode \gets stack.pop()$ \Comment{Process next node}
       \State $curnode\_in\_rel = node\_inputs[curnode]$
-      \If{$curnode == target\_node$}
+      \If{$curnode = target\_node$} \Comment{Target reached}
         \Return $R_{in} := curnode\_in\_rel$
       \ElsIf{$curnode$ requires Promise}
         \State $curnode.promise \gets create\_new\_promise(type(curnode), R_{out})$
-        \State $curnode\_outputs \gets curnode.promise.branches$
+        \State $curnode\_outputs \gets curnode.promise.branches$ \Comment{Defer computation}
       \Else
         \State $prop\_fcn \gets fcn\_map[type(curnode)]$
-        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$
+        \State $curnode\_outputs \gets prop\_fcn(curnode\_in\_rel)$ \Comment{Apply LRP rule}
       \EndIf
-      \For{each $child, output \in zip(out\_adj[curnode], curnode\_outputs)$}
-        \State $node\_inputs[child].add(output)$
-        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$
-        \If{$nodes\_pending[child] == 0$}
-          \State $stack.push(child)$
+      \For{each $child, output$ in $zip(out\_adj[curnode], curnode\_outputs)$}
+        \State $node\_inputs[child].add(output)$ \Comment{Accumulate inputs}
+        \State $nodes\_pending[child] \gets nodes\_pending[child] - 1$ \Comment{Update dependencies}
+        \If{$nodes\_pending[child] = 0$}
+          \State $stack.push(child)$ \Comment{Enqueue ready child}
         \EndIf
       \EndFor
-    \EndWhile
+    \Until{$stack$ is empty} \Comment{All nodes processed}
+    \State \Return Input relevance $R_{in}$
   \end{algorithmic}
 \end{algorithm}
 
@@ -868,18 +882,18 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \caption{Non-Arg Node Propagation Function Promise Handling}
   \label{alg:non-argnode-propagation}
   \begin{algorithmic}[1]
-    \Require Autograd Node $node$, Propagation input $R_{out}$
-    \Ensure Propagation output list $R_{in}$
+    \State \textbf{Input:} Autograd Node $node$, Propagation input $R_{out}$
+    \State \textbf{Output:} Propagation output list $R_{in}$
 
-    \If{$R_{out}$ is a Promise Branch}
+    \If{$R_{out}$ is a Promise Branch} \Comment{Record chain if exploring}
       \State Define $fwd$ as a closure of $node$'s forward pass.
       \State Define $bwd$ as a closure of $node$'s relevance distribution logic.
       \State $R_{out}.record(fwd, bwd)$
-      \Return $R_{out}$
+      \State \Return $R_{out}$
     \EndIf
 
-    \State \textit{// Propagate $R_{out}$...}
-    \Return $R_{in}$
+    \State \textit{// Propagate $R_{out}$...} \Comment{Standard LRP}
+    \State \Return $R_{in}$
   \end{algorithmic}
 \end{algorithm}
 
@@ -887,24 +901,24 @@ Arg Node, the function either records the chain or resolves and completes the Pr
   \caption{Arg Node Propagation Function Promise Handling}
   \label{alg:argnode-propagation}
   \begin{algorithmic}[1]
-    \Require Autograd Node $node$, Propagation input $R_{out}$
-    \Ensure Propagation output list $R_{in}$
+    \State \textbf{Input:} Autograd Node $node$, Propagation input $R_{out}$
+    \State \textbf{Output:} Propagation output list $R_{in}$
 
-    \If{$R_{out}$ is a Promise Branch}
+    \If{$R_{out}$ is a Promise Branch} \Comment{Retrieve forward activation}
       \State Define $retrieve\_fwd\_output$ as a function that extracts $node$'s forward pass output given its saved tensors.
       \State $activation = retrieve\_fwd\_output(node)$
       \State $R_{out}.set\_arg(activation)$
       \State $R_{out}.trigger\_promise\_completion()$
-      \If{$R_{out}.promise\_is\_complete$}
+      \If{$R_{out}.promise\_is\_complete$} \Comment{Resume propagation?}
         $R_{out} = R_{out}.propagated\_relevance$
       \Else
         \State \textit{// Signal for queueing this Node until the Promise is complete}
-        \Return
+        \State \Return
       \EndIf
     \EndIf
 
     \State \textit{// Propagate $R_{out}$...}
-    \Return $R_{in}$
+    \State \Return $R_{in}$
   \end{algorithmic}
 \end{algorithm}
 

@@ -699,10 +699,10 @@ class LRPPropFunctions:
 
         return grad_fn(r)
     
-    @classmethod
+    @staticmethod
     @output_relevances
     @add_node_to_promise_path
-    def RepeatBackwardProp(cls, grad_fn, r):
+    def RepeatBackwardProp(grad_fn, r):
 
         def fwd_factory(node):
             repeats = node._saved_repeats
@@ -717,10 +717,10 @@ class LRPPropFunctions:
 
         return grad_fn(r)
     
-    @classmethod
+    @staticmethod
     @output_relevances
     @add_node_to_promise_path
-    def UnsqueezeBackwardProp(cls, grad_fn, r):
+    def UnsqueezeBackwardProp(grad_fn, r):
 
         def fwd_factory(node):
             fwd_shape = node._input_metadata[0].shape
@@ -736,10 +736,10 @@ class LRPPropFunctions:
 
         return grad_fn(r)
     
-    @classmethod
+    @staticmethod
     @output_relevances
     @add_node_to_promise_path
-    def SqueezeBackwardProp(cls, grad_fn, r):
+    def SqueezeBackwardProp(grad_fn, r):
 
         def fwd_factory(node):
             fwd_shape = node._input_metadata[0].shape
@@ -754,21 +754,19 @@ class LRPPropFunctions:
             return r
 
         return grad_fn(r)
+    
 
-    @classmethod
+    @staticmethod
     @output_relevances
     @add_node_to_promise_path
-    def AsStridedBackwardProp(cls, grad_fn, r):
-
-        def fwd_factory(node):
-            size = node._saved_size
-            stride = node._saved_stride
-            def fwd_as_strided(x):
-                return x.as_strided(size=size, stride=stride)
-            return fwd_as_strided
-
+    def AsStridedBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
-            r.nest_fwd(fwd_factory, grad_fn.metadata["topo_ind"])
+            def fwd_factory(node):
+                def fwd_as_strided(x):
+                    return torch.as_strided(x, node._saved_size, node._saved_stride, node._saved_storage_offset)
+                return fwd_as_strided
+
+            r.nest_fwd(fwd_factory, grad_fn._metadata["topo_ind"])
             r.nest_bwd("self", grad_fn.metadata["topo_ind"])
             return r
 
@@ -792,11 +790,10 @@ class LRPPropFunctions:
     def ToCopyBackwardProp(grad_fn, r):
         return r
     
-    @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    def CopySlicesBackwardProp(grad_fn, r):
-        return r
+    @classmethod
+    def CopySlicesBackwardProp(cls, grad_fn, r):
+        # We reuse TransposeBackwardProp because the fwd/bwd are the same
+        return cls.TransposeBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances

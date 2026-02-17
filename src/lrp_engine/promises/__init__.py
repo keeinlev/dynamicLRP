@@ -1,6 +1,7 @@
 from .promise import Promise, PromiseBucket
 from .add_backward_promise import AddBackwardPromise
 from .cat_backward_promise import CatBackwardPromise
+from .sub_backward_promise import SubBackwardPromise
 from .stack_backward_promise import StackBackwardPromise
 from .split_backward_promise import SplitBackwardPromise
 from .sum_backward_promise import SumBackwardPromise

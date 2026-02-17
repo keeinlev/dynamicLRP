@@ -60,6 +60,47 @@ class PromiseBucket:
         self.leaf_promises : list[Promise] = []
         self.ind_to_node = {}
         self.all_promises = []
+
+    def instantiate_promise(self, r, promise_type, num_branches : int, origin_node_ind : int, branch_shapes : Union[torch.Size, list[torch.Size]] = None, extra_args : dict = {}):
+        """Instantiates and returns new appropriate Promise object(s) and Promise metadata dict according to the given arguments.
+        """
+
+        promise = {
+            "rout": r,
+            "args": [ None for _ in range(num_branches) ],
+            "rins": [ None for _ in range(num_branches) ],
+            "ready": False,
+            "complete": False,
+            "parents": [],
+        }
+        if isinstance(r, Promise):
+            promise["parents"] = [r]
+            promise["rout"] = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype, requires_grad=self.with_grad) # Placeholder for shape
+
+        if num_branches == 1:
+            promise_branches = promise_type(promise, origin_node_ind, self, **extra_args)
+        else:
+            promise_branches = [ promise_type(
+                promise=promise,
+                traversal_ind=origin_node_ind,
+                bucket=self,
+                idx=i,
+                **extra_args) for i in range(num_branches) ]
+
+            for i in range(num_branches):
+                curr_branch = promise_branches[i]
+                if branch_shapes is not None:
+                    curr_branch.fwd_shape = branch_shapes[i] if isinstance(branch_shapes, list) else branch_shapes
+                next_branch = promise_branches[(i + 1) % num_branches]
+                curr_branch.other_branch = next_branch
+            
+            promise_branches = tuple(promise_branches)
+
+        if isinstance(r, Promise):
+            r.arg_node_ind = origin_node_ind
+            r.children.append(promise_branches)
+
+        return promise_branches, promise
     
     def repair_all_parent_child_connections(self):
         """Ensures that every Promise is linked to any Promises that see it as a child or parent."""

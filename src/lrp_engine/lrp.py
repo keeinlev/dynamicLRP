@@ -65,7 +65,8 @@ class LRPEngine:
                  dtype=torch.float32,
                  with_grad=False):
         assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
-        self.out_adj_list : Union[set[Node], set[int]] = None
+        self.out_adj_list : Union[dict[Node, list[Node]], dict[int, list[int]]] = None
+        self.in_adj_list : Union[dict[Node, list[Node]], dict[int, list[int]]] = None
         self.topo_exec_order : list[int] = None
         self.fcn_map : dict[str, Callable] = None
         self.params_to_interpret : list[torch.Tensor] = params_to_interpret
@@ -89,6 +90,30 @@ class LRPEngine:
         LRPPropFunctions.with_grad = with_grad
         PromiseBucket.dtype = dtype
         PromiseBucket.with_grad = with_grad
+    
+
+    def get_node_incoming_paths(self, start_node):
+        paths = [ [in_neighbour] for in_neighbour in self.in_adj_list[start_node] ]
+        flags = [ True for _ in range(len(paths)) ]
+
+        while any(flags):
+            for i, path in enumerate(paths):
+                if not flags[i]:
+                    continue
+                last_node_in_path = path[-1]
+                if len(self.out_adj_list[last_node_in_path]) > 1:
+                    # Cut the path off when reaching a multi-input operation
+                    flags[i] = False
+                    continue
+                # Extend the path
+                paths[i].append(self.in_adj_list[last_node_in_path][0])
+        
+        # Do some debug output
+        for i, path in enumerate(paths):
+            print(f"PATH {i}: {type(start_node).__name__} <- {tuple( md.shape for md in start_node._input_metadata )} <- ", end="")
+            for node in path:
+                print(f"{type(node).__name__} <- {tuple( md.shape for md in node._input_metadata )} ", end="")
+            print("\n")
 
 
     @staticmethod
@@ -248,6 +273,7 @@ class LRPEngine:
 
         # Save these for now, param_node_inds and topo_exec_order get saved at the end.
         self.out_adj_list = out_adj_list
+        self.in_adj_list = in_adj_list
         self.fcn_map = fcn_map
 
         promise_bucket.ind_to_node = ind_to_node

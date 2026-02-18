@@ -249,7 +249,7 @@ class LRPPropFunctions:
             "keepdim": getattr(grad_fn, "_saved_keepdim"),
             "is_mean": is_mean,
         }
-        promise_branch, promise = bucket.instantiate_promise(r, SumBackwardPromise, 1, traversal_ind, promise_args)
+        promise_branch, promise = bucket.instantiate_promise(r, SumBackwardPromise, 1, traversal_ind, extra_args=promise_args)
 
         grad_fn.metadata["promise"] = promise
 
@@ -277,7 +277,7 @@ class LRPPropFunctions:
             del grad_fn.metadata["bucket"]
 
             promise_args = {"saved_dim": grad_fn._saved_dim}
-            promise_branches, promise = bucket.instantiate_promise(r, CatBackwardPromise, num_args, traversal_ind, shapes, promise_args)
+            promise_branches, promise = bucket.instantiate_promise(r, CatBackwardPromise, num_args, traversal_ind, branch_shapes=shapes, extra_args=promise_args)
 
             grad_fn.metadata["promise"] = promise
 
@@ -309,7 +309,7 @@ class LRPPropFunctions:
             del grad_fn.metadata["bucket"]
 
             promise_args = {"saved_dim": stack_dim}
-            promise_branches, promise = bucket.instantiate_promise(r, StackBackwardPromise, num_args, traversal_ind, unstacked_shape, promise_args)
+            promise_branches, promise = bucket.instantiate_promise(r, StackBackwardPromise, num_args, traversal_ind, branch_shapes=unstacked_shape, extra_args=promise_args)
 
             grad_fn.metadata["promise"] = promise
 

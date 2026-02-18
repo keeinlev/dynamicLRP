@@ -40,16 +40,6 @@ class RunMode(Enum):
 
 class LRPEngine:
 
-    promise_generating_nodes = [
-        "AddBackward",
-        "UnbindBackward",
-        "SumBackward",
-        "CatBackward",
-        "MeanBackward",
-        "StackBackward",
-        "SoftmaxBackward",
-    ]
-
     def __init__(self,
                  params_to_interpret=None,
                  no_recompile=False,
@@ -129,7 +119,7 @@ class LRPEngine:
     def node_preprocess(self, curnode: Node):
         """Use this to hook in any kind of extra metadata specific to a certain kind of Node before processing."""
         node_name = type(curnode).__name__
-        if node_name[:-1] in self.promise_generating_nodes:
+        if node_name[:-1] in PROMISE_GENERATING_NODES:
             curnode.metadata["bucket"] = self.promise_bucket
         if node_name == "DecomposedConvolutionBackward0":
             curnode.metadata["conv_layer"] = self.conv_counter
@@ -646,7 +636,10 @@ class LRPEngine:
             param_node_vals = []
             for node in param_nodes:
                 param_node_inds.append(node.metadata["topo_ind"])
-                param_node_vals.append(node.metadata["relevance"])
+                relevance = node.metadata["relevance"]
+                if isinstance(relevance, Promise):
+                    relevance = relevance.rin
+                param_node_vals.append(relevance)
                 node.metadata["relevance"] = None
             for node in checkpoints:
                 node.metadata["relevance"] = None

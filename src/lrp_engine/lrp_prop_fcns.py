@@ -1,8 +1,6 @@
 import math
-import time
 import torch
 import torch.nn.functional as F
-from functools import reduce
 from .promises import *
 from .util import (
     epsilon,
@@ -188,38 +186,44 @@ class LRPPropFunctions:
         elif grad_fn.next_functions[0][0] is None:
             return torch.zeros(grad_fn._input_metadata[0].shape, device=grad_fn._input_metadata[0].device, dtype=PromiseBucket.dtype, requires_grad=LRPPropFunctions.with_grad), r
 
-        promise = {
-            "rout": r,
-            "args": [None, None],
-            "rins": [None, None],
-            "ready": False,
-            "complete": False,
-            "parents": [],
-        }
-        if isinstance(r, Promise):
-            promise["parents"] = [r]
-            promise["rout"] = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype, requires_grad=LRPPropFunctions.with_grad) # Placeholder for shape
-
         traversal_ind = grad_fn.metadata["topo_ind"]
-        bucket = grad_fn.metadata["bucket"]
+        bucket : PromiseBucket = grad_fn.metadata["bucket"]
         del grad_fn.metadata["bucket"]
 
-        promise1 = AddBackwardPromise(promise, traversal_ind, bucket, 0)
-        promise2 = AddBackwardPromise(promise, traversal_ind, bucket, 1)
+        promise_branches, promise = bucket.instantiate_promise(r, AddBackwardPromise, 2, traversal_ind)
 
-        promise1.other_branch = promise2
-        promise2.other_branch = promise1
-
-        if isinstance(r, Promise):
-            r.arg_node_ind = traversal_ind
-            r.children.append((promise1, promise2))
-        
         if (non_residual_child := next((i for i in range(2) if type(grad_fn.next_functions[i][0]).__name__ == "ResidualIgnoreBackward"), None)) is not None:
             promise["non_residual_idx"] = non_residual_child
 
         grad_fn.metadata["promise"] = promise
 
-        return promise1, promise2
+        return promise_branches
+    
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
+    def SubBackwardProp(grad_fn, r):
+        """Creates two new SubBackwardPromise objects tied to the same Promise.
+        If given a Promise input, the two new objects will be children of the input Promise, and the input
+        Promise a parent to the two new objects.
+        Otherwise, the relevance is saved as the rout of the new Promise.
+        See promise.py for an explanation on Promises."""
+
+        if grad_fn.next_functions[1][0] is None:
+            return r, torch.zeros(grad_fn._input_metadata[0].shape, device=grad_fn._input_metadata[0].device, dtype=PromiseBucket.dtype, requires_grad=LRPPropFunctions.with_grad)
+        elif grad_fn.next_functions[0][0] is None:
+            return torch.zeros(grad_fn._input_metadata[0].shape, device=grad_fn._input_metadata[0].device, dtype=PromiseBucket.dtype, requires_grad=LRPPropFunctions.with_grad), r
+
+        traversal_ind = grad_fn.metadata["topo_ind"]
+        bucket : PromiseBucket = grad_fn.metadata["bucket"]
+        del grad_fn.metadata["bucket"]
+
+        promise_branches, promise = bucket.instantiate_promise(r, SubBackwardPromise, 2, traversal_ind)
+
+        grad_fn.metadata["promise"] = promise
+
+        return promise_branches
     
     @staticmethod
     @output_relevances
@@ -234,32 +238,22 @@ class LRPPropFunctions:
         an invalid kwarg if `dim` is not also given.
         Therefore we can check for which of 0 or 1 grad_fn is by the presence
         of `_saved_dim` and `_saved_keepdim` attributes."""
-        promise = {
-            "rout": r,
-            "args": [None],
-            "rins": [None],
-            "ready": False,
-            "complete": False,
-            "parents": [],
-        }
-        if isinstance(r, Promise):
-            promise["parents"] = [r]
-            promise["rout"] = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype, requires_grad=LRPPropFunctions.with_grad) # Placeholder for shape
-        
+
         traversal_ind = grad_fn.metadata["topo_ind"]
-        bucket = grad_fn.metadata["bucket"]
+        bucket : PromiseBucket = grad_fn.metadata["bucket"]
         del grad_fn.metadata["bucket"]
 
         is_mean = type(grad_fn).__name__[:-1] == "MeanBackward"
-        promise = SumBackwardPromise(promise, traversal_ind, bucket, getattr(grad_fn, "_saved_dim"), getattr(grad_fn, "_saved_keepdim"), is_mean)
-
-        if isinstance(r, Promise):
-            r.arg_node_ind = traversal_ind
-            r.children.append(promise)
+        promise_args = {
+            "saved_dim": getattr(grad_fn, "_saved_dim"),
+            "keepdim": getattr(grad_fn, "_saved_keepdim"),
+            "is_mean": is_mean,
+        }
+        promise_branch, promise = bucket.instantiate_promise(r, SumBackwardPromise, 1, traversal_ind, extra_args=promise_args)
 
         grad_fn.metadata["promise"] = promise
 
-        return promise
+        return promise_branch
     
     @classmethod
     def MeanBackwardProp(cls, grad_fn, r):
@@ -274,43 +268,20 @@ class LRPPropFunctions:
     @skip_redundant_promise
     def CatBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
-            rout_placeholder = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype, requires_grad=LRPPropFunctions.with_grad)
-            shapes = [ out.shape for out in grad_fn(rout_placeholder) ]
+            placeholder = torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype, requires_grad=LRPPropFunctions.with_grad)
+            shapes = [ out.shape for out in grad_fn(placeholder) ]
             num_args = len(shapes)
-            promise = {
-                "rout": rout_placeholder,
-                "args": [ None for _ in range(num_args) ],
-                "rins": [ None for _ in range(num_args) ],
-                "ready": False,
-                "complete": False,
-                "parents": [r],
-            }
-            
+
             traversal_ind = grad_fn.metadata["topo_ind"]
-            bucket = grad_fn.metadata["bucket"]
+            bucket : PromiseBucket = grad_fn.metadata["bucket"]
             del grad_fn.metadata["bucket"]
 
-            prev_promise_branch = None
-            promise_branches = []
-            # Since you can cat an arbitrary number of tensors, we need to get a bit creative and turn other_branch into a cyclic connection
-            for i in range(num_args):
-                new_branch = CatBackwardPromise(promise, traversal_ind, bucket, grad_fn._saved_dim, i)
-                new_branch.fwd_shape = shapes[i]
-                promise_branches.append(new_branch)
-                if prev_promise_branch is not None:
-                    prev_promise_branch.other_branch = new_branch
-                prev_promise_branch = new_branch
-            
-            # Create the last-first connection
-            if num_args > 1:
-                promise_branches[-1].other_branch = promise_branches[0]
-
-            r.arg_node_ind = traversal_ind
-            r.children.append(tuple(promise_branches))
+            promise_args = {"saved_dim": grad_fn._saved_dim}
+            promise_branches, promise = bucket.instantiate_promise(r, CatBackwardPromise, num_args, traversal_ind, branch_shapes=shapes, extra_args=promise_args)
 
             grad_fn.metadata["promise"] = promise
 
-            return tuple(promise_branches)
+            return promise_branches
         
         return grad_fn(r)
     
@@ -323,7 +294,7 @@ class LRPPropFunctions:
             unstacked_shape = list(r.fwd_shape)
             stack_dim = handle_neg_index(grad_fn._saved_dim, len(unstacked_shape))
             num_args = unstacked_shape[stack_dim]
-            unstacked_shape = tuple(unstacked_shape[:stack_dim] + unstacked_shape[stack_dim + 1:])
+            unstacked_shape = torch.Size(tuple(unstacked_shape[:stack_dim] + unstacked_shape[stack_dim + 1:]))
             promise = {
                 "rout": torch.zeros(r.fwd_shape, device=r.rout.device, dtype=r.rout.dtype, requires_grad=LRPPropFunctions.with_grad),
                 "args": [ None for _ in range(num_args) ],
@@ -334,30 +305,15 @@ class LRPPropFunctions:
             }
             
             traversal_ind = grad_fn.metadata["topo_ind"]
-            bucket = grad_fn.metadata["bucket"]
+            bucket : PromiseBucket = grad_fn.metadata["bucket"]
             del grad_fn.metadata["bucket"]
 
-            prev_promise_branch = None
-            promise_branches = []
-            # Same cyclic connections as CatBackwardPromise
-            for i in range(num_args):
-                new_branch = CatBackwardPromise(promise, traversal_ind, bucket, stack_dim, i)
-                new_branch.fwd_shape = unstacked_shape
-                promise_branches.append(new_branch)
-                if prev_promise_branch is not None:
-                    prev_promise_branch.other_branch = new_branch
-                prev_promise_branch = new_branch
-            
-            # Create the last-first connection
-            if num_args > 1:
-                promise_branches[-1].other_branch = promise_branches[0]
-
-            r.arg_node_ind = traversal_ind
-            r.children.append(tuple(promise_branches))
+            promise_args = {"saved_dim": stack_dim}
+            promise_branches, promise = bucket.instantiate_promise(r, StackBackwardPromise, num_args, traversal_ind, branch_shapes=unstacked_shape, extra_args=promise_args)
 
             grad_fn.metadata["promise"] = promise
 
-            return tuple(promise_branches)
+            return promise_branches
         
         return grad_fn(r)
     
@@ -366,6 +322,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     @skip_redundant_promise
     def UnbindBackwardProp(grad_fn, r):
+        # Have to handle Unbind with its own logic due to some special cases
         # r is a list of inputs, with positions corresponding to the grad_fn inputs.
         if any(isinstance(elem, Promise) for elem in r):
             dtype = parents[0].rout.dtype
@@ -408,6 +365,7 @@ class LRPPropFunctions:
     @add_node_to_promise_path
     @skip_redundant_promise
     def SplitBackwardProp(grad_fn, r):
+        # Same as Unbind, need to handle specific logic here so cannot use the factory function
         # r is a list of inputs, with positions corresponding to the grad_fn inputs.
         if any(isinstance(elem, Promise) for elem in r):
             dtype = parents[0].rout.dtype

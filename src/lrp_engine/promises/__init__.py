@@ -1,9 +1,23 @@
 from .promise import Promise, PromiseBucket
 from .add_backward_promise import AddBackwardPromise
 from .cat_backward_promise import CatBackwardPromise
-from .stack_backward_promise import StackBackwardPromise
+from .softmax_backward_promise import SoftmaxBackwardPromise
 from .split_backward_promise import SplitBackwardPromise
+from .stack_backward_promise import StackBackwardPromise
+from .sub_backward_promise import SubBackwardPromise
 from .sum_backward_promise import SumBackwardPromise
 from .unbind_backward_promise import UnbindBackwardPromise
-from .softmax_backward_promise import SoftmaxBackwardPromise
 from .dummy_promise import DummyPromise, compound_promises
+
+PROMISE_GENERATING_NODES = [
+    "AddBackward",
+    "CatBackward",
+    "MeanBackward",
+    "SoftmaxBackward",
+    "SplitBackward",
+    "SplitWithSizesBackward",
+    "StackBackward",
+    "SubBackward",
+    "SumBackward",
+    "UnbindBackward",
+]

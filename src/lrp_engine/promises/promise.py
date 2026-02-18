@@ -89,8 +89,12 @@ class PromiseBucket:
 
             for i in range(num_branches):
                 curr_branch = promise_branches[i]
+
+                # Assign custom shapes to each branch for the merge-like operations
                 if branch_shapes is not None:
                     curr_branch.fwd_shape = branch_shapes[i] if isinstance(branch_shapes, list) else branch_shapes
+
+                # Assign cyclic pointers for sibling branches
                 next_branch = promise_branches[(i + 1) % num_branches]
                 curr_branch.other_branch = next_branch
             

@@ -757,8 +757,8 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def MulBackwardProp(grad_fn, r):
-        arg1 : torch.Tensor = grad_fn._saved_self
-        arg2 : torch.Tensor = grad_fn._saved_other
+        arg1 : torch.Tensor = getattr(grad_fn, "_saved_self", None)
+        arg2 : torch.Tensor = getattr(grad_fn, "_saved_other", None)
 
         if isinstance(r, Promise):
             if arg1 is None:
@@ -794,8 +794,8 @@ class LRPPropFunctions:
     @output_relevances
     @add_node_to_promise_path
     def DivBackwardProp(grad_fn, r):
-        arg1 = grad_fn._saved_self
-        arg2 = grad_fn._saved_other
+        arg1 = getattr(grad_fn, "_saved_self", None)
+        arg2 = getattr(grad_fn, "_saved_other", None)
 
         if isinstance(r, Promise):
             if arg1 is None:

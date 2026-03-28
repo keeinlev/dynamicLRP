@@ -232,7 +232,7 @@ class LRPEngine:
         param_node_inds = self.param_node_inds
         promise_bucket = self.promise_bucket
 
-        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes = make_graph(root_nodes, params_to_interpret, return_topo_dict=True)
+        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes, nodes_expected_inputs = make_graph(root_nodes, params_to_interpret, return_topo_dict=True)
         fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
         root_nodes = updated_roots
 
@@ -339,18 +339,24 @@ class LRPEngine:
 
                 # Group all inputs by their indices then categorize into either pending promises, complete promises, or tensors
                 try:
-                    categorized_inputs = self.group_and_categorize_inputs(curnode_inputs, RUN_MODE)
+                    categorized_inputs = dict(self.group_and_categorize_inputs(curnode_inputs, RUN_MODE))
                 except ValueError as e:
                     return curnode, curnode_inputs, in_adj_list, out_adj_list, ValueError(f"Expected relevance input to Node {curnode} to be type Promise or Tensor, but got {type(e.args[0])} instead.")
-                
-                for idx, (complete_promise_inputs, pending_promise_inputs, tensor_inputs) in categorized_inputs:
-                    if not complete_promise_inputs and not pending_promise_inputs and not tensor_inputs:
+
+                for idx in range(nodes_expected_inputs[curnode]):
+
+                    if idx not in categorized_inputs:
+                        sorted_and_merged_inputs[idx] = None
                         continue
 
-                    if RUN_MODE.is_traversal and not pending_promise_inputs:
-                        # If in PTM, we only care about the lone pending Promise input. Everything else we will
-                        # assign and connect when we come back to this Node later on.
-                        sorted_and_merged_inputs[idx] = None
+                    complete_promise_inputs, pending_promise_inputs, tensor_inputs = categorized_inputs[idx]
+
+                    # if RUN_MODE.is_traversal and not pending_promise_inputs:
+                    #     # If in PTM, we only care about the lone pending Promise input. Everything else we will
+                    #     # assign and connect when we come back to this Node later on.
+                    #     sorted_and_merged_inputs[idx] = None
+                    #     continue
+                    if not complete_promise_inputs and not pending_promise_inputs and not tensor_inputs:
                         continue
                     
                     # 3 more cases: NTM + pending Promises, NTM no pending Promises, PTM + pending Promises
@@ -358,7 +364,10 @@ class LRPEngine:
 
                     # Aggregate all inputs into one Tensor or Promise
                     if tensor_inputs:
-                        curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
+                        try:
+                            curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
+                        except RuntimeError as e:
+                            return curnode, input_tracker, in_adj_list, out_adj_list, e
                     else:
                         curnode_in_rel = 0
 
@@ -478,12 +487,14 @@ class LRPEngine:
             # Convert to a tuple, filling in missing inputs if needed.
             if not sorted_and_merged_inputs:
                 continue
-            num_inputs = max(list(sorted_and_merged_inputs.keys())) + 1
+            num_inputs = nodes_expected_inputs[curnode]
             finalized_inputs = tuple([ sorted_and_merged_inputs[i] if i in sorted_and_merged_inputs else None for i in range(num_inputs)])
             if len(finalized_inputs) == 1:
                 finalized_inputs = finalized_inputs[0]
 
             ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
+            # if curnode.metadata["topo_ind"] == 1536:
+            #     print(sorted_and_merged_inputs, finalized_inputs)
 
             # Call the propagation function for the node
             try:
@@ -695,7 +706,7 @@ class LRPEngine:
         promise_bucket = self.promise_bucket
 
         # Need to re-map the graph to all the indices based on topo sort
-        _, _, _, ind_to_node, _, updated_roots, _ = make_graph(root_nodes, return_topo_dict=True)
+        _, _, _, ind_to_node, _, updated_roots, _, _ = make_graph(root_nodes, return_topo_dict=True)
 
         root_nodes = updated_roots
         # Refresh the map in our Promise Bucket as well

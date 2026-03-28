@@ -26,6 +26,7 @@ r is the relevance tensor of the output of the given Node.
 def output_relevances(func):
     def default_wrapper(*args, **kwargs):
         # Clean input dtypes
+        grad_fn = args[-2]
         input_rels = args[-1]
         if isinstance(input_rels, tuple):
             input_rels = list(input_rels)
@@ -35,9 +36,17 @@ def output_relevances(func):
             if isinstance(arg, torch.Tensor):
                 if arg.dtype != PromiseBucket.dtype:
                     input_rels[i] = arg.to(PromiseBucket.dtype)
+            elif arg == 0:
+                input_rels[i] = torch.zeros(grad_fn._input_metadata[i].shape, dtype=PromiseBucket.dtype, device=grad_fn._input_metadata[i].device)
             # elif isinstance(arg, Promise) and arg.rout.dtype != PromiseBucket.dtype:
             #     arg.promise["rout"].to(dtype=PromiseBucket.dtype)
 
+        if len(input_rels) == 1:
+            input_rels = input_rels[0]
+        else:
+            input_rels = tuple(input_rels)
+
+        args = (*(args[:-1]), input_rels)
         res = func(*args, **kwargs)
 
         # Clean output dtypes
@@ -100,7 +109,7 @@ def skip_redundant_promise(func):
             return res
         elif isinstance(r, tuple) and any(isinstance(elem, torch.Tensor) for elem in r):
             return res
-        assert isinstance(r, tuple) and all(isinstance(elem, Promise) for elem in r), f"Error encountered in skip_redundant_promise, expected tuple input of Promises, instead got: {r}"
+        assert isinstance(r, tuple) and all(isinstance(elem, (Promise, type(None))) for elem in r), f"Error encountered in skip_redundant_promise, expected tuple input of Promises, instead got: {r}"
 
         # Preprocess both out and in relevances to be tuples of Promises, if applicable.
         if isinstance(res, Promise):
@@ -112,6 +121,8 @@ def skip_redundant_promise(func):
         assert isinstance(res, tuple) and all(isinstance(elem, Promise) for elem in res), f"Error encountered in skip_redundant_promise, expected tuple result of Promises, instead got: {res}"
 
         for i, in_promise in enumerate(r):
+            if in_promise is None:
+                continue
             # Cut out redundant DummyPromise via reassigning links
             if isinstance(in_promise, DummyPromise) and in_promise.start_ind == grad_fn.metadata["topo_ind"]:
                 for parent in in_promise.parents:
@@ -324,12 +335,15 @@ class LRPPropFunctions:
     def UnbindBackwardProp(grad_fn, r):
         # Have to handle Unbind with its own logic due to some special cases
         # r is a list of inputs, with positions corresponding to the grad_fn inputs.
+        # if not isinstance(r, tuple):
+        #     r = (r,)
+
         if any(isinstance(elem, Promise) for elem in r):
-            dtype = parents[0].rout.dtype
-            device = parents[0].rout.device
             parents = [ (i, elem) for i, elem in enumerate(r) if isinstance(elem, Promise) ]
+            dtype = parents[0][1].rout.dtype
+            device = parents[0][1].rout.device
             promise = {
-                "rout": None,
+                "rout": torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device, requires_grad=LRPPropFunctions.with_grad),
                 "args": [None],
                 "rins": [None],
                 "ready": False,
@@ -349,7 +363,7 @@ class LRPPropFunctions:
             if any(elem is None for elem in r):
                 # We don't want to accumulate any tensor rout until we come back around in NTM, for consistency (see lrp.py line 267).
                 grad_fn.metadata["pre_promise"] = p
-                promise["rout"] = torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device, requires_grad=LRPPropFunctions.with_grad)
+                # promise["rout"] = torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device, requires_grad=LRPPropFunctions.with_grad)
             else:
                 # If we are processing for the first time in NTM anyway, then it's fine.
                 for i, elem in r:
@@ -367,12 +381,15 @@ class LRPPropFunctions:
     def SplitBackwardProp(grad_fn, r):
         # Same as Unbind, need to handle specific logic here so cannot use the factory function
         # r is a list of inputs, with positions corresponding to the grad_fn inputs.
+        # if not isinstance(r, tuple):
+        #     r = (r,)
+
         if any(isinstance(elem, Promise) for elem in r):
-            dtype = parents[0].rout.dtype
-            device = parents[0].rout.device
             parents = [ (i, elem) for i, elem in enumerate(r) if isinstance(elem, Promise) ]
+            dtype = parents[0][1].rout.dtype
+            device = parents[0][1].rout.device
             promise = {
-                "rout": None,
+                "rout": torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device, requires_grad=LRPPropFunctions.with_grad),
                 "args": [None],
                 "rins": [None],
                 "ready": False,
@@ -394,7 +411,7 @@ class LRPPropFunctions:
             if any(elem is None for elem in r):
                 # We don't want to accumulate any tensor rout until we come back around in NTM, for consistency (see lrp.py line 267).
                 grad_fn.metadata["pre_promise"] = p
-                promise["rout"] = torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device, requires_grad=LRPPropFunctions.with_grad)
+                # promise["rout"] = torch.zeros(merge_input_shapes(grad_fn), dtype=dtype, device=device, requires_grad=LRPPropFunctions.with_grad)
             else:
                 # If we are processing for the first time in NTM anyway, then it's fine.
                 for i, elem in r:
@@ -1026,6 +1043,28 @@ class LRPPropFunctions:
 
         return relevance_filter(rin)
     
+    @staticmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def LinalgVectorNormBackwardProp(grad_fn, r):
+        if isinstance(r, Promise):
+            r.setarg(grad_fn._saved_result, grad_fn, "_saved_result")
+            if r.complete:
+                r = r.rin
+            else:
+                return r
+
+        if isinstance(grad_fn._saved_dim, tuple):
+            dim = tuple( handle_neg_index(i, len(grad_fn._saved_self.shape)) for i in grad_fn._saved_dim )
+        elif grad_fn._saved_dim is None:
+            dim = None
+        else:
+            dim = handle_neg_index(grad_fn._saved_dim)
+
+        ratios = grad_fn._saved_self.abs() / grad_fn._saved_self.abs().sum(dim=dim, keepdim=grad_fn._saved_keepdim)
+
+        return ratios * r
+
     @staticmethod
     @output_relevances
     @add_node_to_promise_path

@@ -38,13 +38,14 @@ def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor],
     topo_stack = []
     updated_roots = [ root for root in roots ]
     param_nodes = []
+    nodes_expected_inputs = { root : 1 for root in roots }
 
     for root in roots:
-        make_graph_topo_dfs(root, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
+        make_graph_topo_dfs(root, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes, nodes_expected_inputs)
     if return_topo_dict:
-        return in_adj, out_adj, names, dict(topo_stack), len(topo_stack), updated_roots, param_nodes
+        return in_adj, out_adj, names, dict(topo_stack), len(topo_stack), updated_roots, param_nodes, nodes_expected_inputs
     else:
-        return in_adj, out_adj, names, None, len(topo_stack), updated_roots, param_nodes
+        return in_adj, out_adj, names, None, len(topo_stack), updated_roots, param_nodes, None
 
     # idea: dynamically init relevance variables when branching occurs, assign them to the corresponding
     # downstream nodes they should belong to using next_functions and visited table. Requires 2 passes.
@@ -58,7 +59,7 @@ def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor],
     # 2. Decompose AddmmBackward0's with AddBackward0 leading back to MmBackward0.
     # 3. Assign each grad_fn node to its unique integer id based on traversal order
 
-def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
+def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret : list[torch.Tensor], param_nodes : list[Node], nodes_expected_inputs):
     """
     visited, topo_stack, updated_roots, and param_nodes are all accumulators and must be set and provided by the caller.
 
@@ -93,6 +94,7 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack,
 
         if fcn in in_adj:
             # Assign new Add's in-neighbours to the AddMm's in-neighbours.
+            nodes_expected_inputs[decomposed_root] = nodes_expected_inputs[fcn]
             in_adj[decomposed_root] = in_adj[fcn]
             for in_neighbour in in_adj[fcn]:
                 # Replace all out-edges going to the AddMm to point to the new Add.
@@ -136,6 +138,8 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack,
     
     for (child, i) in fcn.next_functions:
         out_adj[fcn].append((child, i))
+        if child not in nodes_expected_inputs or (i + 1) > nodes_expected_inputs[child]:
+            nodes_expected_inputs[child] = i + 1
 
         # Crucial that this comes after setting out_adj[fcn]
         if child is None:
@@ -144,7 +148,7 @@ def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack,
             in_adj[child] = []
         in_adj[child].append(fcn)
 
-        make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
+        make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes, nodes_expected_inputs)
     
     # We can directly store the index in each node's metadata dict, so we only need to return
     # the reverse lookup dict from ind to node.

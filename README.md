@@ -1,6 +1,6 @@
 # Dynamic Layerwise Relevance Propagation
 ## June - December 2025
-## [Pre-print](https://arxiv.org/abs/2512.07010)
+## [Pre-print](https://arxiv.org/abs/2512.07010) | [Dev journal (a bit messy right now)](https://docs.google.com/document/d/1zg0hoKJlRzZrSxFKOzR7mAqAPb1-S1MdsOIIZVG3SJY/edit?tab=t.0)
 
 ![Operation-level LRP](documentation/op-level-lrp-motivation.png)
 

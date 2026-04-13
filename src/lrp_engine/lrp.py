@@ -12,13 +12,32 @@ from .lrp_graph import (
 from .lrp_prop_fcns import LRPPropFunctions
 from .promises import *
 from .util import (
+    create_attn_gate,
     create_checkpoint,
     DEBUG,
 )
 from typing import Callable, Union
 
 def checkpoint_hook(module, input, output):
-    return create_checkpoint(output)
+    if isinstance(output, tuple):
+        return tuple([ create_checkpoint(o) for o in output ])
+    elif isinstance(output, torch.Tensor):
+        return create_checkpoint(output)
+
+def apply_attn_gates(attn_module):
+    def prehook(module, input):
+        return create_attn_gate(input[0])
+
+    def posthook(module, input, output):
+        if isinstance(output, tuple):
+            return tuple([ create_attn_gate(o) for o in output ])
+        elif isinstance(output, torch.Tensor):
+            return create_attn_gate(output)
+
+    pre_hook = attn_module.register_forward_pre_hook(prehook)
+    post_hook = attn_module.register_forward_hook(posthook)
+
+    return pre_hook, post_hook
 
 class RunMode(Enum):
     NORMAL = 0
@@ -134,12 +153,14 @@ class LRPEngine:
             curnode.metadata["gamma"] = self.mm_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
-            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm or (self.use_attn_lrp and curnode.metadata.get("colouring", None) == 1)
             self.mm_counter += 1
         elif node_name == "BmmBackward0":
-            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
-        elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0", "SoftmaxBackward0"]:
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm or (self.use_attn_lrp and curnode.metadata.get("colouring", None) == 1)
+        elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0"]:
             curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
+        elif node_name == "SoftmaxBackward0":
+            curnode.metadata["use_attn_lrp"] = self.use_attn_lrp and curnode.metadata.get("colouring", None) == 1
 
     def run(self, output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor]):
         """Runs LRP by using the computation graph rooted at hidden_states"""

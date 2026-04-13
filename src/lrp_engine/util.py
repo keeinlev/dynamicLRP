@@ -133,6 +133,18 @@ class LRPCheckpoint(torch.autograd.Function):
 
 create_checkpoint = LRPCheckpoint.apply
 
+class AttentionGate(torch.autograd.Function):
+    """Identity autograd fcn for marking attention modules."""
+
+    @staticmethod
+    def forward(ctx, input: torch.Tensor) -> torch.Tensor:
+        return input
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
+        return grad_output, None, None
+
+create_attn_gate = AttentionGate.apply
 
 def decompose_addmmbackward(grad_fn):
     """Assuming grad_fn is an instance of AddMmBackward, returns an AddBackward0 instance that is the parent

@@ -7,12 +7,16 @@ from .util import (
     decompose_addcmulbackward,
 )
 
-DECOMPOSABLE_FUNCTIONS = (
+DECOMPOSABLE_FUNCTIONS = set([
     # Nodes that must be decomposed
     "AddmmBackward0",
     "ConvolutionBackward0",
     "AddcmulBackward0",
-)
+])
+
+COLOURING_GATES = {
+    "AttentionGateBackward": 1,
+}
 
 def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor], params_to_interpret: list[torch.Tensor] = None, return_topo_dict: bool = False):
     """Creates an auxiliary graph from the autograd graph starting at hidden_states
@@ -67,6 +71,8 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
 
     topo_order = []
     traversal_stack = roots
+
+    colourings = {}
     
     while traversal_stack:
         fcn = traversal_stack.pop()
@@ -81,9 +87,7 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
                 topo_order.append((topo_ind, fcn))
                 visited[fcn] = 2
             continue
-        else:
-            visited[fcn] = 1
-    
+
         if (fcn_name := type(fcn).__name__) in DECOMPOSABLE_FUNCTIONS:
             if fcn_name == "AddmmBackward0":
                 # Decompose the function into an Add + Mm.
@@ -117,9 +121,10 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
 
                     # old_fcn_idx = out_adj[in_neighbour].index(fcn)
                     # out_adj[in_neighbour][old_fcn_idx] = decomposed_add
-                
+
                 del in_adj[fcn]
             fcn = decomposed_root
+            fcn_name = type(fcn).__name__
         elif fcn_name == "AccumulateGrad" and params_to_interpret:
             # Label the input node so during backprop we can use it as an extra stopping condition
             if any(fcn.variable is param for param in params_to_interpret):
@@ -130,8 +135,16 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
             fcn.metadata["save_relevance"] = True
             param_nodes.append(fcn)
 
+        visited[fcn] = 1
+        colour = colourings.pop(fcn, None)
+        if colour is not None:
+            fcn.metadata["colouring"] = colour
+
+        if fcn_name in COLOURING_GATES:
+            colour = COLOURING_GATES[fcn_name] if colour is None else None
+
         # Add processed node's name to the names set
-        if (fcn_name := type(fcn).__name__) not in names:
+        if fcn_name not in names:
             names[fcn_name] = 1
         else:
             names[fcn_name] += 1
@@ -150,7 +163,7 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
         
         # Add back to stack before its children so we see it again once all descendents are done
         traversal_stack.append(fcn)
-        for (child, i) in list(fcn.next_functions)[::-1]:
+        for (child, i) in fcn.next_functions:
             out_adj[fcn].append((child, i))
 
             # Crucial that this comes after setting out_adj[fcn]
@@ -159,8 +172,9 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
             if child not in in_adj:
                 in_adj[child] = []
             in_adj[child].append(fcn)
-
             traversal_stack.append(child)
+            if colour is not None:
+                colourings[child] = colour
             # make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
 
     return in_adj, out_adj, names, dict(topo_order), len(topo_order), updated_roots, param_nodes

@@ -54,12 +54,13 @@ class PromiseBucket:
     dtype = torch.float32
     with_grad = False
 
-    def __init__(self):
+    def __init__(self, engine_layer_relevance_update_fcn : Callable):
         self.all_inner_nodes : set[int] = set()
         self.start_nodes_to_promise : dict[int, Promise] = {}
         self.leaf_promises : list[Promise] = []
         self.ind_to_node = {}
         self.all_promises = []
+        self.engine_layer_relevance_update_fcn = engine_layer_relevance_update_fcn
 
     def instantiate_promise(self, r, promise_type, num_branches : int, origin_node_ind : int, branch_shapes : Union[torch.Size, list[torch.Size]] = None, extra_args : dict = {}):
         """Instantiates and returns new appropriate Promise object(s) and Promise metadata dict according to the given arguments.
@@ -299,7 +300,6 @@ class Promise:
                     fcn = node
                 else:
                     fcn = factory_fcn(node)
-                
                 fwd.append(fcn)
 
         self.fwd_shape = self.bucket.ind_to_node[self.arg_node_ind]._input_metadata[0].shape
@@ -313,7 +313,12 @@ class Promise:
                     fcn = node
                 else:
                     fcn = factory_fcn(node)
-                bwd.append(fcn)
+
+                def record_layer_relevance_wrapper(x):
+                    self.bucket.engine_layer_relevance_update_fcn(node.metadata["graph_layer"], float(x.data.sum()))
+                    return fcn(x)
+
+                bwd.append(record_layer_relevance_wrapper)
         
         self.compiled_bwd = bwd
     

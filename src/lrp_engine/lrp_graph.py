@@ -73,6 +73,11 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
     traversal_stack = roots
 
     colourings = {}
+
+    graph_layer_node_counts = []
+
+    for root in traversal_stack:
+        root.metadata["graph_layer"] = 0
     
     while traversal_stack:
         fcn = traversal_stack.pop()
@@ -87,6 +92,12 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
                 topo_order.append((topo_ind, fcn))
                 visited[fcn] = 2
             continue
+
+        if fcn.metadata["graph_layer"] < len(graph_layer_node_counts):
+            graph_layer_node_counts[fcn.metadata["graph_layer"]] += 1
+        else:
+            # We only ever increment graph_layer by 1 across layers, so this is more accurately elif graph_layer == len(...).
+            graph_layer_node_counts.append(1)
 
         if (fcn_name := type(fcn).__name__) in DECOMPOSABLE_FUNCTIONS:
             if fcn_name == "AddmmBackward0":
@@ -123,6 +134,7 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
                     # out_adj[in_neighbour][old_fcn_idx] = decomposed_add
 
                 del in_adj[fcn]
+            decomposed_root.metadata["graph_layer"] = fcn.metadata["graph_layer"]
             fcn = decomposed_root
             fcn_name = type(fcn).__name__
         elif fcn_name == "AccumulateGrad" and params_to_interpret:
@@ -172,12 +184,13 @@ def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Ten
             if child not in in_adj:
                 in_adj[child] = []
             in_adj[child].append(fcn)
+            child.metadata["graph_layer"] = fcn.metadata["graph_layer"] + 1
             traversal_stack.append(child)
             if colour is not None:
                 colourings[child] = colour
             # make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
 
-    return in_adj, out_adj, names, dict(topo_order), len(topo_order), updated_roots, param_nodes
+    return in_adj, out_adj, names, dict(topo_order), len(topo_order), updated_roots, param_nodes, graph_layer_node_counts
 
 def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
     """

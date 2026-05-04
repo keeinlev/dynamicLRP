@@ -7,12 +7,16 @@ from .util import (
     decompose_addcmulbackward,
 )
 
-DECOMPOSABLE_FUNCTIONS = (
+DECOMPOSABLE_FUNCTIONS = set([
     # Nodes that must be decomposed
     "AddmmBackward0",
     "ConvolutionBackward0",
     "AddcmulBackward0",
-)
+])
+
+COLOURING_GATES = {
+    "AttentionGateBackward": 1,
+}
 
 def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor], params_to_interpret: list[torch.Tensor] = None, return_topo_dict: bool = False):
     """Creates an auxiliary graph from the autograd graph starting at hidden_states
@@ -46,17 +50,134 @@ def make_graph(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor],
     else:
         return in_adj, out_adj, names, None, len(topo_stack), updated_roots, param_nodes
 
-    # idea: dynamically init relevance variables when branching occurs, assign them to the corresponding
-    # downstream nodes they should belong to using next_functions and visited table. Requires 2 passes.
-    # Need all incoming branches to land before we continue, else we need to compute the same downstream paths multiple times for
-    # each incoming branch.
-    # Traverse down a path, propagating relevance until a node with multiple in-edges is reached.
-    # We will need a modified graph as well with in_children for each node to determine the above condition.
-
+def make_graph_iter(output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor], params_to_interpret: list[torch.Tensor] = None, return_topo_dict: bool = False):
     # First pass will:
     # 1. Create in and out adjacency lists.
-    # 2. Decompose AddmmBackward0's with AddBackward0 leading back to MmBackward0.
+    # 2. Decompose composite nodes, e.g. replace AddmmBackward0's with AddBackward0 leading back to MmBackward0.
     # 3. Assign each grad_fn node to its unique integer id based on traversal order
+
+    out_adj = {}
+    in_adj = {}
+
+    if isinstance(output_tuple_or_tensor, torch.Tensor):
+        roots = [ output_tuple_or_tensor.grad_fn ]
+    elif isinstance(output_tuple_or_tensor, tuple):
+        roots = [ output.grad_fn for output in output_tuple_or_tensor ]
+    visited = {}
+    names = {}
+    # topo_stack = []
+    updated_roots = [ root for root in roots ]
+    param_nodes = []
+
+    topo_order = []
+    traversal_stack = roots
+
+    colourings = {}
+    
+    while traversal_stack:
+        fcn = traversal_stack.pop()
+        if fcn is None:
+            continue
+        if fcn in visited:
+            if visited[fcn] == 1:
+                # We can directly store the index in each node's metadata dict, so we only need to return
+                # the reverse lookup dict from ind to node.
+                topo_ind = len(topo_order)
+                fcn.metadata["topo_ind"] = topo_ind
+                topo_order.append((topo_ind, fcn))
+                visited[fcn] = 2
+            continue
+
+        if (fcn_name := type(fcn).__name__) in DECOMPOSABLE_FUNCTIONS:
+            if fcn_name == "AddmmBackward0":
+                # Decompose the function into an Add + Mm.
+                decomposed_root = decompose_addmmbackward(fcn)
+            elif fcn_name == "ConvolutionBackward0":
+                # Decompose the function into an Add + Conv.
+                decomposed_root = decompose_convbackward(fcn)
+            elif fcn_name == "AddcmulBackward0":
+                # Decompose the function into an Add + Mm.
+                decomposed_root = decompose_addcmulbackward(fcn)
+            else:
+                raise ValueError(f"{fcn_name} is marked as needing decomposition but does not have a decomposition handler.")
+            
+            try:
+                fcn_root_ind = updated_roots.index(fcn)
+                # Set the updated root to the decomposed root
+                updated_roots[fcn_root_ind] = decomposed_root
+            except ValueError as e:
+                # fcn is not a root
+                pass
+
+            if fcn in in_adj:
+                # Assign new Add's in-neighbours to the AddMm's in-neighbours.
+                in_adj[decomposed_root] = in_adj[fcn]
+                for in_neighbour in in_adj[fcn]:
+                    # Replace all out-edges going to the AddMm to point to the new Add.
+
+                    for i, (out_node, out_idx) in enumerate(out_adj[in_neighbour]):
+                        if out_node == fcn:
+                            out_adj[in_neighbour][i] = (decomposed_root, out_idx)
+
+                    # old_fcn_idx = out_adj[in_neighbour].index(fcn)
+                    # out_adj[in_neighbour][old_fcn_idx] = decomposed_add
+
+                del in_adj[fcn]
+            fcn = decomposed_root
+            fcn_name = type(fcn).__name__
+        elif fcn_name == "AccumulateGrad" and params_to_interpret:
+            # Label the input node so during backprop we can use it as an extra stopping condition
+            if any(fcn.variable is param for param in params_to_interpret):
+                params_to_interpret.remove(fcn.variable)
+                param_nodes.append(fcn) # Can't use indices yet since they havent been set, but should be fine
+                fcn.metadata["save_relevance"] = True
+        elif fcn_name == "EmbeddingBackward0":
+            fcn.metadata["save_relevance"] = True
+            param_nodes.append(fcn)
+
+        visited[fcn] = 1
+        colour = colourings.pop(fcn, None)
+        if colour is not None:
+            fcn.metadata["colouring"] = colour
+
+        if fcn_name in COLOURING_GATES:
+            colour = COLOURING_GATES[fcn_name] if colour is None else None
+
+        # Add processed node's name to the names set
+        if fcn_name not in names:
+            names[fcn_name] = 1
+        else:
+            names[fcn_name] += 1
+        # Assign adjacencies
+        # NOTE: Out-adjacencies will account for None, but in-adjacencies will not.
+        # This is because we use out_adj for verifying number of expected fwd inputs 
+        # and relevance outputs, and in_adj for number of relevance inputs landed.
+        # None propagates no relevance, so it cannot possibly be an input. Adding it
+        # there would cause the logic to hang.
+        # However, it is a valid fwd input (or bwd output), so not adding it in out_adj
+        # would cause too much mismatch and confusion between number of outputs (prop
+        # fcns account for the None's) and expected number of children (which could be
+        # less without the None's)
+        if fcn not in out_adj:
+            out_adj[fcn] = []
+        
+        # Add back to stack before its children so we see it again once all descendents are done
+        traversal_stack.append(fcn)
+        for (child, i) in fcn.next_functions:
+            out_adj[fcn].append((child, i))
+
+            # Crucial that this comes after setting out_adj[fcn]
+            if child is None:
+                continue
+            if child not in in_adj:
+                in_adj[child] = []
+            in_adj[child].append(fcn)
+            traversal_stack.append(child)
+            if colour is not None:
+                colourings[child] = colour
+            # make_graph_topo_dfs(child, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret, param_nodes)
+
+    return in_adj, out_adj, names, dict(topo_order), len(topo_order), updated_roots, param_nodes
 
 def make_graph_topo_dfs(fcn : Node, in_adj, out_adj, visited, names, topo_stack, updated_roots, params_to_interpret : list[torch.Tensor], param_nodes : list[Node]):
     """

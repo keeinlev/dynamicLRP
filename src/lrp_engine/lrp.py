@@ -5,20 +5,39 @@ from enum import Enum
 from transformers.modeling_outputs import SequenceClassifierOutput
 from torch.autograd.graph import Node
 from .lrp_graph import (
-    make_graph,
+    make_graph_iter,
     convert_graph_to_index_based,
     create_checkpoint_execution_plan,
 )
 from .lrp_prop_fcns import LRPPropFunctions
 from .promises import *
 from .util import (
+    create_attn_gate,
     create_checkpoint,
     DEBUG,
 )
 from typing import Callable, Union
 
 def checkpoint_hook(module, input, output):
-    return create_checkpoint(output)
+    if isinstance(output, tuple):
+        return tuple([ create_checkpoint(o) for o in output ])
+    elif isinstance(output, torch.Tensor):
+        return create_checkpoint(output)
+
+def apply_attn_gates(attn_module):
+    def prehook(module, input):
+        return create_attn_gate(input[0])
+
+    def posthook(module, input, output):
+        if isinstance(output, tuple):
+            return tuple([ create_attn_gate(o) for o in output ])
+        elif isinstance(output, torch.Tensor):
+            return create_attn_gate(output)
+
+    pre_hook = attn_module.register_forward_pre_hook(prehook)
+    post_hook = attn_module.register_forward_hook(posthook)
+
+    return pre_hook, post_hook
 
 class RunMode(Enum):
     NORMAL = 0
@@ -84,7 +103,7 @@ class LRPEngine:
     @staticmethod
     def get_model_operations(model_output):
         """Returns a set of autograd Node names in the first value and the total number of Nodes in the second value"""
-        g = make_graph(model_output)
+        g = make_graph_iter(model_output)
         return g[2], len(g[2]), g[4]
     
     @staticmethod
@@ -134,12 +153,14 @@ class LRPEngine:
             curnode.metadata["gamma"] = self.mm_gamma
             curnode.metadata["use_z_plus"] = self.use_z_plus
             curnode.metadata["relevance_filter"] = self.relevance_filter
-            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm or (self.use_attn_lrp and curnode.metadata.get("colouring", None) == 1)
             self.mm_counter += 1
         elif node_name == "BmmBackward0":
-            curnode.metadata["use_bilinear"] = self.use_bilinear_mm
-        elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0", "SoftmaxBackward0"]:
+            curnode.metadata["use_bilinear"] = self.use_bilinear_mm or (self.use_attn_lrp and curnode.metadata.get("colouring", None) == 1)
+        elif node_name in ["ScaledDotProductEfficientAttentionBackward0", "ScaledDotProductFlashAttentionForCpuBackward0"]:
             curnode.metadata["use_attn_lrp"] = self.use_attn_lrp
+        elif node_name == "SoftmaxBackward0":
+            curnode.metadata["use_attn_lrp"] = self.use_attn_lrp and curnode.metadata.get("colouring", None) == 1
 
     def run(self, output_tuple_or_tensor: Union[tuple[torch.Tensor], torch.Tensor]):
         """Runs LRP by using the computation graph rooted at hidden_states"""
@@ -232,7 +253,7 @@ class LRPEngine:
         param_node_inds = self.param_node_inds
         promise_bucket = self.promise_bucket
 
-        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes = make_graph(root_nodes, params_to_interpret, return_topo_dict=True)
+        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes = make_graph_iter(root_nodes, params_to_interpret, return_topo_dict=True)
         fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
         root_nodes = updated_roots
 
@@ -695,7 +716,7 @@ class LRPEngine:
         promise_bucket = self.promise_bucket
 
         # Need to re-map the graph to all the indices based on topo sort
-        _, _, _, ind_to_node, _, updated_roots, _ = make_graph(root_nodes, return_topo_dict=True)
+        _, _, _, ind_to_node, _, updated_roots, _ = make_graph_iter(root_nodes, return_topo_dict=True)
 
         root_nodes = updated_roots
         # Refresh the map in our Promise Bucket as well

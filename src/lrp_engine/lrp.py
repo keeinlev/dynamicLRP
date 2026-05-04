@@ -845,7 +845,7 @@ class LRPEngine:
                 if len(rel) == 1:
                     rel = rel[0]
                 try:
-                    res = fcn_map[type(node).__name__](node, rel)
+                    res = fcn_map[type(node).__name__](node, rel, engine_id=self.engine_id)
                 except (AttributeError, RuntimeError, TypeError) as e:
                     print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind])
                     raise e

@@ -12,6 +12,7 @@ from .util import (
     merge_input_shapes,
     gamma_lrp_general,
     epsilon_lrp_matmul,
+    lrp_linear_geometric,
     handle_neg_index,
 )
 from .relevance_filter import relevance_filter
@@ -838,9 +839,9 @@ class LRPPropFunctions:
         # Priority right now is getting the deterministic execution plan run mode working, can circle back to this later
         # because it will likely require some reworking on Promises as well. See the note I left in promise.py.
 
-        z = x @ weights # s o
 
         if isinstance(r, Promise):
+            z = x @ weights # s o
             r.setarg(z, grad_fn, lambda fcn: LRPPropFunctions.detach_if_no_grad(fcn._saved_self) @ LRPPropFunctions.detach_if_no_grad(fcn._saved_mat2))
             if r.complete:
                 r = r.rin
@@ -859,7 +860,7 @@ class LRPPropFunctions:
             weights = weights.clamp(min=0.0)
             z = x @ weights
 
-        rin_input, rin_weight = epsilon_lrp_matmul(x, weights, z, r, bilinear=grad_fn.metadata["use_bilinear"])
+        rin_input, rin_weight = lrp_linear_geometric(x, weights, r)
 
         # propagate relevance in parallel for input and weight, as specified by A.3.2 (Bilinear matmul) of AttnLRP: https://arxiv.org/pdf/2402.05602
         return relevance_filter(rin_input, filter_val), rin_weight

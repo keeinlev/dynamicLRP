@@ -327,3 +327,27 @@ def gamma_lrp_general(module_op: Callable, module_T_op: Callable, module_grad_op
     # r_w = sum(weight * gradient for (weight, gradient) in zip(ws, w_gradients)) / 2
 
     # return relevance_filter(r_x, filter_val), r_w, 0.0
+
+def lrp_linear_geometric(x, W, R_out, eps=1e-6):
+    # x: [B, in]
+    # W: [out, in]
+    # R_out: [B, out]
+
+    # Compute column norms (geometric importance)
+    col_norms = torch.norm(W, dim=1)  # [in]
+
+    # Expand for broadcasting
+    x_exp = x.unsqueeze(1)            # [B, 1, in]
+    W_exp = W.transpose(-2, -1).unsqueeze(0)            # [1, out, in]
+    col_exp = col_norms.unsqueeze(0).unsqueeze(0)  # [1,1,in]
+
+    # Geometric contribution scores
+    z = x_exp * W_exp * col_exp       # [B, out, in]
+    # Stabilized denominator
+    z_sum = z.sum(dim=2, keepdim=True) + eps * torch.sign(z.sum(dim=2, keepdim=True))
+
+    # Normalize and redistribute
+    message = z / z_sum               # [B, out, in]
+    R_in = (message * R_out.unsqueeze(2)).sum(dim=1)
+
+    return R_in, 0.0

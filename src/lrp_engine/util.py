@@ -160,7 +160,7 @@ def decompose_addmmbackward(grad_fn):
 def decompose_convbackward(grad_fn):
     """Assuming grad_fn is an instance of ConvolutionBackward0, returns an AddBackward0 instance that is the parent
     of a new ConvolutionBackward0 instance and the third function in grad_fn.next_functions.
-    The MmBackward0 is then the parent of the first two functions in grad_fn.next_functions."""
+    The ConvolutionBackward0 is then the parent of the first two functions in grad_fn.next_functions."""
     result_shape = grad_fn._input_metadata[0].shape
     bias_shape = (result_shape[1], *[ 1 for _ in result_shape[2:] ])
     conv_fn = DecomposedConvolutionBackward0((*grad_fn.next_functions[:2], (None, 0)), grad_fn._sequence_nr(), result_shape, grad_fn._saved_input, grad_fn._saved_weight, grad_fn._saved_stride, grad_fn._saved_padding, grad_fn._saved_dilation, grad_fn._saved_groups)

@@ -18,6 +18,13 @@ from .util import (
 )
 from typing import Callable, Union
 
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
+
+from uuid import uuid4
+
 def checkpoint_hook(module, input, output):
     if isinstance(output, tuple):
         return tuple([ create_checkpoint(o) for o in output ])
@@ -59,6 +66,21 @@ class RunMode(Enum):
 
 class LRPEngine:
 
+    active_engines : dict[str, Self] = {}
+
+    def record_node_layer_relevance(self, layer_ind : int, relevance_sum : float):
+        """Adds the incoming relevance to a propagation function to the total layer's relevance tally.
+        Saved in the LRPEngine instance"""
+        self.layer_relevance_sums[layer_ind] += relevance_sum
+        self.layer_counts[layer_ind] -= 1
+
+    @classmethod
+    def record_node_layer_relevance_by_engine_id(cls, engine_id, grad_fn : Node, relevance_sum : float):
+        """Above method made accessible from prop fcn decorator hooks, so no need to do the tallying in multiple places."""
+        engine = cls.active_engines[engine_id]
+        layer_ind = grad_fn.metadata["graph_layer"]
+        engine.record_node_layer_relevance(layer_ind, relevance_sum)
+
     def __init__(self,
                  params_to_interpret=None,
                  no_recompile=False,
@@ -72,8 +94,10 @@ class LRPEngine:
                  starting_relevance=None,
                  topk=1,
                  dtype=torch.float32,
-                 with_grad=False):
+                 with_grad=False,
+                 disable_layer_relevance_tracking=False):
         assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
+        self.engine_id = uuid4()
         self.out_adj_list : Union[set[Node], set[int]] = None
         self.topo_exec_order : list[int] = None
         self.fcn_map : dict[str, Callable] = None
@@ -88,17 +112,23 @@ class LRPEngine:
         self.use_attn_lrp : bool = use_attn_lrp
         self.use_bilinear_mm : bool = use_bilinear_mm
         self.relevance_filter : float = relevance_filter
-        self.promise_bucket = PromiseBucket()
+        self.promise_bucket = PromiseBucket(self.record_node_layer_relevance)
         self.conv_counter = 0
         self.mm_counter = 0
         self.starting_relevance = starting_relevance
         self.topk = topk
         self.with_grad : bool = with_grad
+        self.layer_relevance_sums = None
+        self.layer_counts = None
+        self.disable_layer_relevance_tracking = disable_layer_relevance_tracking
         LRPPropFunctions.dtype = dtype
         LRPPropFunctions.with_grad = with_grad
+        LRPPropFunctions.layer_rel_update_fcn = LRPEngine.record_node_layer_relevance_by_engine_id
+        LRPPropFunctions.disable_layer_relevance_tracking = disable_layer_relevance_tracking
         PromiseBucket.dtype = dtype
         PromiseBucket.with_grad = with_grad
 
+        LRPEngine.active_engines[self.engine_id] = self
 
     @staticmethod
     def get_model_operations(model_output):
@@ -253,7 +283,9 @@ class LRPEngine:
         param_node_inds = self.param_node_inds
         promise_bucket = self.promise_bucket
 
-        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes = make_graph_iter(root_nodes, params_to_interpret, return_topo_dict=True)
+        in_adj_list, out_adj_list, names, ind_to_node, num_nodes, updated_roots, param_nodes, graph_layer_node_counts = make_graph_iter(root_nodes, params_to_interpret, return_topo_dict=True)
+        self.layer_counts = graph_layer_node_counts
+        self.layer_relevance_sums = [ 0.0 ] * len(graph_layer_node_counts)
         fcn_map = LRPPropFunctions.generate_prop_fcn_map(names)
         root_nodes = updated_roots
 
@@ -512,7 +544,7 @@ class LRPEngine:
                 #     print(curnode_outputs)
                 # elif curnode.metadata["topo_ind"] == 1789 and type(curnode).__name__ == "BmmBackward0":
                 #     print(curnode_outputs)
-                curnode_outputs = fcn_map[type(curnode).__name__](curnode, finalized_inputs)
+                curnode_outputs = fcn_map[type(curnode).__name__](curnode, finalized_inputs, engine_id=self.engine_id)
             except Exception as e:
                 print(e)
                 return curnode, curnode_inputs, in_adj_list, out_adj_list, e
@@ -716,7 +748,7 @@ class LRPEngine:
         promise_bucket = self.promise_bucket
 
         # Need to re-map the graph to all the indices based on topo sort
-        _, _, _, ind_to_node, _, updated_roots, _ = make_graph_iter(root_nodes, return_topo_dict=True)
+        _, _, _, ind_to_node, _, updated_roots, _, graph_layer_node_counts = make_graph_iter(root_nodes, return_topo_dict=True)
 
         root_nodes = updated_roots
         # Refresh the map in our Promise Bucket as well
@@ -813,7 +845,7 @@ class LRPEngine:
                 if len(rel) == 1:
                     rel = rel[0]
                 try:
-                    res = fcn_map[type(node).__name__](node, rel)
+                    res = fcn_map[type(node).__name__](node, rel, engine_id=self.engine_id)
                 except (AttributeError, RuntimeError, TypeError) as e:
                     print(node_ind, [ idx for idx in topo_exec_order if node_ind in out_adj_list[idx] ], input_frontier[node_ind])
                     raise e

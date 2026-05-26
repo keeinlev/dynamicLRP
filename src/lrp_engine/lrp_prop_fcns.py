@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn.functional as F
+from typing import Callable, Union
 from .promises import *
 from .util import (
     epsilon,
@@ -27,12 +28,19 @@ def output_relevances(func):
     def default_wrapper(*args, **kwargs):
         # Clean input dtypes
         input_rels = args[-1]
+        grad_fn = args[-2]
+        engine_id = kwargs.pop("engine_id")
         if isinstance(input_rels, tuple):
             input_rels = list(input_rels)
         else:
             input_rels = [ input_rels ]
         for i, arg in enumerate(input_rels):
             if isinstance(arg, torch.Tensor):
+                rel_sum = float(arg.data.sum())
+                if LRPPropFunctions.layer_rel_update_fcn is not None:
+                    LRPPropFunctions.layer_rel_update_fcn(engine_id, grad_fn, rel_sum)
+                else:
+                    raise RuntimeError("Layer relevance tally function not initialized for LRPPropFunctions class, to ignore this, run with disable_layer_relevance_tracking=True.")
                 if arg.dtype != PromiseBucket.dtype:
                     input_rels[i] = arg.to(PromiseBucket.dtype)
             # elif isinstance(arg, Promise) and arg.rout.dtype != PromiseBucket.dtype:
@@ -157,6 +165,8 @@ class LRPPropFunctions:
 
     dtype = torch.float32
     with_grad = False
+    layer_rel_update_fcn : Union[Callable, None] = None
+    disable_layer_relevance_tracking = True
 
     @classmethod
     def detach_if_no_grad(cls, x: torch.Tensor):
@@ -226,10 +236,7 @@ class LRPPropFunctions:
         return promise_branches
     
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    @skip_redundant_promise
-    def SumBackwardProp(grad_fn, r):
+    def _SumBackwardProp(grad_fn, r):
         """Uses Promise structure to correctly propagate relevance back through
         a Sum operation.
         Note that there is both SumBackward0 and SumBackward1.
@@ -254,13 +261,23 @@ class LRPPropFunctions:
         grad_fn.metadata["promise"] = promise
 
         return promise_branch
-    
+
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
+    def SumBackwardProp(cls, grad_fn, r):
+        return cls._SumBackwardProp(grad_fn, r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
     def MeanBackwardProp(cls, grad_fn, r):
         """Mean is just a scaled sum by 1/n, so the ratios of all elements
         and their cls, contributions should still be the same as if they were a normal
         sum."""
-        return cls.SumBackwardProp(grad_fn, r)
+        return cls._SumBackwardProp(grad_fn, r)
     
     @staticmethod
     @output_relevances
@@ -361,10 +378,7 @@ class LRPPropFunctions:
             return grad_fn(*r)
     
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    @skip_redundant_promise
-    def SplitBackwardProp(grad_fn, r):
+    def _SplitBackwardProp(grad_fn, r):
         # Same as Unbind, need to handle specific logic here so cannot use the factory function
         # r is a list of inputs, with positions corresponding to the grad_fn inputs.
         if any(isinstance(elem, Promise) for elem in r):
@@ -406,8 +420,18 @@ class LRPPropFunctions:
             return grad_fn(*r)
     
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
+    def SplitBackwardProp(cls, grad_fn, r):
+        return cls._SplitBackwardProp(grad_fn, r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
     def SplitWithSizesBackwardProp(cls, grad_fn, r):
-        return cls.SplitBackwardProp(grad_fn, r)
+        return cls._SplitBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -471,9 +495,7 @@ class LRPPropFunctions:
         return grad_fn(r)
 
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    def ViewBackwardProp(grad_fn, r):
+    def _ViewBackwardProp(grad_fn, r):
         upstream_shape = grad_fn._saved_self_sym_sizes
         if isinstance(r, Promise):
 
@@ -500,16 +522,28 @@ class LRPPropFunctions:
         return r.reshape(upstream_shape)
 
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def ViewBackwardProp(cls, grad_fn, r):
+        return cls._ViewBackwardProp(grad_fn, r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def UnsafeViewBackwardProp(cls, grad_fn, r):
-        return cls.ViewBackwardProp(grad_fn, r)
+        return cls._ViewBackwardProp(grad_fn, r)
 
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def ReshapeBackwardProp(cls, grad_fn, r):
-        return cls.ViewBackwardProp(grad_fn, r)
+        return cls._ViewBackwardProp(grad_fn, r)
 
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def ReshapeAliasBackwardProp(cls, grad_fn, r):
-        return cls.ViewBackwardProp(grad_fn, r)
+        return cls._ViewBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -603,20 +637,26 @@ class LRPPropFunctions:
         return grad_fn(r)
 
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    def TransposeBackwardProp(grad_fn, r):
+    def _TransposeBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
             r.nest_fwd("self", grad_fn.metadata["topo_ind"])
             r.nest_bwd("self", grad_fn.metadata["topo_ind"])
             return r
         return grad_fn(r)
+    
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def TransposeBackwardProp(cls, grad_fn, r):
+        return cls._TransposeBackwardProp(grad_fn, r)
 
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def TBackwardProp(cls, grad_fn, r):
         # Not sure why TBackward is different from TransposeBackward, but it seems like this is only
         # in Linear layer matmuls on W for xW^T before Mm and Addmm operations.
-        return cls.TransposeBackwardProp(grad_fn, r)
+        return cls._TransposeBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -749,9 +789,11 @@ class LRPPropFunctions:
         return r
     
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def CopySlicesBackwardProp(cls, grad_fn, r):
         # We reuse TransposeBackwardProp because the fwd/bwd are the same
-        return cls.TransposeBackwardProp(grad_fn, r)
+        return cls._TransposeBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -1027,9 +1069,7 @@ class LRPPropFunctions:
         return relevance_filter(rin)
     
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    def ScaledDotProductEfficientAttentionBackwardProp(grad_fn, r):
+    def _ScaledDotProductEfficientAttentionBackwardProp(grad_fn, r):
         if isinstance(r, Promise):
             r.setarg(grad_fn._saved_output)
             if r.complete:
@@ -1135,11 +1175,19 @@ class LRPPropFunctions:
             return r_q, r_k, r_v
         else:
             return r_q, r_k, r_v, 0.0
-    
+
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def ScaledDotProductEfficientAttentionBackwardProp(cls, grad_fn, r):
+        return cls._ScaledDotProductEfficientAttentionBackwardProp(grad_fn, r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def ScaledDotProductFlashAttentionForCpuBackwardProp(cls, grad_fn, r):
         grad_fn.metadata["is_cpu"] = True
-        return cls.ScaledDotProductEfficientAttentionBackwardProp(grad_fn, r)
+        return cls._ScaledDotProductEfficientAttentionBackwardProp(grad_fn, r)
 
     @staticmethod
     @output_relevances
@@ -1169,9 +1217,7 @@ class LRPPropFunctions:
         return r, 0.0, 0.0
     
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    def NativeBatchNormBackwardProp(grad_fn, r):
+    def _NativeBatchNormBackwardProp(grad_fn, r):
 
         def batchNorm(fcn):
             x = LRPPropFunctions.detach_if_no_grad(fcn._saved_input)
@@ -1191,8 +1237,16 @@ class LRPPropFunctions:
         return r, 0.0, 0.0
 
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    def _NativeBatchNormBackwardProp(cls, grad_fn, r):
+        return cls._NativeBatchNormBackwardProp
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
     def CudnnBatchNormBackwardProp(cls, grad_fn, r):
-        return cls.NativeBatchNormBackwardProp(grad_fn, r)
+        return cls._NativeBatchNormBackwardProp(grad_fn, r)
     
     @staticmethod
     @output_relevances
@@ -1217,10 +1271,7 @@ class LRPPropFunctions:
         return r
     
     @staticmethod
-    @output_relevances
-    @add_node_to_promise_path
-    @skip_redundant_promise
-    def SoftmaxBackwardProp(grad_fn, r):
+    def _SoftmaxBackwardProp(grad_fn, r):
         if "use_attn_lrp" not in grad_fn.metadata:
             result = LRPPropFunctions.detach_if_no_grad(grad_fn._saved_result)
             if isinstance(r, Promise):
@@ -1256,8 +1307,18 @@ class LRPPropFunctions:
         return promise
     
     @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
+    def SoftmaxBackwardProp(cls, grad_fn, r):
+        return cls._SoftmaxBackwardProp(grad_fn, r)
+
+    @classmethod
+    @output_relevances
+    @add_node_to_promise_path
+    @skip_redundant_promise
     def SafeSoftmaxBackwardProp(cls, grad_fn, r):
-        return cls.SoftmaxBackwardProp(grad_fn, r)
+        return cls._SoftmaxBackwardProp(grad_fn, r)
     
     @staticmethod
     @output_relevances

@@ -74,7 +74,8 @@ class LRPEngine:
                  dtype=torch.float32,
                  with_grad=False):
         assert topk > 0 and isinstance(topk, int), "LRPEngine requires a positive integer for top-k logit selection."
-        self.out_adj_list : Union[set[Node], set[int]] = None
+        self.out_adj_list : Union[dict[Node, list[Node]], dict[int, list[int]]] = None
+        self.in_adj_list : Union[dict[Node, list[Node]], dict[int, list[int]]] = None
         self.topo_exec_order : list[int] = None
         self.fcn_map : dict[str, Callable] = None
         self.params_to_interpret : list[torch.Tensor] = params_to_interpret
@@ -98,6 +99,30 @@ class LRPEngine:
         LRPPropFunctions.with_grad = with_grad
         PromiseBucket.dtype = dtype
         PromiseBucket.with_grad = with_grad
+    
+
+    def get_node_incoming_paths(self, start_node):
+        paths = [ [in_neighbour] for in_neighbour in self.in_adj_list[start_node] ]
+        flags = [ True for _ in range(len(paths)) ]
+
+        while any(flags):
+            for i, path in enumerate(paths):
+                if not flags[i]:
+                    continue
+                last_node_in_path = path[-1]
+                if len(self.out_adj_list[last_node_in_path]) > 1:
+                    # Cut the path off when reaching a multi-input operation
+                    flags[i] = False
+                    continue
+                # Extend the path
+                paths[i].append(self.in_adj_list[last_node_in_path][0])
+        
+        # Do some debug output
+        for i, path in enumerate(paths):
+            print(f"PATH {i}: {type(start_node).__name__} <- {tuple( md.shape for md in start_node._input_metadata )} <- ", end="")
+            for node in path:
+                print(f"{type(node).__name__} <- {tuple( md.shape for md in node._input_metadata )} ", end="")
+            print("\n")
 
 
     @staticmethod
@@ -259,6 +284,7 @@ class LRPEngine:
 
         # Save these for now, param_node_inds and topo_exec_order get saved at the end.
         self.out_adj_list = out_adj_list
+        self.in_adj_list = in_adj_list
         self.fcn_map = fcn_map
 
         promise_bucket.ind_to_node = ind_to_node
@@ -347,271 +373,274 @@ class LRPEngine:
                     if type(curnode).__name__ != "EmbeddingBackward0":
                         curnode.metadata["relevance"] = input_tracker[curnode][0][0] # TODO: Come back for the Promise case
 
-            ####### INPUT MERGING/HANDLING
-            sorted_and_merged_inputs = {}
-            if not RUN_MODE.is_fulfillment:
-                curnode_inputs = input_tracker[curnode]
+            try:
+                ####### INPUT MERGING/HANDLING
+                sorted_and_merged_inputs = {}
+                if not RUN_MODE.is_fulfillment:
+                    curnode_inputs = input_tracker[curnode]
 
-                # print(curnode)
-                # for input_, idx in curnode_inputs:
-                #     print(input_, idx)
-                #     if isinstance(input_, torch.Tensor):
-                #         print(input_.dtype)
+                    # print(curnode)
+                    # for input_, idx in curnode_inputs:
+                    #     print(input_, idx)
+                    #     if isinstance(input_, torch.Tensor):
+                    #         print(input_.dtype)
 
-                # Group all inputs by their indices then categorize into either pending promises, complete promises, or tensors
-                try:
-                    categorized_inputs = self.group_and_categorize_inputs(curnode_inputs, RUN_MODE)
-                except ValueError as e:
-                    return curnode, curnode_inputs, in_adj_list, out_adj_list, ValueError(f"Expected relevance input to Node {curnode} to be type Promise or Tensor, but got {type(e.args[0])} instead.")
-                
-                for idx, (complete_promise_inputs, pending_promise_inputs, tensor_inputs) in categorized_inputs:
-                    if not complete_promise_inputs and not pending_promise_inputs and not tensor_inputs:
-                        continue
-
-                    if RUN_MODE.is_traversal and not pending_promise_inputs:
-                        # If in PTM, we only care about the lone pending Promise input. Everything else we will
-                        # assign and connect when we come back to this Node later on.
-                        sorted_and_merged_inputs[idx] = None
-                        continue
-                    
-                    # 3 more cases: NTM + pending Promises, NTM no pending Promises, PTM + pending Promises
-                    # each NTM case breaks down into 2 sub-cases, revisiting Pre-Promise or not.
-
-                    # Aggregate all inputs into one Tensor or Promise
-                    if tensor_inputs:
-                        curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
-                    else:
-                        curnode_in_rel = 0
-
-                    ####### PRE-PROMISE RETRIEVAL
-                    # Consider that we traverse the same Node at most twice at this stage. Once possibly for PTM, and the second
-                    # in Normal Traversal Mode. This is because a Node will not be placed back in PTM if it already
-                    # has set the "pre_promise" key in its metadata, i.e. if we've already processed it in PTM.
-                    if "pre_promise" in curnode.metadata:
-                        # This will handle both NTM revisiting Pre-Promise sub cases
-                        # Essentially checking if this is a Node we traversed in PTM and are now traversing again in Normal Mode.
-                        pre_promise : Promise = curnode.metadata["pre_promise"]
-                        assert pre_promise.ready, "Pre-Promise assumed to be ready upon re-traversal but was not."
-                        assert nodes_pending[curnode] == 0, "Re-traversing Node with Pre-Promise but not all of its inputs have landed."
-
-                        if not pre_promise.complete:
-                            # Should always be True on the first time back around!!!
-                            # Accumulate the landed Tensor relevance
-                            if isinstance(curnode_in_rel, torch.Tensor):
-                                pre_promise.accumulate_rout(curnode_in_rel, idx)
-                            
-                            for parent in pre_promise.parents:
-                                if pre_promise not in parent.children:
-                                    parent.children.append(pre_promise)
-                                    # parent.promise["tail_nodes"].union(pre_promise["tail_nodes"])
-                                    if parent.complete:
-                                        pre_promise.pending_parents -= 1
-                                        pre_promise.accumulate_rout(parent.rin, idx)
-
-                            for pending_promise in pending_promise_inputs:
-                                if pending_promise not in pre_promise.parents:
-                                    # Create parent-child link now that we know all inputs have landed.
-                                    # The Pre-Promise becomes the Aggregate Promise, except it has already been fully built.
-                                    pre_promise.parents.append(pending_promise)
-                                    pre_promise.pending_parents += 1
-                                    pre_promise.parent_idxs[pending_promise] = idx
-                                if pre_promise not in pending_promise.children:
-                                    pending_promise.children.append(pre_promise)
-                                pending_promise.arg_node_ind = curnode.metadata["topo_ind"]
-
-                        else:
-                            # This actually should never happen, so raise an Error
-                            raise RuntimeError("Pre-Promise was found completed at the second traversal of the Node. Contradicts graph traversal heuristic or Node is being traversed too many times.")
-                    ####### END PRE-PROMISE RETRIEVAL
-
-
-                    elif pending_promise_inputs:
-                        # PTM and NTM + pending Promises case on first traversal of Node
-
-                        # If PTM, consider that there is only one Promise input across all indices, and this will create the Pre-Promise.
-                        # In promise traversal mode this will be True
-                        agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, idx, RUN_MODE.is_traversal, RUN_MODE.is_traversal,)
-                        if tensor_inputs and not RUN_MODE.is_traversal:
-                            if len(pending_promise_inputs) == 1:
-                                # In this case, compound_promises did not return a new DummyPromise, since there was only one Promise to compound
-                                # However, we now know there are also Tensor relevance inputs from other in-edges, which we cannot account for
-                                # in the input-agnostic run if we merge them into the Promise chain at this point. It needs to be at the start of
-                                # a Promise.
-                                agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, idx, single_promise_override=True)
-                            # We don't add the tensor relevances to new Pre-Promises since we will do that anyway on the revisit of the Node
-                            agg_promises.set_rout(curnode_in_rel)
-                        curnode_in_rel = agg_promises
-                        if RUN_MODE.is_traversal:
-                            sorted_and_merged_inputs[idx] = curnode_in_rel
-                            break
-
-                    else:
-                        # NTM and no pending Promises, best case
-                        curnode_in_rel += sum([ p.rin for p in complete_promise_inputs ])
-
-                    sorted_and_merged_inputs[idx] = curnode_in_rel
-                
-                if "pre_promise" in curnode.metadata:
+                    # Group all inputs by their indices then categorize into either pending promises, complete promises, or tensors
                     try:
-                        pre_promise.trigger_promise_completion()
-                    except RuntimeError as e:
-                        return curnode, pre_promise, in_adj_list, out_adj_list, e
-
-
-                    if pre_promise.complete:
-                        # Put the tail nodes on the stack if they are ready
-                        tail_nodes = list(pre_promise.promise["tail_nodes"])
-                        
-                        if len(tail_nodes) == 1 and tail_nodes[0] == curnode:
-                            sorted_and_merged_inputs[0] = pre_promise.rin
-                        else:
-                            ready_tail_nodes = []
-                            for tail_node in tail_nodes:
-                                if nodes_pending[tail_node] == 0 and tail_node not in stack and tail_node not in promise_queue:
-                                    ready_tail_nodes.append(tail_node)
-                            # There is a case where the start node is a tail node, if one of the children was None, see in the child input propagation step.
-                            # So we take the start node out of ready_tail_nodes, to avoid retraversing this Node.
-                            ready_tail_nodes = [ rtn for rtn in ready_tail_nodes if rtn != curnode ]
-                            stack = ready_tail_nodes + stack
-                            continue
-                        # promise_queue.append(curnode)
-
-                    # Consider that at any tail node of a Pre-Promise, the arg was set but the Promise did not complete,
-                    # so the Node gets placed on the promise queue. If our Pre-Promise has now completed as a result of
-                    # connecting its delayed parents and retriggering completion, then all those Nodes on the promise
-                    # queue should now be ready to be dequeued in following iterations, therefore we have nothing left
-                    # to do at this Node.
-                    # If the Pre-Promise is still not complete, that means our backward prop is stuck at an earlier parent,
-                    # who itself has to wait for its other branches to resolve. But when they do, the parent will do our
-                    # job of going back down the Promise tree and retriggering this Pre-Promise, until its tail nodes are
-                    # reached. Therefore, in both cases, we simply continue from this Node.
-                ####### END INPUT MERGING
-
-            else:
-                # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
-                sorted_and_merged_inputs[0] = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
-
-
-            if RUN_MODE.is_traversal:
-                # We want to save this so later we'll know we've already traversed this node.
-                curnode.metadata["pre_promise"] = curnode_in_rel
-
-            # Convert to a tuple, filling in missing inputs if needed.
-            if not sorted_and_merged_inputs:
-                continue
-            num_inputs = max(list(sorted_and_merged_inputs.keys())) + 1
-            finalized_inputs = tuple([ sorted_and_merged_inputs[i] if i in sorted_and_merged_inputs else None for i in range(num_inputs)])
-            if len(finalized_inputs) == 1:
-                finalized_inputs = finalized_inputs[0]
-
-            ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
-
-            # Call the propagation function for the node
-            try:
-                # if curnode.metadata["topo_ind"] == 1519 and type(curnode).__name__ == "ScaledDotProductEfficientAttentionBackward0":
-                #     print(curnode_outputs)
-                # elif curnode.metadata["topo_ind"] == 1789 and type(curnode).__name__ == "BmmBackward0":
-                #     print(curnode_outputs)
-                curnode_outputs = fcn_map[type(curnode).__name__](curnode, finalized_inputs)
-            except Exception as e:
-                print(e)
-                return curnode, curnode_inputs, in_adj_list, out_adj_list, e
-
-            if isinstance(curnode_outputs, Promise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
-                # Node is waiting on Promise to be completed, add to promise queue and come back later.
-                if curnode not in promise_queue:
-                    curnode.metadata["promise"] = curnode_outputs.promise
-                    curnode.metadata["promise_idx"] = getattr(curnode_outputs, "idx", 0)
-                    promise_queue.append(curnode)
-                continue
-
-            if RUN_MODE.is_fulfillment:
-                if not DEBUG:
-                    Promise.clear_args_and_rout_raw(curnode.metadata["promise"])
-                del curnode.metadata["promise"], curnode.metadata["promise_idx"]
-
-            # if not RUN_MODE.is_traversal and not DEBUG:
-            #     # We can free up some memory because we will no longer need to access these inputs
-            #     # Chained promises will maintain their relationships via their class instance members.
-            #     if curnode in input_tracker and nodes_pending[curnode] == 0 and curnode not in promise_queue:
-            #         del input_tracker[curnode]
-
-            ####### END PROPAGATION FCN AND PROMISE QUEUE HANDLING
-
-
-            ####### OUTPUT PROPAGATION TO CHILDREN
-
-            #   end
-            # 1  2  3
-            #  \ | /
-            #    |
-            # rel_out
-            #    |
-            #    0
-            #  start
-
-            # curnode_outputs = prop_fcn(node_0, rel_out) -> rel_in_1, rel_in_2, rel_in_3
-
-            # According to next_functions
-            children = out_adj_list[curnode]
-
-            try:
-                # Children may contain None, like grad_fn.next_functions, to keep integrity of input tracking
-                if len(children) == 0 or all(child is None for child in children):
-                    continue
-                elif len(children) == 1:
-                    curnode_outputs = [ curnode_outputs ]
+                        categorized_inputs = self.group_and_categorize_inputs(curnode_inputs, RUN_MODE)
+                    except ValueError as e:
+                        return curnode, curnode_inputs, in_adj_list, out_adj_list, ValueError(f"Expected relevance input to Node {curnode} to be type Promise or Tensor, but got {type(e.args[0])} instead.")
                     
-                elif len(children) != len(curnode_outputs):
-                    raise ValueError(f"Mismatch: {len(children)} children but {len(curnode_outputs)} outputs from {curnode}.")
-            except TypeError as e:
-                print(curnode, children, curnode_outputs)
-                raise e
+                    for idx, (complete_promise_inputs, pending_promise_inputs, tensor_inputs) in categorized_inputs:
+                        if not complete_promise_inputs and not pending_promise_inputs and not tensor_inputs:
+                            continue
 
-            # Update child inputs
-            for i, (child, input_idx) in enumerate(children):
-                if child is None:
-                    # Discard the input (it shouldn't have value anyway), if it's a promise make it a zero-promise
-                    if isinstance(curnode_outputs[i], Promise):
-                        curnode_outputs[i].setarg(0.0, curnode, lambda node: 0.0)
+                        if RUN_MODE.is_traversal and not pending_promise_inputs:
+                            # If in PTM, we only care about the lone pending Promise input. Everything else we will
+                            # assign and connect when we come back to this Node later on.
+                            sorted_and_merged_inputs[idx] = None
+                            continue
+                        
+                        # 3 more cases: NTM + pending Promises, NTM no pending Promises, PTM + pending Promises
+                        # each NTM case breaks down into 2 sub-cases, revisiting Pre-Promise or not.
+
+                        # Aggregate all inputs into one Tensor or Promise
+                        if tensor_inputs:
+                            curnode_in_rel = torch.stack(tensor_inputs).sum(dim=0)
+                        else:
+                            curnode_in_rel = 0
+
+                        ####### PRE-PROMISE RETRIEVAL
+                        # Consider that we traverse the same Node at most twice at this stage. Once possibly for PTM, and the second
+                        # in Normal Traversal Mode. This is because a Node will not be placed back in PTM if it already
+                        # has set the "pre_promise" key in its metadata, i.e. if we've already processed it in PTM.
+                        if "pre_promise" in curnode.metadata:
+                            # This will handle both NTM revisiting Pre-Promise sub cases
+                            # Essentially checking if this is a Node we traversed in PTM and are now traversing again in Normal Mode.
+                            pre_promise : Promise = curnode.metadata["pre_promise"]
+                            assert pre_promise.ready, "Pre-Promise assumed to be ready upon re-traversal but was not."
+                            assert nodes_pending[curnode] == 0, "Re-traversing Node with Pre-Promise but not all of its inputs have landed."
+
+                            if not pre_promise.complete:
+                                # Should always be True on the first time back around!!!
+                                # Accumulate the landed Tensor relevance
+                                if isinstance(curnode_in_rel, torch.Tensor):
+                                    pre_promise.accumulate_rout(curnode_in_rel, idx)
+                                
+                                for parent in pre_promise.parents:
+                                    if pre_promise not in parent.children:
+                                        parent.children.append(pre_promise)
+                                        # parent.promise["tail_nodes"].union(pre_promise["tail_nodes"])
+                                        if parent.complete:
+                                            pre_promise.pending_parents -= 1
+                                            pre_promise.accumulate_rout(parent.rin, idx)
+
+                                for pending_promise in pending_promise_inputs:
+                                    if pending_promise not in pre_promise.parents:
+                                        # Create parent-child link now that we know all inputs have landed.
+                                        # The Pre-Promise becomes the Aggregate Promise, except it has already been fully built.
+                                        pre_promise.parents.append(pending_promise)
+                                        pre_promise.pending_parents += 1
+                                        pre_promise.parent_idxs[pending_promise] = idx
+                                    if pre_promise not in pending_promise.children:
+                                        pending_promise.children.append(pre_promise)
+                                    pending_promise.arg_node_ind = curnode.metadata["topo_ind"]
+
+                            else:
+                                # This actually should never happen, so raise an Error
+                                raise RuntimeError("Pre-Promise was found completed at the second traversal of the Node. Contradicts graph traversal heuristic or Node is being traversed too many times.")
+                        ####### END PRE-PROMISE RETRIEVAL
+
+
+                        elif pending_promise_inputs:
+                            # PTM and NTM + pending Promises case on first traversal of Node
+
+                            # If PTM, consider that there is only one Promise input across all indices, and this will create the Pre-Promise.
+                            # In promise traversal mode this will be True
+                            agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, idx, RUN_MODE.is_traversal, RUN_MODE.is_traversal,)
+                            if tensor_inputs and not RUN_MODE.is_traversal:
+                                if len(pending_promise_inputs) == 1:
+                                    # In this case, compound_promises did not return a new DummyPromise, since there was only one Promise to compound
+                                    # However, we now know there are also Tensor relevance inputs from other in-edges, which we cannot account for
+                                    # in the input-agnostic run if we merge them into the Promise chain at this point. It needs to be at the start of
+                                    # a Promise.
+                                    agg_promises = compound_promises(pending_promise_inputs, curnode.metadata["topo_ind"], promise_bucket, idx, single_promise_override=True)
+                                # We don't add the tensor relevances to new Pre-Promises since we will do that anyway on the revisit of the Node
+                                agg_promises.set_rout(curnode_in_rel)
+                            curnode_in_rel = agg_promises
+                            if RUN_MODE.is_traversal:
+                                sorted_and_merged_inputs[idx] = curnode_in_rel
+                                break
+
+                        else:
+                            # NTM and no pending Promises, best case
+                            curnode_in_rel += sum([ p.rin for p in complete_promise_inputs ])
+
+                        sorted_and_merged_inputs[idx] = curnode_in_rel
+                    
+                    if "pre_promise" in curnode.metadata:
+                        try:
+                            pre_promise.trigger_promise_completion()
+                        except RuntimeError as e:
+                            return curnode, pre_promise, in_adj_list, out_adj_list, e
+
+
+                        if pre_promise.complete:
+                            # Put the tail nodes on the stack if they are ready
+                            tail_nodes = list(pre_promise.promise["tail_nodes"])
+                            
+                            if len(tail_nodes) == 1 and tail_nodes[0] == curnode:
+                                sorted_and_merged_inputs[0] = pre_promise.rin
+                            else:
+                                ready_tail_nodes = []
+                                for tail_node in tail_nodes:
+                                    if nodes_pending[tail_node] == 0 and tail_node not in stack and tail_node not in promise_queue:
+                                        ready_tail_nodes.append(tail_node)
+                                # There is a case where the start node is a tail node, if one of the children was None, see in the child input propagation step.
+                                # So we take the start node out of ready_tail_nodes, to avoid retraversing this Node.
+                                ready_tail_nodes = [ rtn for rtn in ready_tail_nodes if rtn != curnode ]
+                                stack = ready_tail_nodes + stack
+                                continue
+                            # promise_queue.append(curnode)
+
+                        # Consider that at any tail node of a Pre-Promise, the arg was set but the Promise did not complete,
+                        # so the Node gets placed on the promise queue. If our Pre-Promise has now completed as a result of
+                        # connecting its delayed parents and retriggering completion, then all those Nodes on the promise
+                        # queue should now be ready to be dequeued in following iterations, therefore we have nothing left
+                        # to do at this Node.
+                        # If the Pre-Promise is still not complete, that means our backward prop is stuck at an earlier parent,
+                        # who itself has to wait for its other branches to resolve. But when they do, the parent will do our
+                        # job of going back down the Promise tree and retriggering this Pre-Promise, until its tail nodes are
+                        # reached. Therefore, in both cases, we simply continue from this Node.
+                    ####### END INPUT MERGING
+
+                else:
+                    # In promise fulfillment mode, use the completed promise's rin for traversing curnode.
+                    sorted_and_merged_inputs[0] = curnode.metadata["promise"]["rins"][curnode.metadata["promise_idx"]]
+
+
+                if RUN_MODE.is_traversal:
+                    # We want to save this so later we'll know we've already traversed this node.
+                    curnode.metadata["pre_promise"] = curnode_in_rel
+
+                # Convert to a tuple, filling in missing inputs if needed.
+                if not sorted_and_merged_inputs:
                     continue
-                input_tracker[child].append((curnode_outputs[i], input_idx))
-                nodes_pending[child] -= 1
+                num_inputs = max(list(sorted_and_merged_inputs.keys())) + 1
+                finalized_inputs = tuple([ sorted_and_merged_inputs[i] if i in sorted_and_merged_inputs else None for i in range(num_inputs)])
+                if len(finalized_inputs) == 1:
+                    finalized_inputs = finalized_inputs[0]
+
+                ####### PROPAGATION FCN AND PROMISE QUEUE HANDLING
+
+                # Call the propagation function for the node
                 try:
-                    assert nodes_pending[child] >= 0, f"Negative pending count for node {child} while running in mode {RUN_MODE}"
-                    assert len(input_tracker[child]) <= len(in_adj_list[child]), \
-                        f"Too many inputs landed for {child}"
-                except AssertionError as e:
-                    return curnode, in_adj_list, out_adj_list, input_tracker, e
+                    # if curnode.metadata["topo_ind"] == 1519 and type(curnode).__name__ == "ScaledDotProductEfficientAttentionBackward0":
+                    #     print(curnode_outputs)
+                    # elif curnode.metadata["topo_ind"] == 1789 and type(curnode).__name__ == "BmmBackward0":
+                    #     print(curnode_outputs)
+                    curnode_outputs = fcn_map[type(curnode).__name__](curnode, finalized_inputs)
+                except Exception as e:
+                    print(e)
+                    return curnode, curnode_inputs, in_adj_list, out_adj_list, e
 
-            ####### END OUTPUT PROPAGATION TO CHILDREN
-
-
-            ####### SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
-
-            # Collect children who now have all their inputs or that have promise(s) depending on them.
-            ready_children : list[Node] = [] # All children who have all their inputs landed
-            promise_depends_on : list[Node] = [] # All children who do not have all their inputs landed but have at least one incomplete promise input landed.
-            for i, (child, input_idx) in enumerate(children):
-                if child is None:
+                if isinstance(curnode_outputs, Promise) and curnode_outputs.arg is not None and not curnode_outputs.complete:
+                    # Node is waiting on Promise to be completed, add to promise queue and come back later.
+                    if curnode not in promise_queue:
+                        curnode.metadata["promise"] = curnode_outputs.promise
+                        curnode.metadata["promise_idx"] = getattr(curnode_outputs, "idx", 0)
+                        promise_queue.append(curnode)
                     continue
-                if nodes_pending[child] == 0 and child not in promise_queue:
-                    ready_children.append(child)
-                elif isinstance(curnode_outputs[i], Promise) and not curnode_outputs[i].complete:
-                    if "pre_promise" not in child.metadata:
-                        promise_depends_on.append(child)
-                    else:
-                        child.metadata["pre_promise"].parents.append(curnode_outputs[i])
-                        curnode_outputs[i].arg_node_ind = child.metadata["topo_ind"]
-                        child.metadata["pre_promise"].pending_parents += 1
-                        child.metadata["pre_promise"].trigger_promise_completion()
 
-            promise_traversal_stack = promise_depends_on + promise_traversal_stack
-            stack = ready_children + stack
-            num_checkpoints_reached = sum([ "relevance" in checkpoint.metadata for checkpoint in checkpoints])
-            num_params_reached = sum([ "relevance" in param_node.metadata for param_node in param_nodes ])
+                if RUN_MODE.is_fulfillment:
+                    if not DEBUG:
+                        Promise.clear_args_and_rout_raw(curnode.metadata["promise"])
+                    del curnode.metadata["promise"], curnode.metadata["promise_idx"]
 
-            ####### END SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
+                # if not RUN_MODE.is_traversal and not DEBUG:
+                #     # We can free up some memory because we will no longer need to access these inputs
+                #     # Chained promises will maintain their relationships via their class instance members.
+                #     if curnode in input_tracker and nodes_pending[curnode] == 0 and curnode not in promise_queue:
+                #         del input_tracker[curnode]
+
+                ####### END PROPAGATION FCN AND PROMISE QUEUE HANDLING
+
+
+                ####### OUTPUT PROPAGATION TO CHILDREN
+
+                #   end
+                # 1  2  3
+                #  \ | /
+                #    |
+                # rel_out
+                #    |
+                #    0
+                #  start
+
+                # curnode_outputs = prop_fcn(node_0, rel_out) -> rel_in_1, rel_in_2, rel_in_3
+
+                # According to next_functions
+                children = out_adj_list[curnode]
+
+                try:
+                    # Children may contain None, like grad_fn.next_functions, to keep integrity of input tracking
+                    if len(children) == 0 or all(child is None for child in children):
+                        continue
+                    elif len(children) == 1:
+                        curnode_outputs = [ curnode_outputs ]
+                        
+                    elif len(children) != len(curnode_outputs):
+                        raise ValueError(f"Mismatch: {len(children)} children but {len(curnode_outputs)} outputs from {curnode}.")
+                except TypeError as e:
+                    print(curnode, children, curnode_outputs)
+                    raise e
+
+                # Update child inputs
+                for i, (child, input_idx) in enumerate(children):
+                    if child is None:
+                        # Discard the input (it shouldn't have value anyway), if it's a promise make it a zero-promise
+                        if isinstance(curnode_outputs[i], Promise):
+                            curnode_outputs[i].setarg(0.0, curnode, lambda node: 0.0)
+                        continue
+                    input_tracker[child].append((curnode_outputs[i], input_idx))
+                    nodes_pending[child] -= 1
+                    try:
+                        assert nodes_pending[child] >= 0, f"Negative pending count for node {child} while running in mode {RUN_MODE}"
+                        assert len(input_tracker[child]) <= len(in_adj_list[child]), \
+                            f"Too many inputs landed for {child}"
+                    except AssertionError as e:
+                        return curnode, in_adj_list, out_adj_list, input_tracker, e
+
+                ####### END OUTPUT PROPAGATION TO CHILDREN
+
+
+                ####### SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
+
+                # Collect children who now have all their inputs or that have promise(s) depending on them.
+                ready_children : list[Node] = [] # All children who have all their inputs landed
+                promise_depends_on : list[Node] = [] # All children who do not have all their inputs landed but have at least one incomplete promise input landed.
+                for i, (child, input_idx) in enumerate(children):
+                    if child is None:
+                        continue
+                    if nodes_pending[child] == 0 and child not in promise_queue:
+                        ready_children.append(child)
+                    elif isinstance(curnode_outputs[i], Promise) and not curnode_outputs[i].complete:
+                        if "pre_promise" not in child.metadata:
+                            promise_depends_on.append(child)
+                        else:
+                            child.metadata["pre_promise"].parents.append(curnode_outputs[i])
+                            curnode_outputs[i].arg_node_ind = child.metadata["topo_ind"]
+                            child.metadata["pre_promise"].pending_parents += 1
+                            child.metadata["pre_promise"].trigger_promise_completion()
+
+                promise_traversal_stack = promise_depends_on + promise_traversal_stack
+                stack = ready_children + stack
+                num_checkpoints_reached = sum([ "relevance" in checkpoint.metadata for checkpoint in checkpoints])
+                num_params_reached = sum([ "relevance" in param_node.metadata for param_node in param_nodes ])
+
+                ####### END SORTING CHILDREN TO WHICH STACK THEY SHOULD GO TO
+            except Exception as e:
+                raise RuntimeError("LRP failure, catch this exception and access .args for the computation graph node which caused it, the incoming relevances, and the in- and out-adjacency lists.", curnode, curnode_in_rel, in_adj_list, out_adj_list) from e
 
         if DEBUG:
             # Checking conservation holds across the entire propagation
